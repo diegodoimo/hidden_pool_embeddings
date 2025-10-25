@@ -1,0 +1,12 @@
+scikit-learn
+numpy
+scipy
+sentencepiece
+datasets
+accelerate
+peft
+tokenizers
+transformers
+protobuf
+evaluate
+
