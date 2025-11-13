@@ -19,7 +19,7 @@ def parse_args():
 
 
 # def main():
-# use_auth_token="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",
+
 sys.argv = [""]
 args = parse_args()
 
