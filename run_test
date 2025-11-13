@@ -1,0 +1,39 @@
+#!/bin/bash
+#SBATCH --partition=H100
+##SBATCH --nodelist=dgx004
+#SBATCH --account=lade
+#SBATCH --nodes=1
+#SBATCH --time=24:00:00            
+#SBATCH --ntasks-per-node=1       
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=50G       
+#SBATCH --job-name=test
+#SBATCH --gres=gpu:1
+
+
+
+env_path="/orfeo/cephfs/scratch/area/ddoimo/giskard/conversation_embed_dev"
+#source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_a100
+
+module load cuda/12.6
+source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_h100
+
+
+nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
+nodes_array=($nodes)
+head_node=${nodes_array[0]}
+
+GPU_NUMBER=$(echo $CUDA_VISIBLE_DEVICES | tr ',' ' ' | wc -w) 
+export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
+export PYTHONUNBUFFERED=1
+
+
+torchrun \
+    --nnodes=$SLURM_NTASKS \
+    --node-rank=$SLURM_NODEID \
+    --nproc-per-node=$GPU_NUMBER \
+    --rdzv-id=$SLURM_PROCID \
+    --rdzv-backend=c10d \
+    --rdzv-endpoint=$head_node:0 \
+    test_model.py  \
+    --model_name_or_path google/embeddinggemma-300m 

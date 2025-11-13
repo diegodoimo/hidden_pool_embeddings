@@ -9,4 +9,7 @@ tokenizers
 transformers
 protobuf
 evaluate
+sentence-transformers
+mteb
+
 
