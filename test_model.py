@@ -2,6 +2,27 @@ import argparse
 from sentence_transformers import SentenceTransformer
 import mteb
 import time
+from collections import defaultdict
+
+
+benchmark = mteb.get_benchmark("MTEB(Multilingual, v2)")
+task_types = set(task.metadata.type for task in benchmark.tasks)
+
+# Group by task type
+metrics_by_type = defaultdict(dict)
+
+for task in benchmark.tasks:
+    task_type = task.metadata.type
+    task_name = task.metadata.name
+    main_metric = task.metadata.main_score
+    if task_type in metrics_by_type:
+        assert metrics_by_type[task_type] == main_metric, (
+            task_type,
+            task_name,
+            main_metric,
+            metrics_by_type[task_type],
+        )
+    metrics_by_type[task_type] = main_metric
 
 
 def parse_args():
@@ -46,6 +67,9 @@ def main():
     model = mteb.get_model(args.model_name)
 
     benchmark = mteb.get_benchmark(bench_dict[args.benchmark])
+
+    task_types = set(task.metadata.type for task in benchmark.tasks)
+
     tasks = []
     for task in benchmark.tasks:
         if task.metadata.type == "Retrieval" and len(tasks) < 5:
