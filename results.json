@@ -1,0 +1,110 @@
+{
+    "StackOverflowQA": {
+        "main_score": 0.86235,
+        "task_type": "Retrieval",
+        "time": "113.47",
+        "split": "test"
+    },
+    "TwitterHjerneRetrieval": {
+        "main_score": 0.66289,
+        "task_type": "Retrieval",
+        "time": "2.09",
+        "split": "train"
+    },
+    "AILAStatutes": {
+        "main_score": 0.30254,
+        "task_type": "Retrieval",
+        "time": "6.52",
+        "split": "test"
+    },
+    "ArguAna": {
+        "main_score": 0.65975,
+        "task_type": "Retrieval",
+        "time": "34.10",
+        "split": "test"
+    },
+    "HagridRetrieval": {
+        "main_score": 0.98772,
+        "task_type": "Retrieval",
+        "time": "6.85",
+        "split": "dev"
+    },
+    "LegalBenchCorporateLobbying": {
+        "main_score": 0.948,
+        "task_type": "Retrieval",
+        "time": "7.09",
+        "split": "test"
+    },
+    "LEMBPasskeyRetrieval": {
+        "main_score": 0.16,
+        "task_type": "Retrieval",
+        "time": "31.93",
+        "split": "test_8192"
+    },
+    "SCIDOCS": {
+        "main_score": 0.19477,
+        "task_type": "Retrieval",
+        "time": "86.79",
+        "split": "test"
+    },
+    "SpartQA": {
+        "main_score": 0.06981,
+        "task_type": "Retrieval",
+        "time": "18.89",
+        "split": "test"
+    },
+    "TempReasonL1": {
+        "main_score": 0.00616,
+        "task_type": "Retrieval",
+        "time": "25.24",
+        "split": "test"
+    },
+    "TRECCOVID": {
+        "main_score": 0.7671,
+        "task_type": "Retrieval",
+        "time": "537.19",
+        "split": "test"
+    },
+    "WinoGrande": {
+        "main_score": 0.59174,
+        "task_type": "Retrieval",
+        "time": "12.66",
+        "split": "test"
+    },
+    "BelebeleRetrieval": {
+        "main_score": 0.89779,
+        "task_type": "Retrieval",
+        "time": "961.58",
+        "split": "test"
+    },
+    "MLQARetrieval": {
+        "main_score": 0.79382,
+        "task_type": "Retrieval",
+        "time": "1400.57",
+        "split": "validation"
+    },
+    "StatcanDialogueDatasetRetrieval": {
+        "main_score": 0.48316,
+        "task_type": "Retrieval",
+        "time": "294.73",
+        "split": "dev"
+    },
+    "WikipediaRetrievalMultilingual": {
+        "main_score": 0.88493,
+        "task_type": "Retrieval",
+        "time": "486.02",
+        "split": "test"
+    },
+    "CovidRetrieval": {
+        "main_score": 0.7846,
+        "task_type": "Retrieval",
+        "time": "290.49",
+        "split": "dev"
+    },
+    "MIRACLRetrievalHardNegatives": {
+        "main_score": 0.6928,
+        "task_type": "Retrieval",
+        "time": "4573.27",
+        "split": "dev"
+    }
+}

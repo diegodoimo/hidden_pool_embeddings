@@ -2,7 +2,9 @@ import argparse
 from sentence_transformers import SentenceTransformer
 import mteb
 import time
-
+from dataclasses import field
+import json
+import numpy as np
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -36,26 +38,54 @@ def parse_args():
     args = parser.parse_args()
     return args
 
+# class Results:
+#     task_name: list = field(default_factory=list)
+#     task_type: list = field(default_factory=list)
+#     split: list = field(default_factory=list)
+#     score_name: list = field(default_factory=list)
+#     score: list = field(default_factory=list)
+#     languge: list = field(default_factory=list)
+
+
+
 
 def main():
 
     args = parse_args()
+    #results = Results()
+    results = {}
     bench_dict = {"mteb_multilingual_v2": "MTEB(Multilingual, v2)", "mteb_eng_v2": "MTEB(eng, v2)"}
     tasks_dict = {"classification", "retrieval", "clustering"}
 
-    model = mteb.get_model(args.model_name)
+    print("loading model")
+    model = mteb.get_model(args.model_name_or_path)
 
+    print("loading benchmark")
     benchmark = mteb.get_benchmark(bench_dict[args.benchmark])
     tasks = []
     for task in benchmark.tasks:
-        if task.metadata.type == "Retrieval" and len(tasks) < 5:
+        if task.metadata.type == "Retrieval":
             tasks.append(task)
 
     print("evaluating tasks")
-    start = time.time()
-    results = mteb.evaluate(model, tasks=tasks)
-    end = time.time()
-    print(results, f"{(end-start)/60}min")
+    start0 = time.time()
+    for i, task in enumerate(tasks):
+        print(f"evaluating task: {task} ({i+1}/{len(tasks)}) {(time.time()-start0)/60:.1f}min")
+        start = time.time()
+        res = mteb.evaluate(model, tasks=task, overwrite_strategy="always")
+        end = time.time()
+        instance = res.task_results[0]
+        splits = set(instance.scores.keys())
+        for split in splits:
+            results[instance.task_name] = {"main_score": instance.scores[split][0]["main_score"],
+            "task_type": instance.task_type, "time": f"{(end-start):.2f}", "split":split}
+        
+        print({np.mean([score["main_score"] for score in results.values()])})
+
+    print(results)
+    with open("./results.json", "w") as f:
+        json.dump(results, f, indent=4)
+
 
 
 if __name__ == "__main__":

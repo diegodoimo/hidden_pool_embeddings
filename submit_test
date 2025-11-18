@@ -11,11 +11,11 @@
 #SBATCH --gres=gpu:1
 
 
+env_path=\/orfeo/cephfs/scratch/area/ddoimo/open/hidden_pool_embeddings
 
-env_path="/orfeo/cephfs/scratch/area/ddoimo/giskard/conversation_embed_dev"
 #source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_a100
 
-module load cuda/12.6
+module load cuda/12.8
 source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_h100
 
 
@@ -36,4 +36,5 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     test_model.py  \
-    --model_name_or_path google/embeddinggemma-300m 
+    --model_name_or_path google/embeddinggemma-300m \
+    --benchmark mteb_multilingual_v2
