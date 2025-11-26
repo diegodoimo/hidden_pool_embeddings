@@ -284,8 +284,8 @@ def main():
         max_query_len=1024,
         max_passage_len=4096,
         sort_by_length=True,
-        query_task="Retrieval-query",
-        document_task="Retrieval-document",
+        query_task="query",
+        document_task="document",
         batch_size=1000,
     )
     

@@ -12,7 +12,7 @@ from torch.nn.utils.rnn import pad_sequence
 # https://github.com/huggingface/transformers/blob/bdee0889714e9cb3e53d3b1b2a626919479d356c/src/transformers/models/gemma3/convert_gemma3_weights.py#L700C1-L715C10
 TASK_PROMPTS = {
     "query": "task: search result | query: ",
-    "document": "title: none | text: ",
+    "document": "title: {title} | text: {text}",
     "BitextMining": "task: search result | query: ",
     "Clustering": "task: clustering | query: ",
     "Classification": "task: classification | query: ",
@@ -66,13 +66,14 @@ def prepare_msmarco(hf_queries, hf_corpus, hf_qrels):
             data_query["positive_id"].append(doc_id)
 
             data_doc["positive_id"].append(doc_id)
-            data_doc["positive_title"].append(corpus_full[doc_id]["title"])
+            title = corpus_full[doc_id]["title"]
+            data_doc["positive_title"].append(title if len(title) > 0 else "none")
             data_doc["positive_text"].append(corpus_full[doc_id]["text"])
 
     # Create HuggingFace dataset
-    train_queries = Dataset.from_dict(data_query)
-    train_docs = Dataset.from_dict(data_doc)
-    return train_queries, train_docs
+    # train_queries = Dataset.from_dict(data_query)
+    # train_docs = Dataset.from_dict(data_doc)
+    return data_query, data_doc
 
 
 def msmarco_dataset(
@@ -123,19 +124,20 @@ def msmarco_dataset(
     if neg_passages_dataset is not None:
         combined = Dataset.from_dict(
             {
-                "query": queries_dataset["text"],
-                "pos_passage": pos_passages_dataset["text"],
-                "pos_ids": pos_passages_dataset["_id"],
-                "neg_passages": neg_passages_dataset["text"],
-                "neg_ids": neg_passages_dataset["_id"],
+                "query": queries_dataset["query_text"],
+                "pos_passage": pos_passages_dataset["positive_text"],
+                "pos_ids": pos_passages_dataset["positive_id"],
+                "neg_passages": neg_passages_dataset["negative_text"],
+                "neg_ids": neg_passages_dataset["nagative_id"],
             }
         )
     else:
         combined = Dataset.from_dict(
             {
-                "query": queries_dataset["text"],
-                "pos_passage": pos_passages_dataset["text"],
-                "pos_ids": pos_passages_dataset["_ids"],
+                "query": queries_dataset["query_text"],
+                "pos_passage": pos_passages_dataset["positive_text"],
+                "pos_title": pos_passages_dataset["positive_title"],
+                "pos_ids": pos_passages_dataset["positive_id"],
             }
         )
 
@@ -145,7 +147,10 @@ def msmarco_dataset(
 
         # Prepend prompts
         queries_with_prompt = [query_prompt + q for q in examples["query"]]
-        pos_with_prompt = [doc_prompt + p for p in examples["pos_passage"]]
+        pos_with_prompt = [
+            doc_prompt.format(title=title, text=text)
+            for title, text in zip(examples["pos_title"], examples["pos_passage"])
+        ]
 
         # Tokenize queries
         query_encs = tokenizer(
@@ -227,11 +232,7 @@ def msmarco_dataset(
     print(f"Tokenizing {len(combined)} examples with batch_size={batch_size}...")
     # Apply batched tokenization
     tokenized_dataset = combined.map(
-        tokenize_batch,
-        batched=True,
-        batch_size=batch_size,
-        remove_columns=combined.column_names,
-        desc="Tokenizing",
+        tokenize_batch, batched=True, batch_size=batch_size, remove_columns=combined.column_names
     )
 
     tot_tokens = tokenized_dataset["total_len"].sum()
