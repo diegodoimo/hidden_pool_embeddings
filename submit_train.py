@@ -1,0 +1,73 @@
+#!/bin/bash
+#SBATCH --partition=H100
+#SBATCH --account=lade
+#SBATCH --nodelist=dgx003
+#SBATCH --nodes=1
+#SBATCH --time=24:00:00            
+#SBATCH --ntasks-per-node=1       
+#SBATCH --cpus-per-task=16 #32          
+#SBATCH --mem=100G  #it is intended per node          
+#SBATCH --job-name=test
+#SBATCH --gres=gpu:4 #it is intended per node
+
+
+
+#source /u/area/ddoimo/anaconda3/bin/activate ./env_amd 
+module load cuda/12.6 
+export CUDA_HOME=$CUDA_PATH
+
+source /u/area/ddoimo/anaconda3/bin/activate ./env_h100 
+
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" 
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export PYTHONUNBUFFERED=1
+#export TRANSFORMERS_OFFLINE=1
+export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
+
+nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
+head_node=${nodes[0]}
+head_node_ip=$(getent hosts "$head_node" | awk '{ print $1 }')
+GPU_NUMBER=$(echo $CUDA_VISIBLE_DEVICES | tr ',' ' ' | wc -w) 
+
+
+torchrun \
+    --nnodes=$SLURM_NTASKS \
+    --node-rank=$SLURM_NODEID \
+    --nproc-per-node=$GPU_NUMBER \
+    --rdzv-id=$SLURM_PROCID \
+    --rdzv-backend=c10d \
+    --rdzv-endpoint=$head_node:0 \
+   train_ddp_rebuttal.py \
+    --dataset_size 15000 \
+    --dataset_size_eval 1000 \
+    --llava_path /orfeo/cephfs/scratch/area/ddoimo/data/llava/instruct \
+    --llava_image_path /orfeo/cephfs/scratch/area/ddoimo/data/mscoco/train2014 \
+    --vqav2_path /orfeo/cephfs/scratch/area/ddoimo/data/vqav2 \
+    --vqav2_image_path /orfeo/cephfs/scratch/area/ddoimo/data/mscoco \
+    --coco_path /orfeo/cephfs/scratch/area/ddoimo/data/mscoco \
+    --model_name_or_path  francescortu/Emu3-Gen-hf \
+    --tokenizer_name_or_path  BAAI/Emu3-Chat-hf \
+    --resume_from_checkpoint "/orfeo/cephfs/scratch/area/ddoimo/open/multimodal/results/emu3/llava150k_vqa_coco/epoch_1_4" \
+    --cocokarpaty \
+    --test_ablation_effect  \
+    --use_lora \
+    --lora_rank 128 \
+    --lora_alpha 256 \
+    --lora_dropout 0.1 \
+    --use_slow_tokenizer \
+    --low_cpu_mem_usage \
+    --batch_size 128 \
+    --preprocessing_num_workers 16 \
+    --per_device_train_batch_size 1 \
+    --per_device_eval_batch_size 1 \
+    --learning_rate 2e-5 \
+    --lr_min_fact 0.1 \
+    --warmup_ratio 0.03 \
+    --weight_decay 0.1  \
+    --num_train_epochs 1 \
+    --out_filename "5l_5v"  \
+    --checkpointing_steps 1 \
+    --logging_steps 10 \
+    --eval_steps 7 \
+    --output_dir "./results/rebuttal/final" \
+    --measure_baselines \

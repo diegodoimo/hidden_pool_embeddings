@@ -265,10 +265,15 @@ def main():
 
     if RANK == 0:
         print("matching query and positives")
+        start = time.time()
     train_queries, train_docs = prepare_msmarco(hf_queries, hf_corpus, hf_qrels)
+    dist.barrier()
 
     if RANK == 0:
+        print(f"msmarco prepared in {time.time()-start}")
+        start = time.time()
         print("tokenizing dataset")
+
     tokenized_dataset = msmarco_dataset(
         queries_dataset=train_queries,
         pos_passages_dataset=train_docs,
@@ -282,6 +287,8 @@ def main():
     )
 
     if RANK == 0:
+        print(f"msmarco tokenized in {time.time()-start}")
+        start = time.time()
         print("dataloader preparation")
     # 3. Create length-balanced sampler
     sampler = LengthBalancedDistributedSampler(
