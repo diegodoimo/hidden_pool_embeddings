@@ -1,11 +1,7 @@
 import torch
-from torch.utils.data import Dataset, DataLoader, Sampler
-from transformers import AutoTokenizer
 import numpy as np
-from collections import defaultdict
 from typing import List, Dict, Tuple
-import json
-from datasets import Dataset as hf_Dataset
+from datasets import Dataset
 from typing import Optional
 
 from torch.utils.data import DistributedSampler
@@ -80,18 +76,18 @@ def prepare_msmarco(hf_queries, hf_corpus, hf_qrels):
 
 
 def msmarco_dataset(
-    queries_dataset: hf_Dataset,
-    pos_passages_dataset: hf_Dataset,
+    queries_dataset: Dataset,
+    pos_passages_dataset: Dataset,
     tokenizer,
     max_query_len: int = 32,
     max_passage_len: int = 256,
     num_hard_negatives: int = 7,
     sort_by_length: bool = True,
-    neg_passages_dataset: Optional[hf_Dataset] = None,
+    neg_passages_dataset: Optional[Dataset] = None,
     query_task: str = "Retrieval-query",
     document_task: str = "Retrieval-document",
     batch_size: int = 1000,
-) -> hf_Dataset:
+) -> Dataset:
     """
     Prepares MS MARCO dataset with batched processing for efficiency.
 
@@ -125,7 +121,7 @@ def msmarco_dataset(
 
     # Combine datasets
     if neg_passages_dataset is not None:
-        combined = hf_Dataset.from_dict(
+        combined = Dataset.from_dict(
             {
                 "query": queries_dataset["text"],
                 "pos_passage": pos_passages_dataset["text"],
@@ -135,7 +131,7 @@ def msmarco_dataset(
             }
         )
     else:
-        combined = hf_Dataset.from_dict(
+        combined = Dataset.from_dict(
             {
                 "query": queries_dataset["text"],
                 "pos_passage": pos_passages_dataset["text"],
