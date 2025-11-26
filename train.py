@@ -74,7 +74,8 @@ class Trainer:
             self.model.gradient_checkpointing_enable()
 
         self.model = DDP(self.model, device_ids=[self.local_rank])
-        self.model = torch.compile(self.model)
+        # self.model = torch.compile(self.model)
+        self.model.compile(mode="reduce-overhead")
         print_memory_consumed(message="memory consumed after loading model")
 
         self.optimizer, self.scheduler = get_scheduler_optimizer(
