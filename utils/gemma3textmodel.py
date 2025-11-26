@@ -9,14 +9,11 @@ from transformers.models.gemma3.modeling_gemma3 import (
     auto_docstring,
     _bidirectional_window_overlay,
 )
-from typing import Any, Optional, Union
+from typing import Optional
 
 # from ...cache_utils import Cache, DynamicCache
 from transformers.cache_utils import Cache, DynamicCache
-from typing import Callable
-
 from transformers.utils import TransformersKwargs, auto_docstring, logging
-from dataclasses import dataclass
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
 from transformers.processing_utils import Unpack

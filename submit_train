@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --partition=H100
 #SBATCH --account=lade
-#SBATCH --nodelist=dgx003
+##SBATCH --nodelist=dgx003
 #SBATCH --nodes=1
 #SBATCH --time=24:00:00            
 #SBATCH --ntasks-per-node=1       
 #SBATCH --cpus-per-task=16 #32          
 #SBATCH --mem=100G  #it is intended per node          
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:4 #it is intended per node
+#SBATCH --gres=gpu:2 #it is intended per node
 
 
 
@@ -37,19 +37,10 @@ torchrun \
     --rdzv-id=$SLURM_PROCID \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
-   train_ddp_rebuttal.py \
-    --dataset_size 15000 \
-    --dataset_size_eval 1000 \
-    --llava_path /orfeo/cephfs/scratch/area/ddoimo/data/llava/instruct \
-    --llava_image_path /orfeo/cephfs/scratch/area/ddoimo/data/mscoco/train2014 \
-    --vqav2_path /orfeo/cephfs/scratch/area/ddoimo/data/vqav2 \
-    --vqav2_image_path /orfeo/cephfs/scratch/area/ddoimo/data/mscoco \
-    --coco_path /orfeo/cephfs/scratch/area/ddoimo/data/mscoco \
-    --model_name_or_path  francescortu/Emu3-Gen-hf \
-    --tokenizer_name_or_path  BAAI/Emu3-Chat-hf \
-    --resume_from_checkpoint "/orfeo/cephfs/scratch/area/ddoimo/open/multimodal/results/emu3/llava150k_vqa_coco/epoch_1_4" \
-    --cocokarpaty \
-    --test_ablation_effect  \
+   train.py \
+    --model_name_or_path google/gemma-3-270m  \
+    --distributed_loss \
+    --attention_dim 128 \
     --use_lora \
     --lora_rank 128 \
     --lora_alpha 256 \
@@ -65,7 +56,6 @@ torchrun \
     --warmup_ratio 0.03 \
     --weight_decay 0.1  \
     --num_train_epochs 1 \
-    --out_filename "5l_5v"  \
     --checkpointing_steps 1 \
     --logging_steps 10 \
     --eval_steps 7 \
