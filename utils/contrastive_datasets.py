@@ -175,11 +175,8 @@ def msmarco_dataset(
             "query_token_ids": query_encs["input_ids"],
             "pos_token_ids": pos_encs["input_ids"],
             "pos_ids": [int(ids) for ids in examples["pos_ids"]],
-            "neg_token_ids": [],
-            "neg_ids": [],
             "query_len": [len(ids) for ids in query_encs["input_ids"]],
             "pos_len": [len(ids) for ids in pos_encs["input_ids"]],
-            "avg_neg_len": [],
             "total_len": [],
         }
 
