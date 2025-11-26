@@ -250,7 +250,7 @@ def main():
     args.batch_size = WORLD_SIZE * args.per_device_train_batch_size
 
     # load embeddinggemma tokenizer. The following should be alredy implemented as defaults
-    tokenizer = GemmaTokenizerFast(
+    tokenizer = GemmaTokenizerFast.from_pretrained(
         args.model_name_or_path,
         add_bos_token=True,
         add_eos_token=True,
@@ -259,11 +259,13 @@ def main():
 
     if RANK == 0:
         print("loading msmarco")
+        start = time.time()
     hf_corpus = load_dataset("mteb/msmarco", name="corpus")
     hf_queries = load_dataset("mteb/msmarco", name="queries")
     hf_qrels = load_dataset("mteb/msmarco", name="default", split="train")
 
     if RANK == 0:
+        print(f"msmarco loaded in {time.time()-start}")
         print("matching query and positives")
         start = time.time()
     train_queries, train_docs = prepare_msmarco(hf_queries, hf_corpus, hf_qrels)
@@ -285,7 +287,8 @@ def main():
         document_task="Retrieval-document",
         batch_size=1000,
     )
-
+    
+    dist.barrier()
     if RANK == 0:
         print(f"msmarco tokenized in {time.time()-start}")
         start = time.time()
@@ -307,7 +310,7 @@ def main():
         collate_fn=lambda batch: collate_fn_with_padding(
             batch, pad_token_id=tokenizer.pad_token_id
         ),
-        num_workers=8,
+        num_workers=args.num_workers,
         pin_memory=True,
     )
 
@@ -320,12 +323,15 @@ def main():
         print("model setup")
 
     model_config = AutoConfig.from_pretrained(args.model_name_or_path)
-
+    
+    dist.barrier()
     trainer = Trainer(
         train_dataloader=train_loader,
         model_config=model_config,
         args=args,
     )
+    
+    dist.barrier()
     trainer.train(
         args=args,
         train_dataloader=train_loader,

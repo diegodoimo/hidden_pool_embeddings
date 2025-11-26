@@ -6,18 +6,17 @@ from transformers.models.gemma3.modeling_gemma3 import (
     Gemma3RMSNorm,
     Gemma3RotaryEmbedding,
     Gemma3DecoderLayer,
-    auto_docstring,
     _bidirectional_window_overlay,
 )
 from typing import Optional
 
 # from ...cache_utils import Cache, DynamicCache
 from transformers.cache_utils import Cache, DynamicCache
-from transformers.utils import TransformersKwargs, auto_docstring, logging
+from transformers.utils import TransformersKwargs, logging
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
 from transformers.processing_utils import Unpack
-from transformers.utils.generic import check_model_inputs
+# from transformers.utils.generic import check_model_inputs
 
 logger = logging.get_logger(__name__)
 
@@ -57,7 +56,7 @@ def mean_pool(hidden_states, attention_mask):
     return masked_sum / mask_sum
 
 
-@auto_docstring
+#@auto_docstring
 class Gemma3TextModel(Gemma3PreTrainedModel):
     config: Gemma3TextConfig
     input_modalities = "text"
@@ -84,8 +83,8 @@ class Gemma3TextModel(Gemma3PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs()
-    @auto_docstring
+    #@check_model_inputs()
+    #@auto_docstring
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,

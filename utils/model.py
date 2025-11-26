@@ -1,24 +1,25 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional
-from transformers import AutoConfig
-from peft import TaskType
-import torch.nn.functional as F
-from torch import Tensor
+from collections import defaultdict
+import numpy as np
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch import Tensor
+
+from typing import Optional
+from transformers import AutoConfig
+from peft import TaskType
+
+
 from transformers import (
     Gemma3Config,
     Gemma3Model,  # Decoder
 )
 
 # modified version with mean pool
-from gemma3textmodel import Gemma3TextModel
+from utils.gemma3textmodel import Gemma3TextModel
 
-from collections import defaultdict
-import numpy as np
+
 
 
 def get_model(args, model_config):

@@ -45,7 +45,7 @@ torchrun \
     --lora_rank 128 \
     --lora_alpha 256 \
     --lora_dropout 0.1 \
-    --preprocessing_num_workers 16 \
+    --num_workers 16 \
     --per_device_train_batch_size 256 \
     --per_device_eval_batch_size 256 \
     --learning_rate 2e-5 \
