@@ -223,8 +223,7 @@ def convert_gemma_decoder_to_encoder(
 
     if verbose:
         print(f"Loading pretrained decoder model")
-    print(model_name_or_path)
-    print(config)
+
     # 1. Load the pretrained decoder
     decoder = Gemma3TextModel.from_pretrained(
         model_name_or_path,
@@ -237,11 +236,8 @@ def convert_gemma_decoder_to_encoder(
     #text_cfg = full_cfg.text_config
     cfg.use_bidirectional_attention = True
 
-    # cfg: Gemma3Config = decoder.config
-    # cfg.text_config.use_bidirectional_attention = True
-
     # (Optional) Reduce max context length for efficiency
-    # cfg.text_config.max_position_embeddings = 1024
+    cfg.max_position_embeddings = 8196
 
     if verbose:
         print("Creating encoder with bidirectional attention...")
