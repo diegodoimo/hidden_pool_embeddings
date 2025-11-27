@@ -1,44 +1,12 @@
 import copy
-from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Optional, Union
-
 import torch
 import torch.nn as nn
+from transformers.cache_utils import Cache, DynamicCache
+from transformers.modeling_outputs import BaseModelOutputWithPast
+from transformers.processing_utils import Unpack
+from transformers.utils import TransformersKwargs, logging
+from transformers.models.gemma3.configuration_gemma3 import Gemma3TextConfig
 
-from ...activations import ACT2FN
-from ...cache_utils import Cache, DynamicCache
-from ...configuration_utils import PretrainedConfig
-from ...generation import GenerationMixin
-from ...masking_utils import create_causal_mask, create_masks_for_generate, create_sliding_window_causal_mask
-from ...modeling_flash_attention_utils import FlashAttentionKwargs
-from ...modeling_layers import GenericForSequenceClassification, GradientCheckpointingLayer
-from ...modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast, SequenceClassifierOutputWithPast
-from ...modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
-from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
-from ...processing_utils import Unpack
-from ...utils import ModelOutput, TransformersKwargs, auto_docstring, can_return_tuple, logging
-from ...utils.deprecation import deprecate_kwarg
-from ...utils.generic import check_model_inputs
-from ..auto import AutoModel
-from .configuration_gemma3 import Gemma3Config, Gemma3TextConfig
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-import copy
-import torch
-from torch import nn
 from transformers import Gemma3PreTrainedModel, Gemma3TextConfig
 from transformers.models.gemma3.modeling_gemma3 import (
     Gemma3TextScaledWordEmbedding,
@@ -49,13 +17,9 @@ from transformers.models.gemma3.modeling_gemma3 import (
 )
 from typing import Optional
 
-# from ...cache_utils import Cache, DynamicCache
-from transformers.cache_utils import Cache, DynamicCache
-from transformers.utils import TransformersKwargs, logging
-from transformers.modeling_outputs import BaseModelOutputWithPast
+
 from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
-from transformers.processing_utils import Unpack
-# from transformers.utils.generic import check_model_inputs
+
 
 logger = logging.get_logger(__name__)
 ################
@@ -247,8 +211,7 @@ def mean_pool(hidden_states, attention_mask):
 #         )
 
 
-
-#@auto_docstring
+# @auto_docstring
 class Gemma3TextModel(Gemma3PreTrainedModel):
     config: Gemma3TextConfig
 
@@ -259,7 +222,10 @@ class Gemma3TextModel(Gemma3PreTrainedModel):
 
         # Gemma3 downcasts the below to bfloat16, causing sqrt(3072)=55.4256 to become 55.5. See https://github.com/huggingface/transformers/pull/29402
         self.embed_tokens = Gemma3TextScaledWordEmbedding(
-            config.vocab_size, config.hidden_size, self.padding_idx, embed_scale=self.config.hidden_size**0.5
+            config.vocab_size,
+            config.hidden_size,
+            self.padding_idx,
+            embed_scale=self.config.hidden_size**0.5,
         )
         self.layers = nn.ModuleList(
             [Gemma3DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
@@ -278,8 +244,8 @@ class Gemma3TextModel(Gemma3PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    #@check_model_inputs()
-    #@auto_docstring
+    # @check_model_inputs()
+    # @auto_docstring
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
@@ -293,9 +259,13 @@ class Gemma3TextModel(Gemma3PreTrainedModel):
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPast:
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_attentions = (
+            output_attentions if output_attentions is not None else self.config.output_attentions
+        )
         output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
         )
         use_cache = use_cache if use_cache is not None else self.config.use_cache
 
@@ -315,7 +285,9 @@ class Gemma3TextModel(Gemma3PreTrainedModel):
             past_key_values = DynamicCache(config=self.config)
 
         if cache_position is None:
-            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            past_seen_tokens = (
+                past_key_values.get_seq_length() if past_key_values is not None else 0
+            )
             cache_position = torch.arange(
                 past_seen_tokens,
                 past_seen_tokens + inputs_embeds.shape[1],
@@ -340,7 +312,9 @@ class Gemma3TextModel(Gemma3PreTrainedModel):
 
             if self.config.use_bidirectional_attention:
                 mask_kwargs["or_mask_function"] = lambda *args: torch.tensor(True, dtype=torch.bool)
-                sliding_mask_kwargs["or_mask_function"] = _bidirectional_window_overlay(self.config.sliding_window)
+                sliding_mask_kwargs["or_mask_function"] = _bidirectional_window_overlay(
+                    self.config.sliding_window
+                )
 
             # Create the masks
             causal_mask_mapping = {
@@ -361,7 +335,7 @@ class Gemma3TextModel(Gemma3PreTrainedModel):
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
             if output_hidden_states:
-                all_hidden_states += (mean_pool(hidden_states,attention_mask),)
+                all_hidden_states += (mean_pool(hidden_states, attention_mask),)
 
             layer_outputs = decoder_layer(
                 hidden_states,
@@ -381,15 +355,13 @@ class Gemma3TextModel(Gemma3PreTrainedModel):
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
-
         if output_hidden_states:
-            all_hidden_states += (mean_pool(hidden_states,attention_mask),)
+            all_hidden_states += (mean_pool(hidden_states, attention_mask),)
 
         hidden_states = self.norm(hidden_states)
 
         # if output_hidden_states:
         #     all_hidden_states += (hidden_states,)
-
 
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
@@ -397,6 +369,3 @@ class Gemma3TextModel(Gemma3PreTrainedModel):
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
         )
-
-
-   
