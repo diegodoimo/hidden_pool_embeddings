@@ -29,6 +29,7 @@ from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLoss
 import mteb
 from typing import Callable
 
+
 class Trainer:
     def __init__(
         self,
@@ -93,7 +94,7 @@ class Trainer:
     def train(
         self,
         args,
-        tokenizer, 
+        tokenizer,
     ):
         text = "The quick brown fox jumps over the lazy dog"
         repeat_count = 2000  # This gives about 2400+ characters
@@ -110,24 +111,25 @@ class Trainer:
             max_length=args.max_seq_len,
         )
         # Add labels for autoregressive training (shifted prediction)
-        #inputs["labels"] = inputs["input_ids"].clone()
+        # inputs["labels"] = inputs["input_ids"].clone()
 
         # Move inputs to GPU
-        #batch = {k: v.to(self.model.device) for k, v in inputs.items()}
+        # batch = {k: v.to(self.model.device) for k, v in inputs.items()}
 
-        print("input_ids shape", inputs["input_ids"].shape)  # Should be (batch_size, sequence_length)
+        print(
+            "input_ids shape", inputs["input_ids"].shape
+        )  # Should be (batch_size, sequence_length)
         toks_batch = torch.numel(inputs["input_ids"])
         print("toks batch", toks_batch)
 
-        #warmup
-        for _ in range(args.gradient_accumulation_steps*5):
+        # warmup
+        for _ in range(args.gradient_accumulation_steps * 5):
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 batch = {k: v.to(self.model.device) for k, v in inputs.items()}
 
                 print(batch)
                 outputs = self.model(**batch)
-                loss = (emb ** 2).mean()
-
+                loss = (emb**2).mean()
 
             loss.backward()
             total_loss += loss.detach().float()
@@ -136,8 +138,6 @@ class Trainer:
             self.lr_scheduler.step()
             self.optimizer.zero_grad()
 
-
-
         local_total_tokens = 0
         start = time.time()
         for i in range(200):
@@ -145,8 +145,7 @@ class Trainer:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 batch = {k: v.to(self.model.device) for k, v in inputs.items()}
                 outputs = self.model(**batch)
-                loss = (emb ** 2).mean()
-
+                loss = (emb**2).mean()
 
             loss.backward()
             total_loss += loss.detach().float()
@@ -169,9 +168,6 @@ class Trainer:
             print(f"processed {throughput: .2f} token/sec/gpu")
 
         assert False, "benchmarking finished"
-
-
-
 
         filename = ""
         if args.out_filename != "":
@@ -345,14 +341,13 @@ def main():
         print("model setup")
 
     model_config = AutoConfig.from_pretrained(args.model_name_or_path)
-    
+
     dist.barrier()
     trainer = Trainer(
         len_dataloader=1000,
         model_config=model_config,
         args=args,
     )
-    
 
     dist.barrier()
     trainer.train(args, tokenizer)
@@ -362,9 +357,7 @@ def main():
     #     loss_fn=loss_fn,
     # )
 
-
     assert False
-
 
     if RANK == 0:
         print("loading msmarco")
@@ -397,7 +390,7 @@ def main():
         batch_size=1000,
         rank=RANK,
     )
-    
+
     dist.barrier()
     if RANK == 0:
         print(f"msmarco tokenized in {time.time()-start}")
@@ -433,14 +426,14 @@ def main():
         print("model setup")
 
     # model_config = AutoConfig.from_pretrained(args.model_name_or_path)
-    
+
     # dist.barrier()
     # trainer = Trainer(
     #     len_dataloader=len(train_loader),
     #     model_config=model_config,
     #     args=args,
     # )
-    
+
     dist.barrier()
     trainer.train(
         args=args,

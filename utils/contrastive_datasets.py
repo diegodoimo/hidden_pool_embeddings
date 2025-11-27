@@ -117,7 +117,7 @@ def msmarco_dataset(
     # Get prompts
     query_prompt = TASK_PROMPTS[query_task]
     doc_prompt = TASK_PROMPTS[document_task]
-    if rank is None or rank ==0:
+    if rank is None or rank == 0:
         print(f"Query prompt: '{query_prompt}'")
         print(f"Document prompt: '{doc_prompt}'")
 
@@ -226,7 +226,8 @@ def msmarco_dataset(
                 result["total_len"].append(result["query_len"][i] + result["pos_len"][i])
 
         return result
-    if rank is None or rank ==0:
+
+    if rank is None or rank == 0:
         print(f"Tokenizing {len(combined)} examples with batch_size={batch_size}...")
     # Apply batched tokenization
     tokenized_dataset = combined.map(
@@ -238,7 +239,7 @@ def msmarco_dataset(
     if sort_by_length:
         tokenized_dataset = tokenized_dataset.sort("total_len")
 
-    if rank is None or rank ==0:
+    if rank is None or rank == 0:
         print(f"{tot_tokens/10**6: .1f}M tokens")
 
     return tokenized_dataset

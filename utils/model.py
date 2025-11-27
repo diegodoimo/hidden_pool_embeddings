@@ -20,8 +20,6 @@ from transformers import (
 from utils.gemma3textmodel import Gemma3TextModel
 
 
-
-
 def get_model(args, model_config):
 
     config = model_config
@@ -215,7 +213,7 @@ def convert_gemma_decoder_to_encoder(
     dtype,
     attn_implementation,
     verbose=True,
-    ):
+):
     """
     Converts a Gemma-3 pretrained causal decoder into
     a bidirectional encoder suitable for embedding training.
@@ -234,7 +232,7 @@ def convert_gemma_decoder_to_encoder(
     )
     cfg = decoder.config
     # 2. Modify config to enable bidirectional attention
-    #text_cfg = full_cfg.text_config
+    # text_cfg = full_cfg.text_config
     cfg.use_bidirectional_attention = True
 
     # cfg: Gemma3Config = decoder.config
@@ -301,7 +299,7 @@ class EmbeddingGemma(nn.Module):
         output_attentions=None,
         output_hidden_states=None,
         cache_position=None,
-        **kwargs
+        **kwargs,
     ):
         # Forward to encoder with the actual arguments, not literal `None`
         outputs = self.encoder(
@@ -313,11 +311,10 @@ class EmbeddingGemma(nn.Module):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             cache_position=cache_position,
-            **kwargs
+            **kwargs,
         )
 
         hidden = outputs.last_hidden_state  # (B, L, H)
-
 
         # Masked mean pooling
         hidden = self.pooling(hidden, attention_mask)
@@ -356,7 +353,7 @@ class EmbeddingGemmaHiddenPool(nn.Module):
         output_attentions=None,
         output_hidden_states=None,
         cache_position=None,
-        **kwargs
+        **kwargs,
     ):
         # Forward to encoder with the actual arguments, not literal `None`
         outputs = self.encoder(
@@ -368,7 +365,7 @@ class EmbeddingGemmaHiddenPool(nn.Module):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             cache_position=cache_position,
-            **kwargs
+            **kwargs,
         )
 
         # outputs.hidden_states should be a list of tensors with shapes [B x 1 x D]
