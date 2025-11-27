@@ -102,6 +102,8 @@ class Trainer:
 
         text_batches = [text for i in range(args.per_device_train_batch_size)]
 
+
+        args.max_seq_len = 4096
         # Tokenize as a batch of sequences
         inputs = tokenizer(
             text_batches,
@@ -110,6 +112,7 @@ class Trainer:
             truncation=True,
             max_length=args.max_seq_len,
         )
+        
         # Add labels for autoregressive training (shifted prediction)
         # inputs["labels"] = inputs["input_ids"].clone()
 
@@ -127,7 +130,7 @@ class Trainer:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 batch = {k: v.to(self.model.device) for k, v in inputs.items()}
 
-                print(batch)
+                #print(batch)
                 outputs = self.model(**batch)
                 loss = (emb**2).mean()
 
