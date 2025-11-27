@@ -35,8 +35,9 @@ def get_model(args, model_config):
         # https://github.com/huggingface/transformers/issues/28499
 
     encoder = convert_gemma_decoder_to_encoder(
+        model_name_or_path=args.model_name_or_path,
         config=config,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         attn_implementation="flash_attention_2" if args.use_flash_attn else "eager",
         verbose=True,
     )
@@ -168,6 +169,8 @@ class Normalize(nn.Module):
 class Projection(nn.Module):
 
     def __init__(self, input_dim, hidden_dim):
+        super().__init__()
+
         self.up = nn.Linear(in_features=input_dim, out_features=hidden_dim, bias=False)
         self.down = nn.Linear(in_features=hidden_dim, out_features=input_dim, bias=False)
 
@@ -207,11 +210,12 @@ class MeanPooling(nn.Module):
 
 
 def convert_gemma_decoder_to_encoder(
+    model_name_or_path,
     config,
-    torch_dtype,
+    dtype,
     attn_implementation,
     verbose=True,
-):
+    ):
     """
     Converts a Gemma-3 pretrained causal decoder into
     a bidirectional encoder suitable for embedding training.
@@ -219,17 +223,22 @@ def convert_gemma_decoder_to_encoder(
 
     if verbose:
         print(f"Loading pretrained decoder model")
-
+    print(model_name_or_path)
+    print(config)
     # 1. Load the pretrained decoder
-    decoder = Gemma3Model.from_pretrained(
+    decoder = Gemma3TextModel.from_pretrained(
+        model_name_or_path,
         config=config,
-        torch_dtype=torch_dtype,
+        dtype=dtype,
         attn_implementation=attn_implementation,
     )
-
+    cfg = decoder.config
     # 2. Modify config to enable bidirectional attention
-    cfg: Gemma3Config = decoder.config
-    cfg.text_config.use_bidirectional_attention = True
+    #text_cfg = full_cfg.text_config
+    cfg.use_bidirectional_attention = True
+
+    # cfg: Gemma3Config = decoder.config
+    # cfg.text_config.use_bidirectional_attention = True
 
     # (Optional) Reduce max context length for efficiency
     # cfg.text_config.max_position_embeddings = 1024
@@ -238,14 +247,13 @@ def convert_gemma_decoder_to_encoder(
         print("Creating encoder with bidirectional attention...")
 
     # 3. Create an encoder model with the same architecture
-    encoder = Gemma3TextModel(
-        cfg,
-        torch_dtype=torch_dtype,
-        attn_implementation=attn_implementation,
-    )
+
+    # by default the cfg.dtype is bfloat16
+    encoder = Gemma3TextModel(cfg)
 
     # 4. Load compatible weights from decoder → encoder
     decoder_state = decoder.state_dict()
+    # decoder_state = decoder.text_model.state_dict()    # IMPORTANT!
     encoder_state = encoder.state_dict()
 
     # Auto-filter incompatible keys: remove lm_head, etc.
@@ -278,14 +286,38 @@ class EmbeddingGemma(nn.Module):
         super().__init__()
 
         self.encoder = encoder
-        h = self.encoder.config.text_config.hidden_size
+        h = self.encoder.config.hidden_size
         self.pooling = MeanPooling()
         self.projection = Projection(input_dim=h, hidden_dim=4 * h)
         self.normalize = Normalize()
 
-    def forward(self, input_ids, attention_mask=None):
-        outputs = self.encoder(input_ids, attention_mask=attention_mask)
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        inputs_embeds=None,
+        use_cache=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        cache_position=None,
+        **kwargs
+    ):
+        # Forward to encoder with the actual arguments, not literal `None`
+        outputs = self.encoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            cache_position=cache_position,
+            **kwargs
+        )
+
         hidden = outputs.last_hidden_state  # (B, L, H)
+
 
         # Masked mean pooling
         hidden = self.pooling(hidden, attention_mask)
@@ -309,17 +341,34 @@ class EmbeddingGemmaHiddenPool(nn.Module):
         super().__init__()
 
         self.encoder = encoder
-        h = self.encoder.config.text_config.hidden_size
+        h = self.encoder.config.hidden_size
         self.pooling = GatedAttention(d_model=h, d_attn=attention_dim)
         self.projection = Projection(input_dim=h, hidden_dim=4 * h)
         self.normalize = Normalize()
 
-    def forward(self, input_ids, attention_mask):
-
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        inputs_embeds=None,
+        use_cache=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        cache_position=None,
+        **kwargs
+    ):
+        # Forward to encoder with the actual arguments, not literal `None`
         outputs = self.encoder(
-            input_ids,
+            input_ids=input_ids,
             attention_mask=attention_mask,
-            output_hidden_states=True,
+            position_ids=position_ids,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            cache_position=cache_position,
+            **kwargs
         )
 
         # outputs.hidden_states should be a list of tensors with shapes [B x 1 x D]

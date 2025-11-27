@@ -27,14 +27,14 @@ from utils.contrastive_datasets import (
 )
 from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLoss
 import mteb
-
+from typing import Callable
 
 class Trainer:
     def __init__(
         self,
         args,
         model_config,
-        train_dataloader,
+        len_dataloader,
     ):
 
         self.rank = dist.get_rank()
@@ -81,15 +81,97 @@ class Trainer:
         self.optimizer, self.scheduler = get_scheduler_optimizer(
             self.model,
             args,
-            len(train_dataloader),
+            len_dataloader,
         )
 
+    # def train(
+    #     self,
+    #     args: ArgumentParser,
+    #     train_loader: DataLoader,
+    #     loss_fn: Callable,
+    # ):
     def train(
         self,
-        args: ArgumentParser,
-        train_loader: DataLoader,
-        loss_fn: callable,
+        args,
+        tokenizer, 
     ):
+        text = "The quick brown fox jumps over the lazy dog"
+        repeat_count = 2000  # This gives about 2400+ characters
+        text = (text * repeat_count).strip()
+
+        text_batches = [text for i in range(args.per_device_train_batch_size)]
+
+        # Tokenize as a batch of sequences
+        inputs = tokenizer(
+            text_batches,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=args.max_seq_len,
+        )
+        # Add labels for autoregressive training (shifted prediction)
+        #inputs["labels"] = inputs["input_ids"].clone()
+
+        # Move inputs to GPU
+        #batch = {k: v.to(self.model.device) for k, v in inputs.items()}
+
+        print("input_ids shape", inputs["input_ids"].shape)  # Should be (batch_size, sequence_length)
+        toks_batch = torch.numel(inputs["input_ids"])
+        print("toks batch", toks_batch)
+
+        #warmup
+        for _ in range(args.gradient_accumulation_steps*5):
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                batch = {k: v.to(self.model.device) for k, v in inputs.items()}
+
+                print(batch)
+                outputs = self.model(**batch)
+                loss = (emb ** 2).mean()
+
+
+            loss.backward()
+            total_loss += loss.detach().float()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.clip_grad_thresh)
+            self.optimizer.step()
+            self.lr_scheduler.step()
+            self.optimizer.zero_grad()
+
+
+
+        local_total_tokens = 0
+        start = time.time()
+        for i in range(200):
+
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                batch = {k: v.to(self.model.device) for k, v in inputs.items()}
+                outputs = self.model(**batch)
+                loss = (emb ** 2).mean()
+
+
+            loss.backward()
+            total_loss += loss.detach().float()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.clip_grad_thresh)
+            self.optimizer.step()
+            self.lr_scheduler.step()
+            self.optimizer.zero_grad()
+
+        total_time = time.time() - start
+
+        if WORLD_SIZE > 1:
+            num_tokens = torch.tensor([local_total_tokens]).to("cuda")
+            dist.all_reduce(num_tokens)
+            num_tokens = num_tokens.item()
+        else:
+            num_tokens = local_total_tokens
+
+        if RANK == 0:
+            throughput = num_tokens / total_time / WORLD_SIZE
+            print(f"processed {throughput: .2f} token/sec/gpu")
+
+        assert False, "benchmarking finished"
+
+
+
 
         filename = ""
         if args.out_filename != "":
@@ -249,6 +331,7 @@ def main():
     torch.cuda.set_device(dist.get_rank())
 
     args.batch_size = WORLD_SIZE * args.per_device_train_batch_size
+    args.gradient_accumulation_steps = 1
 
     # load embeddinggemma tokenizer. The following should be alredy implemented as defaults
     tokenizer = GemmaTokenizerFast.from_pretrained(
@@ -257,6 +340,31 @@ def main():
         add_eos_token=True,
         padding_side="left",
     )
+
+    if RANK == 0:
+        print("model setup")
+
+    model_config = AutoConfig.from_pretrained(args.model_name_or_path)
+    
+    dist.barrier()
+    trainer = Trainer(
+        len_dataloader=1000,
+        model_config=model_config,
+        args=args,
+    )
+    
+
+    dist.barrier()
+    trainer.train(args, tokenizer)
+    #     args=args,
+    #     train_dataloader=train_loader,
+    #     tokenizer=tokenizer,
+    #     loss_fn=loss_fn,
+    # )
+
+
+    assert False
+
 
     if RANK == 0:
         print("loading msmarco")
@@ -287,6 +395,7 @@ def main():
         query_task="query",
         document_task="document",
         batch_size=1000,
+        rank=RANK,
     )
     
     dist.barrier()
@@ -323,14 +432,14 @@ def main():
     if RANK == 0:
         print("model setup")
 
-    model_config = AutoConfig.from_pretrained(args.model_name_or_path)
+    # model_config = AutoConfig.from_pretrained(args.model_name_or_path)
     
-    dist.barrier()
-    trainer = Trainer(
-        train_dataloader=train_loader,
-        model_config=model_config,
-        args=args,
-    )
+    # dist.barrier()
+    # trainer = Trainer(
+    #     len_dataloader=len(train_loader),
+    #     model_config=model_config,
+    #     args=args,
+    # )
     
     dist.barrier()
     trainer.train(

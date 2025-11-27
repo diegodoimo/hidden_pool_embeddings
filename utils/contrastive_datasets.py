@@ -88,6 +88,7 @@ def msmarco_dataset(
     query_task: str = "Retrieval-query",
     document_task: str = "Retrieval-document",
     batch_size: int = 1000,
+    rank=None,
 ) -> Dataset:
     """
     Prepares MS MARCO dataset with batched processing for efficiency.
@@ -116,9 +117,9 @@ def msmarco_dataset(
     # Get prompts
     query_prompt = TASK_PROMPTS[query_task]
     doc_prompt = TASK_PROMPTS[document_task]
-
-    print(f"Query prompt: '{query_prompt}'")
-    print(f"Document prompt: '{doc_prompt}'")
+    if rank is None or rank ==0:
+        print(f"Query prompt: '{query_prompt}'")
+        print(f"Document prompt: '{doc_prompt}'")
 
     # Combine datasets
     if neg_passages_dataset is not None:
@@ -225,21 +226,20 @@ def msmarco_dataset(
                 result["total_len"].append(result["query_len"][i] + result["pos_len"][i])
 
         return result
-
-    print(f"Tokenizing {len(combined)} examples with batch_size={batch_size}...")
+    if rank is None or rank ==0:
+        print(f"Tokenizing {len(combined)} examples with batch_size={batch_size}...")
     # Apply batched tokenization
     tokenized_dataset = combined.map(
         tokenize_batch, batched=True, batch_size=batch_size, remove_columns=combined.column_names
     )
 
-    tot_tokens = tokenized_dataset["total_len"].sum()
-    print(tot_tokens)
-
+    tot_tokens = np.sum(tokenized_dataset["total_len"])
     # Sort by length if requested
     if sort_by_length:
-        print("Sorting by total length...")
         tokenized_dataset = tokenized_dataset.sort("total_len")
-        print("Sorting complete!")
+
+    if rank is None or rank ==0:
+        print(f"{tot_tokens/10**6: .1f}M tokens")
 
     return tokenized_dataset
 
