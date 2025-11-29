@@ -365,3 +365,32 @@ def collate_fn_with_padding(batch, pad_token_id=0):
         "neg_attention_mask": neg_attention_masks,
         "neg_ids": neg_ids,
     }
+
+
+def collate_fn_with_padding_joint(batch, pad_token_id=0):
+    """
+    Collate function that pads sequences and creates attention masks.
+
+    Args:
+        batch: List of examples from dataset
+        pad_token_id: Token ID used for padding (usually 0)
+
+    Returns:
+        Dict with padded input_ids and attention_masks
+    """
+
+    inputs_token_ids = [torch.tensor(item["query_token_ids"]) for item in batch]
+    inputs_token_ids.extend([torch.tensor(item["pos_token_ids"]) for item in batch])
+    pos_ids = torch.cat([torch.tensor(item["pos_ids"]) for item in batch])
+
+    # Pad inputs and create attention masks
+    inputs_token_ids_padded = pad_sequence(
+        inputs_token_ids, batch_first=True, padding_value=pad_token_id
+    )
+    inputs_attention_mask = (inputs_token_ids_padded != pad_token_id).long()
+
+    return {
+        "query_token_ids": inputs_token_ids,
+        "query_attention_mask": inputs_attention_mask,
+        "pos_ids": pos_ids,
+    }

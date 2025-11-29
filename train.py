@@ -23,6 +23,7 @@ from utils.contrastive_datasets import (
     msmarco_dataset,
     prepare_msmarco,
     collate_fn_with_padding,
+    collate_fn_with_padding_joint,
     LengthBalancedDistributedSampler,
 )
 from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLoss
@@ -30,14 +31,9 @@ import mteb
 from typing import Callable
 from utils.model import ContrastiveLossEmbedding
 
+
 class Trainer:
-    def __init__(
-        self,
-        args,
-        model_config,
-        len_dataloader,
-        loss_fn
-    ):
+    def __init__(self, args, model_config, len_dataloader, loss_fn):
 
         self.rank = dist.get_rank()
         self.local_rank = int(os.environ.get("LOCAL_RANK", 0))
@@ -56,7 +52,7 @@ class Trainer:
         if args.activation_checkpointing:
             # Disable cache first
             self.model.encoder.config.use_cache = False
-            
+
             # Enable PyTorch gradient checkpointing
             self.model.encoder.gradient_checkpointing_enable(
                 gradient_checkpointing_kwargs={"use_reentrant": False}
@@ -76,15 +72,15 @@ class Trainer:
 
         print_memory_consumed(message="memory consumed before loading model")
 
-        #self.model = ContrastiveLossEmbedding(model = self.model, loss_fn=loss_fn)
+        # self.model = ContrastiveLossEmbedding(model = self.model, loss_fn=loss_fn)
 
         # 3. Move your model to the device
         self.model = self.model.to(self.device)
 
         self.model = DDP(self.model, device_ids=[self.local_rank])
         # self.model = torch.compile(self.model)
-        #self.model.compile(mode="reduce-overhead")
-        
+        self.model.compile(mode="reduce-overhead")
+
         # self.model.compile(
         #     mode="default",
         #     dynamic=True,
@@ -97,7 +93,7 @@ class Trainer:
             args,
             len_dataloader,
         )
-        #print(self.model)
+        # print(self.model)
 
     # def train(
     #     self,
@@ -119,31 +115,38 @@ class Trainer:
         text = (text * repeat_count).strip()
 
         loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
-        text_batches = [text for i in range(args.per_device_train_batch_size)]
+        text_batches_d = [text for i in range(args.per_device_train_batch_size)]
 
-        text_batches_q = [text for i in range(args.per_device_train_batch_size)]
-        doc_ids = torch.tensor([int(i + args.per_device_train_batch_size*RANK) for i in range(args.per_device_train_batch_size)], dtype = torch.long, device=self.model.device)
-        
+        text_batches_q = [text for i in range(2 * args.per_device_train_batch_size)]
+        doc_ids = torch.tensor(
+            [
+                int(i + args.per_device_train_batch_size * RANK)
+                for i in range(args.per_device_train_batch_size)
+            ],
+            dtype=torch.long,
+            device=self.model.device,
+        )
+
         args.max_seq_len = 1024
         # Tokenize as a batch of sequences
-        inputs = tokenizer(
-            text_batches,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=args.max_seq_len,
-        )
-        
-        inputs_q =  tokenizer(
+
+        inputs_q = tokenizer(
             text_batches_q,
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=512,
         )
+        inputs_d = tokenizer(
+            text_batches_d,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=args.max_seq_len,
+        )
 
-        print("input_ids shape", inputs["input_ids"].shape) 
-        toks_batch = torch.numel(inputs["input_ids"])
+        print("input_ids shape", inputs_q["input_ids"].shape)
+        toks_batch = torch.numel(inputs_q["input_ids"])
         toks_batch_q = torch.numel(inputs_q["input_ids"])
         print("toks batch", toks_batch)
 
@@ -152,18 +155,19 @@ class Trainer:
         for _ in range(args.gradient_accumulation_steps * 2):
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 batch_q = {k: v.to(self.model.device) for k, v in inputs_q.items()}
-                batch_d = {k: v.to(self.model.device) for k, v in inputs.items()}
-                #print(batch_q, batch_d, doc_ids)
+                # batch_d = {k: v.to(self.model.device) for k, v in inputs.items()}
+                # print(batch_q, batch_d, doc_ids)
 
-                #loss = self.model(batch_q, batch_d, doc_ids)
+                # loss = self.model(batch_q, batch_d, doc_ids)
 
-                #batch = {k: v.to(self.model.device) for k, v in inputs_q.items()}
-                out_q = self.model(**batch_q)
-                
-                #batch = {k: v.to(self.model.device) for k, v in inputs.items()}
-                out_d = self.model(**batch_d)
-                
-                #loss = (outputs_q**2).mean()
+                # batch = {k: v.to(self.model.device) for k, v in inputs_q.items()}
+                out = self.model(**batch_q)
+                out_q = out[: args.args.per_device_train_batch_size]
+                out_d = out[args.args.per_device_train_batch_size :]
+                # batch = {k: v.to(self.model.device) for k, v in inputs.items()}
+                # out_d = self.model(**batch_d)
+
+                # loss = (outputs_q**2).mean()
                 loss = self.loss_fn(
                     query_embeddings=out_q,
                     doc_embeddings=out_d,
@@ -176,27 +180,26 @@ class Trainer:
             self.lr_scheduler.step()
             self.optimizer.zero_grad()
 
-
         local_total_tokens = 0
         dist.barrier()
         start = time.time()
         for i in range(10):
 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            
-                batch_q = {k: v.to(self.model.device) for k, v in inputs_q.items()}
+
+                # batch_q = {k: v.to(self.model.device) for k, v in inputs_q.items()}
                 batch_d = {k: v.to(self.model.device) for k, v in inputs.items()}
-                local_total_tokens += toks_batch_q #+ toks_batch
+                local_total_tokens += toks_batch_q  # + toks_batch
 
-                #loss = self.model(batch_q, batch_d, doc_ids)
+                # loss = self.model(batch_q, batch_d, doc_ids)
 
-                #batch = {k: v.to(self.model.device) for k, v in inputs_q.items()}
+                # batch = {k: v.to(self.model.device) for k, v in inputs_q.items()}
                 out_q = self.model(**batch_q)
-                
-                #batch = {k: v.to(self.model.device) for k, v in inputs.items()}
-                out_d = self.model(**batch_d)
-                
-                #loss = (outputs_q**2).mean()
+
+                # batch = {k: v.to(self.model.device) for k, v in inputs.items()}
+                # out_d = self.model(**batch_d)
+
+                # loss = (outputs_q**2).mean()
                 loss = self.loss_fn(
                     query_embeddings=out_q,
                     doc_embeddings=out_d,
@@ -395,21 +398,14 @@ def main():
     if RANK == 0:
         print("model setup")
 
-
     loss_fn = EmbeddingGemmaLoss(temperature=0.07)
     if WORLD_SIZE > 1 and args.distributed_loss:
         loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
 
-
     model_config = AutoConfig.from_pretrained(args.model_name_or_path)
 
     dist.barrier()
-    trainer = Trainer(
-        len_dataloader=1000,
-        model_config=model_config,
-        args=args,
-        loss_fn = loss_fn
-    )
+    trainer = Trainer(len_dataloader=1000, model_config=model_config, args=args, loss_fn=loss_fn)
 
     dist.barrier()
     trainer.train(args, tokenizer)
@@ -468,13 +464,15 @@ def main():
     )
 
     # 4. Create DataLoader with correct pad_token_id
+    collate_fn = collate_fn_with_padding
+    if args.joint_batch:
+        collate_fn = collate_fn_with_padding_joint
+
     train_loader = DataLoader(
         tokenized_dataset,
         batch_size=args.per_device_train_batch_size,  # Per-GPU batch size
         sampler=sampler,
-        collate_fn=lambda batch: collate_fn_with_padding(
-            batch, pad_token_id=tokenizer.pad_token_id
-        ),
+        collate_fn=lambda batch: collate_fn(batch, pad_token_id=tokenizer.pad_token_id),
         num_workers=args.num_workers,
         pin_memory=True,
     )
