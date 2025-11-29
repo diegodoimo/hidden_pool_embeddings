@@ -29,7 +29,7 @@ head_node=${nodes[0]}
 head_node_ip=$(getent hosts "$head_node" | awk '{ print $1 }')
 GPU_NUMBER=$(echo $CUDA_VISIBLE_DEVICES | tr ',' ' ' | wc -w) 
 
-
+TORCHDYNAMO_VERBOSE=1
 torchrun \
     --nnodes=$SLURM_NTASKS \
     --node-rank=$SLURM_NODEID \
@@ -58,3 +58,4 @@ torchrun \
     --eval_steps 7 \
     --output_dir "./results/rebuttal/final" \
     --measure_baselines \
+    --activation_checkpointing \

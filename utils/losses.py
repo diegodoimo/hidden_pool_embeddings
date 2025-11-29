@@ -78,23 +78,22 @@ class EmbeddingGemmaLossDistributed(nn.Module):
         doc_ids: torch.Tensor,
     ):
         # --- 1. Distributed Gathering ---
-        all_docs = [torch.zeros_like(doc_embeddings) for _ in range(self.world_size)]
-        dist.all_gather(all_docs, doc_embeddings)
+        # thids should support backward
+        all_queries = torch.distributed.nn.functional.all_gather(query_embeddings)
+        all_queries = torch.cat(all_queries, dim=0)
+    
+        all_docs = torch.distributed.nn.functional.all_gather(doc_embeddings)
         all_docs = torch.cat(all_docs, dim=0)
 
-        all_queries = [torch.zeros_like(query_embeddings) for _ in range(self.world_size)]
-        dist.all_gather(all_queries, query_embeddings)
-        all_queries = torch.cat(all_queries, dim=0)
-
-        all_doc_ids = [torch.zeros_like(doc_ids) for _ in range(self.world_size)]
-        dist.all_gather(all_doc_ids, doc_ids)
+        all_doc_ids = torch.distributed.nn.functional.all_gather(doc_ids)
         all_doc_ids = torch.cat(all_doc_ids, dim=0)
 
+        batch_size = all_queries.size(0)
+
         # Spherical loss
-        Ls = self.pairwise_dot_squared(all_queries) + self.pairwise_dot_squared(all_docs)
+        Ls = self.pairwise_dot_squared(all_queries, B = batch_size) + self.pairwise_dot_squared(all_docs, B = batch_size)
 
         # --- 2. Compute Logits ---
-        batch_size = all_queries.shape[0]
         logits = torch.matmul(all_queries, all_docs.T) / self.temperature
         labels = torch.arange(batch_size, device=logits.device)
 

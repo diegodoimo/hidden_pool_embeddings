@@ -28,7 +28,7 @@ from utils.contrastive_datasets import (
 from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLoss
 import mteb
 from typing import Callable
-
+from utils.model import ContrastiveLossEmbedding
 
 class Trainer:
     def __init__(
@@ -36,6 +36,7 @@ class Trainer:
         args,
         model_config,
         len_dataloader,
+        loss_fn
     ):
 
         self.rank = dist.get_rank()
@@ -50,7 +51,16 @@ class Trainer:
         if self.rank == 0:
             os.makedirs(args.output_dir, exist_ok=True)
 
-        self.model, task_type, lora_modules = get_model(args, model_config)
+        self.model, task_type, lora_modules = get_model(args, model_config, loss_fn)
+
+        if args.activation_checkpointing:
+            # Disable cache first
+            self.model.encoder.config.use_cache = False
+            
+            # Enable PyTorch gradient checkpointing
+            self.model.encoder.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
 
         if args.use_lora:
             peft_config = LoraConfig(
@@ -64,26 +74,30 @@ class Trainer:
             self.model = get_peft_model(self.model, peft_config)
             self.model.print_trainable_parameters()
 
-        # Prepare everything with `accelerator` model must be prepared before giving it to the optimizer.
         print_memory_consumed(message="memory consumed before loading model")
+
+        #self.model = ContrastiveLossEmbedding(model = self.model, loss_fn=loss_fn)
 
         # 3. Move your model to the device
         self.model = self.model.to(self.device)
 
-        if args.activation_checkpointing:
-            assert self.model.config.use_cache == False
-            self.model.gradient_checkpointing_enable()
-
         self.model = DDP(self.model, device_ids=[self.local_rank])
         # self.model = torch.compile(self.model)
-        self.model.compile(mode="reduce-overhead")
+        #self.model.compile(mode="reduce-overhead")
+        
+        # self.model.compile(
+        #     mode="default",
+        #     dynamic=True,
+        #     fullgraph=False  # Allow graph breaks
+        # )
         print_memory_consumed(message="memory consumed after loading model")
 
-        self.optimizer, self.scheduler = get_scheduler_optimizer(
+        self.optimizer, self.lr_scheduler = get_scheduler_optimizer(
             self.model,
             args,
             len_dataloader,
         )
+        #print(self.model)
 
     # def train(
     #     self,
@@ -96,14 +110,21 @@ class Trainer:
         args,
         tokenizer,
     ):
+
+        # for name, param in self.model.named_parameters():
+        #     if param.requires_grad and RANK ==0:
+        #         print("requires_grad:", name)
         text = "The quick brown fox jumps over the lazy dog"
         repeat_count = 2000  # This gives about 2400+ characters
         text = (text * repeat_count).strip()
 
+        loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
         text_batches = [text for i in range(args.per_device_train_batch_size)]
 
-
-        args.max_seq_len = 4096
+        text_batches_q = [text for i in range(args.per_device_train_batch_size)]
+        doc_ids = torch.tensor([int(i + args.per_device_train_batch_size*RANK) for i in range(args.per_device_train_batch_size)], dtype = torch.long, device=self.model.device)
+        
+        args.max_seq_len = 1024
         # Tokenize as a batch of sequences
         inputs = tokenizer(
             text_batches,
@@ -113,45 +134,76 @@ class Trainer:
             max_length=args.max_seq_len,
         )
         
-        # Add labels for autoregressive training (shifted prediction)
-        # inputs["labels"] = inputs["input_ids"].clone()
+        inputs_q =  tokenizer(
+            text_batches_q,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512,
+        )
 
-        # Move inputs to GPU
-        # batch = {k: v.to(self.model.device) for k, v in inputs.items()}
-
-        print(
-            "input_ids shape", inputs["input_ids"].shape
-        )  # Should be (batch_size, sequence_length)
+        print("input_ids shape", inputs["input_ids"].shape) 
         toks_batch = torch.numel(inputs["input_ids"])
+        toks_batch_q = torch.numel(inputs_q["input_ids"])
         print("toks batch", toks_batch)
 
+        self.model.train()
         # warmup
-        for _ in range(args.gradient_accumulation_steps * 5):
+        for _ in range(args.gradient_accumulation_steps * 2):
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                batch = {k: v.to(self.model.device) for k, v in inputs.items()}
+                batch_q = {k: v.to(self.model.device) for k, v in inputs_q.items()}
+                batch_d = {k: v.to(self.model.device) for k, v in inputs.items()}
+                #print(batch_q, batch_d, doc_ids)
 
-                #print(batch)
-                outputs = self.model(**batch)
-                loss = (emb**2).mean()
+                #loss = self.model(batch_q, batch_d, doc_ids)
+
+                #batch = {k: v.to(self.model.device) for k, v in inputs_q.items()}
+                out_q = self.model(**batch_q)
+                
+                #batch = {k: v.to(self.model.device) for k, v in inputs.items()}
+                out_d = self.model(**batch_d)
+                
+                #loss = (outputs_q**2).mean()
+                loss = self.loss_fn(
+                    query_embeddings=out_q,
+                    doc_embeddings=out_d,
+                    doc_ids=doc_ids,
+                )
 
             loss.backward()
-            total_loss += loss.detach().float()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.clip_grad_thresh)
             self.optimizer.step()
             self.lr_scheduler.step()
             self.optimizer.zero_grad()
 
+
         local_total_tokens = 0
+        dist.barrier()
         start = time.time()
-        for i in range(200):
+        for i in range(10):
 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                batch = {k: v.to(self.model.device) for k, v in inputs.items()}
-                outputs = self.model(**batch)
-                loss = (emb**2).mean()
+            
+                batch_q = {k: v.to(self.model.device) for k, v in inputs_q.items()}
+                batch_d = {k: v.to(self.model.device) for k, v in inputs.items()}
+                local_total_tokens += toks_batch_q #+ toks_batch
+
+                #loss = self.model(batch_q, batch_d, doc_ids)
+
+                #batch = {k: v.to(self.model.device) for k, v in inputs_q.items()}
+                out_q = self.model(**batch_q)
+                
+                #batch = {k: v.to(self.model.device) for k, v in inputs.items()}
+                out_d = self.model(**batch_d)
+                
+                #loss = (outputs_q**2).mean()
+                loss = self.loss_fn(
+                    query_embeddings=out_q,
+                    doc_embeddings=out_d,
+                    doc_ids=doc_ids,
+                )
 
             loss.backward()
-            total_loss += loss.detach().float()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.clip_grad_thresh)
             self.optimizer.step()
             self.lr_scheduler.step()
@@ -168,7 +220,7 @@ class Trainer:
 
         if RANK == 0:
             throughput = num_tokens / total_time / WORLD_SIZE
-            print(f"processed {throughput: .2f} token/sec/gpu")
+            print(f"processed {throughput/10**6: .2f} million token/sec/gpu")
 
         assert False, "benchmarking finished"
 
@@ -343,6 +395,12 @@ def main():
     if RANK == 0:
         print("model setup")
 
+
+    loss_fn = EmbeddingGemmaLoss(temperature=0.07)
+    if WORLD_SIZE > 1 and args.distributed_loss:
+        loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
+
+
     model_config = AutoConfig.from_pretrained(args.model_name_or_path)
 
     dist.barrier()
@@ -350,6 +408,7 @@ def main():
         len_dataloader=1000,
         model_config=model_config,
         args=args,
+        loss_fn = loss_fn
     )
 
     dist.barrier()

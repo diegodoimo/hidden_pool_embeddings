@@ -20,7 +20,7 @@ from transformers import (
 from utils.gemma3textmodel import Gemma3TextModel
 
 
-def get_model(args, model_config):
+def get_model(args, model_config, loss_fn):
 
     config = model_config
     if model_config is None:
@@ -48,10 +48,10 @@ def get_model(args, model_config):
     else:
         model = EmbeddingGemma(encoder)
 
-    if args.freeze_encoder:
-        """Freeze the pretrained Gemma encoder (useful for initial training)"""
-        for param in model.encoder.parameters():
-            param.requires_grad = False
+    # if args.freeze_encoder:
+    #     """Freeze the pretrained Gemma encoder (useful for initial training)"""
+    #     for param in model.encoder.parameters():
+    #         param.requires_grad = False
 
         # """Unfreeze the pretrained Gemma encoder (for fine-tuning)"""
         # for param in model.encoder.parameters():
@@ -235,7 +235,7 @@ def convert_gemma_decoder_to_encoder(
     cfg.use_bidirectional_attention = True
 
     # (Optional) Reduce max context length for efficiency
-    cfg.max_position_embeddings = 8196
+    cfg.max_position_embeddings = 4096
 
     if verbose:
         print("Creating encoder with bidirectional attention...")
@@ -371,3 +371,25 @@ class EmbeddingGemmaHiddenPool(nn.Module):
         hidden = self.normalize(hidden)
 
         return hidden
+
+
+class ContrastiveLossEmbedding(nn.Module):
+    def __init__(self, model, loss_fn=None):
+        super().__init__()
+        self.embedder = model
+        self.loss_fn = loss_fn 
+
+    def forward(self, queries, documents, doc_ids):
+
+        out_q = self.embedder(**queries)
+
+        out_d   = self.embedder(**documents)
+        
+        #loss = (out_q**2 + out_d**2).mean()
+        loss = self.loss_fn(
+                query_embeddings=out_q,
+                doc_embeddings=out_d,
+                doc_ids=doc_ids,
+            )
+
+        return loss
