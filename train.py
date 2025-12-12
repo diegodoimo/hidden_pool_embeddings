@@ -78,8 +78,8 @@ class Trainer:
         self.model = self.model.to(self.device)
 
         self.model = DDP(self.model, device_ids=[self.local_rank])
-        # self.model = torch.compile(self.model)
-        self.model.compile(mode="reduce-overhead")
+        #self.model = torch.compile(self.model)
+        # self.model.compile(mode="reduce-overhead")
 
         # self.model.compile(
         #     mode="default",
@@ -117,7 +117,7 @@ class Trainer:
         loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
         text_batches_d = [text for i in range(args.per_device_train_batch_size)]
 
-        text_batches_q = [text for i in range(2 * args.per_device_train_batch_size)]
+        text_batches_q = [text for i in range(args.per_device_train_batch_size)]
         doc_ids = torch.tensor(
             [
                 int(i + args.per_device_train_batch_size * RANK)
@@ -135,7 +135,7 @@ class Trainer:
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=512,
+            max_length=32,
         )
         inputs_d = tokenizer(
             text_batches_d,
@@ -146,33 +146,42 @@ class Trainer:
         )
 
         print("input_ids shape", inputs_q["input_ids"].shape)
-        toks_batch = torch.numel(inputs_q["input_ids"])
         toks_batch_q = torch.numel(inputs_q["input_ids"])
-        print("toks batch", toks_batch)
+        toks_batch_d = torch.numel(inputs_d["input_ids"])
+        print("toks batch q", toks_batch_q)
+        print("toks batch d", toks_batch_d)
 
         self.model.train()
         # warmup
         for _ in range(args.gradient_accumulation_steps * 2):
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                # batch_q = {k: v.to(self.model.device) for k, v in inputs_q.items()}
+                # out = self.model(**batch_q)
+                # out_q = out[: args.per_device_train_batch_size]
+                # out_d = out[args.per_device_train_batch_size :]
+
                 batch_q = {k: v.to(self.model.device) for k, v in inputs_q.items()}
+                out_q = self.model(**batch_q)
+
+                batch_d = {k: v.to(self.model.device) for k, v in inputs_d.items()}
+                out_d = self.model(**batch_d)
+
                 # batch_d = {k: v.to(self.model.device) for k, v in inputs.items()}
                 # print(batch_q, batch_d, doc_ids)
 
                 # loss = self.model(batch_q, batch_d, doc_ids)
 
                 # batch = {k: v.to(self.model.device) for k, v in inputs_q.items()}
-                out = self.model(**batch_q)
-                out_q = out[: args.args.per_device_train_batch_size]
-                out_d = out[args.args.per_device_train_batch_size :]
+
                 # batch = {k: v.to(self.model.device) for k, v in inputs.items()}
                 # out_d = self.model(**batch_d)
 
-                # loss = (outputs_q**2).mean()
-                loss = self.loss_fn(
-                    query_embeddings=out_q,
-                    doc_embeddings=out_d,
-                    doc_ids=doc_ids,
-                )
+                loss = (out_q**2 + out_d**2).mean()
+                # loss = loss_fn(
+                #     query_embeddings=out_q,
+                #     doc_embeddings=out_d,
+                #     doc_ids=doc_ids,
+                # )
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.clip_grad_thresh)
@@ -183,34 +192,44 @@ class Trainer:
         local_total_tokens = 0
         dist.barrier()
         start = time.time()
-        for i in range(10):
+        for i in range(20):
 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-
                 # batch_q = {k: v.to(self.model.device) for k, v in inputs_q.items()}
-                batch_d = {k: v.to(self.model.device) for k, v in inputs.items()}
-                local_total_tokens += toks_batch_q  # + toks_batch
+                # local_total_tokens += toks_batch_q 
+                # out = self.model(**batch_q)
+                # out_q = out[: args.per_device_train_batch_size]
+                # out_d = out[args.per_device_train_batch_size :]
 
-                # loss = self.model(batch_q, batch_d, doc_ids)
+                batch_q = {k: v.to(self.model.device) for k, v in inputs_q.items()}
+                batch_d = {k: v.to(self.model.device) for k, v in inputs_d.items()}
+                local_total_tokens += toks_batch_q + toks_batch_d 
 
-                # batch = {k: v.to(self.model.device) for k, v in inputs_q.items()}
                 out_q = self.model(**batch_q)
+                out_d = self.model(**batch_d)
 
-                # batch = {k: v.to(self.model.device) for k, v in inputs.items()}
-                # out_d = self.model(**batch_d)
-
-                # loss = (outputs_q**2).mean()
-                loss = self.loss_fn(
-                    query_embeddings=out_q,
-                    doc_embeddings=out_d,
-                    doc_ids=doc_ids,
-                )
+                loss = (out_q**2 + out_d**2).mean()
+                # loss = loss_fn(
+                #     query_embeddings=out_q,
+                #     doc_embeddings=out_d,
+                #     doc_ids=doc_ids,
+                # )
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.clip_grad_thresh)
             self.optimizer.step()
             self.lr_scheduler.step()
             self.optimizer.zero_grad()
+
+        # # Ensure loss ops complete
+        # torch.cuda.synchronize()
+
+        # forward_times.append(start_fwd.elapsed_time(end_fwd))  # ms
+        # loss_times.append(start_loss.elapsed_time(end_loss))    # ms
+
+        # print("Forward pass avg (ms):", sum(forward_times) / len(forward_times))
+        # print("Loss avg (ms):", sum(loss_times) / len(loss_times))
+
 
         total_time = time.time() - start
 
@@ -529,5 +548,4 @@ if __name__ == "__main__":
     WORLD_SIZE = int(os.environ["WORLD_SIZE"])
     LOCAL_RANK = int(os.environ["LOCAL_RANK"])
     RANK = int(os.environ["RANK"])
-
     main()
