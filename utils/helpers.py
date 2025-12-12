@@ -4,19 +4,13 @@ import numpy as np
 import os
 
 
-def print_memory_consumed(message="", no_dist=False):
-
+def print_memory_consumed(message="", rank=0):
     torch.cuda.empty_cache()
     allocated = torch.cuda.max_memory_allocated() / 2**30
     reserved = torch.cuda.max_memory_reserved() / 2**30
-    if no_dist:
+    if rank == 0:
         print(f"CUDA mem allocated {message}: {allocated} GB")
         print(f"CUDA mem reserved {message}: {reserved} GB")
-    else:
-        rank = dist.get_rank()
-        if rank == 0:
-            print(f"CUDA mem allocated {message}: {allocated} GB")
-            print(f"CUDA mem reserved {message}: {reserved} GB")
 
 
 def get_cpt_steps(nsteps, max_train_steps, logspace=True):

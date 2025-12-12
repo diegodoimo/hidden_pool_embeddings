@@ -30,7 +30,6 @@ head_node_ip=$(getent hosts "$head_node" | awk '{ print $1 }')
 GPU_NUMBER=$(echo $CUDA_VISIBLE_DEVICES | tr ',' ' ' | wc -w) 
 
 TORCHDYNAMO_VERBOSE=1
-echo torchrun started
 
 torchrun \
     --nnodes=$SLURM_NTASKS \

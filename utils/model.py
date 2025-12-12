@@ -20,7 +20,7 @@ from transformers import (
 from utils.gemma3textmodel import Gemma3TextModel
 
 
-def get_model(args, model_config, loss_fn):
+def get_model(args, model_config):
 
     config = model_config
     if model_config is None:
@@ -53,9 +53,9 @@ def get_model(args, model_config, loss_fn):
     #     for param in model.encoder.parameters():
     #         param.requires_grad = False
 
-        # """Unfreeze the pretrained Gemma encoder (for fine-tuning)"""
-        # for param in model.encoder.parameters():
-        #     param.requires_grad = True
+    # """Unfreeze the pretrained Gemma encoder (for fine-tuning)"""
+    # for param in model.encoder.parameters():
+    #     param.requires_grad = True
 
     task_type = TaskType.FEATURE_EXTRACTION
     lora_modules = [
@@ -377,19 +377,19 @@ class ContrastiveLossEmbedding(nn.Module):
     def __init__(self, model, loss_fn=None):
         super().__init__()
         self.embedder = model
-        self.loss_fn = loss_fn 
+        self.loss_fn = loss_fn
 
     def forward(self, queries, documents, doc_ids):
 
         out_q = self.embedder(**queries)
 
-        out_d   = self.embedder(**documents)
-        
-        #loss = (out_q**2 + out_d**2).mean()
+        out_d = self.embedder(**documents)
+
+        # loss = (out_q**2 + out_d**2).mean()
         loss = self.loss_fn(
-                query_embeddings=out_q,
-                doc_embeddings=out_d,
-                doc_ids=doc_ids,
-            )
+            query_embeddings=out_q,
+            doc_embeddings=out_d,
+            doc_ids=doc_ids,
+        )
 
         return loss

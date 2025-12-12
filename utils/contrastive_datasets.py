@@ -237,10 +237,14 @@ def msmarco_dataset(
     tot_tokens = np.sum(tokenized_dataset["total_len"])
     # Sort by length if requested
     if sort_by_length:
-        tokenized_dataset = tokenized_dataset.sort("total_len")
+        tokenized_dataset = tokenized_dataset.sort("total_len", reverse=True)
 
     if rank is None or rank == 0:
         print(f"{tot_tokens/10**6: .1f}M tokens")
+        print(f"{len(tokenized_dataset)/10**3: .1f}k query-pas pairs")
+        print(f"most long: {tokenized_dataset["total_len"][:30]}")
+        print(f"avg query len: {np.mean(tokenized_dataset["query_len"])}")
+        print(f"avg doc len: {np.mean(tokenized_dataset["pos_len"])}")
 
     return tokenized_dataset
 
@@ -294,6 +298,79 @@ class LengthBalancedDistributedSampler(DistributedSampler):
         return iter(indices)
 
 
+# def collate_fn_with_padding(batch, pad_token_id=0):
+#     """
+#     Collate function that pads sequences and creates attention masks.
+
+#     Args:
+#         batch: List of examples from dataset
+#         pad_token_id: Token ID used for padding (usually 0)
+
+#     Returns:
+#         Dict with padded input_ids and attention_masks
+#     """
+#     query_token_ids = [torch.tensor(item["query_token_ids"]) for item in batch]
+#     pos_token_ids = [torch.tensor(item["pos_token_ids"]) for item in batch]
+#     pos_ids = torch.cat([torch.tensor([item["pos_ids"]]) for item in batch])
+
+#     # Handle neg_token_ids (list of lists)
+#     neg_token_ids = []
+#     neg_ids = []
+#     for item in batch:
+#         neg_token_ids.append([torch.tensor(neg) for neg in item["neg_token_ids"]])
+#         neg_ids = torch.cat([torch.tensor(item["pos_ids"]) for item in batch])
+
+#     # Pad queries and create attention masks
+#     query_token_ids_padded = pad_sequence(
+#         query_token_ids, batch_first=True, padding_value=pad_token_id
+#     )
+#     query_attention_mask = (query_token_ids_padded != pad_token_id).long()
+
+#     # Pad positive passages and create attention masks
+#     pos_token_ids_padded = pad_sequence(pos_token_ids, batch_first=True, padding_value=pad_token_id)
+#     pos_attention_mask = (pos_token_ids_padded != pad_token_id).long()
+
+#     # Pad negative passages and create attention masks
+#     neg_token_ids_padded = []
+#     neg_attention_masks = []
+
+#     for negs in neg_token_ids:
+#         # Pad each set of negatives for this example
+#         padded_negs = pad_sequence(negs, batch_first=True, padding_value=pad_token_id)
+#         attention_mask = (padded_negs != pad_token_id).long()
+
+#         # Ensure all have same number of negatives
+#         num_negatives = len(batch[0]["neg_token_ids"])
+#         if padded_negs.size(0) < num_negatives:
+#             padding_rows = num_negatives - padded_negs.size(0)
+#             padding = torch.full(
+#                 (padding_rows, padded_negs.size(1)), pad_token_id, dtype=padded_negs.dtype
+#             )
+#             mask_padding = torch.zeros(
+#                 (padding_rows, padded_negs.size(1)), dtype=attention_mask.dtype
+#             )
+#             padded_negs = torch.cat([padded_negs, padding], dim=0)
+#             attention_mask = torch.cat([attention_mask, mask_padding], dim=0)
+
+#         neg_token_ids_padded.append(padded_negs)
+#         neg_attention_masks.append(attention_mask)
+
+#     # Stack all negatives: (batch_size, num_negatives, seq_len)
+#     neg_token_ids_padded = torch.stack(neg_token_ids_padded)
+#     neg_attention_masks = torch.stack(neg_attention_masks)
+
+#     return {
+#         "query_token_ids": query_token_ids_padded,
+#         "query_attention_mask": query_attention_mask,
+#         "pos_token_ids": pos_token_ids_padded,
+#         "pos_attention_mask": pos_attention_mask,
+#         "pos_ids": pos_ids,
+#         "neg_token_ids": neg_token_ids_padded,
+#         "neg_attention_mask": neg_attention_masks,
+#         "neg_ids": neg_ids,
+#     }
+
+
 def collate_fn_with_padding(batch, pad_token_id=0):
     """
     Collate function that pads sequences and creates attention masks.
@@ -307,14 +384,9 @@ def collate_fn_with_padding(batch, pad_token_id=0):
     """
     query_token_ids = [torch.tensor(item["query_token_ids"]) for item in batch]
     pos_token_ids = [torch.tensor(item["pos_token_ids"]) for item in batch]
-    pos_ids = torch.cat([torch.tensor(item["pos_ids"]) for item in batch])
+    pos_ids = torch.cat([torch.tensor([item["pos_ids"]]) for item in batch])
 
     # Handle neg_token_ids (list of lists)
-    neg_token_ids = []
-    neg_ids = []
-    for item in batch:
-        neg_token_ids.append([torch.tensor(neg) for neg in item["neg_token_ids"]])
-        neg_ids = torch.cat([torch.tensor(item["pos_ids"]) for item in batch])
 
     # Pad queries and create attention masks
     query_token_ids_padded = pad_sequence(
@@ -326,44 +398,12 @@ def collate_fn_with_padding(batch, pad_token_id=0):
     pos_token_ids_padded = pad_sequence(pos_token_ids, batch_first=True, padding_value=pad_token_id)
     pos_attention_mask = (pos_token_ids_padded != pad_token_id).long()
 
-    # Pad negative passages and create attention masks
-    neg_token_ids_padded = []
-    neg_attention_masks = []
-
-    for negs in neg_token_ids:
-        # Pad each set of negatives for this example
-        padded_negs = pad_sequence(negs, batch_first=True, padding_value=pad_token_id)
-        attention_mask = (padded_negs != pad_token_id).long()
-
-        # Ensure all have same number of negatives
-        num_negatives = len(batch[0]["neg_token_ids"])
-        if padded_negs.size(0) < num_negatives:
-            padding_rows = num_negatives - padded_negs.size(0)
-            padding = torch.full(
-                (padding_rows, padded_negs.size(1)), pad_token_id, dtype=padded_negs.dtype
-            )
-            mask_padding = torch.zeros(
-                (padding_rows, padded_negs.size(1)), dtype=attention_mask.dtype
-            )
-            padded_negs = torch.cat([padded_negs, padding], dim=0)
-            attention_mask = torch.cat([attention_mask, mask_padding], dim=0)
-
-        neg_token_ids_padded.append(padded_negs)
-        neg_attention_masks.append(attention_mask)
-
-    # Stack all negatives: (batch_size, num_negatives, seq_len)
-    neg_token_ids_padded = torch.stack(neg_token_ids_padded)
-    neg_attention_masks = torch.stack(neg_attention_masks)
-
     return {
         "query_token_ids": query_token_ids_padded,
         "query_attention_mask": query_attention_mask,
         "pos_token_ids": pos_token_ids_padded,
         "pos_attention_mask": pos_attention_mask,
         "pos_ids": pos_ids,
-        "neg_token_ids": neg_token_ids_padded,
-        "neg_attention_mask": neg_attention_masks,
-        "neg_ids": neg_ids,
     }
 
 
@@ -381,7 +421,7 @@ def collate_fn_with_padding_joint(batch, pad_token_id=0):
 
     inputs_token_ids = [torch.tensor(item["query_token_ids"]) for item in batch]
     inputs_token_ids.extend([torch.tensor(item["pos_token_ids"]) for item in batch])
-    pos_ids = torch.cat([torch.tensor(item["pos_ids"]) for item in batch])
+    pos_ids = torch.cat([torch.tensor([item["pos_ids"]]) for item in batch])
 
     # Pad inputs and create attention masks
     inputs_token_ids_padded = pad_sequence(
