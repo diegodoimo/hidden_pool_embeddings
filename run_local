@@ -1,0 +1,32 @@
+
+
+source /home/diego/anaconda3/etc/profile.d/conda.sh  
+
+conda activate torch28cu128py12
+
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" 
+export PYTHONUNBUFFERED=1
+# export TRANSFORMERS_OFFLINE=1
+TORCHDYNAMO_VERBOSE=1
+torchrun train.py \
+    --model_name_or_path google/gemma-3-270m  \
+    --distributed_loss \
+    --attention_dim 128 \
+    --use_lora \
+    --lora_rank 128 \
+    --lora_alpha 256 \
+    --lora_dropout 0.1 \
+    --num_workers 16 \
+    --per_device_train_batch_size 2 \
+    --per_device_eval_batch_size 2 \
+    --learning_rate 2e-5 \
+    --lr_min_fact 0.1 \
+    --warmup_ratio 0.03 \
+    --weight_decay 0.1  \
+    --num_train_epochs 1 \
+    --checkpointing_steps 1 \
+    --logging_steps 10 \
+    --eval_steps 7 \
+    --output_dir "./results/rebuttal/final" \
+    --measure_baselines \
+    --activation_checkpointing \

@@ -39,7 +39,11 @@ def parse_args():
     parser.add_argument("--use_flash_attn", action="store_true")
     parser.add_argument("--use_slow_tokenizer", action="store_true")
     parser.add_argument("--low_cpu_mem_usage", action="store_true")
-    parser.add_argument("--max_seq_len", type=int, default=None,)
+    parser.add_argument(
+        "--max_seq_len",
+        type=int,
+        default=None,
+    )
 
     parser.add_argument("--use_lora", action="store_true")
     parser.add_argument("--lora_rank", type=int, default=64)
@@ -80,6 +84,7 @@ def parse_args():
     parser.add_argument("--freeze_encoder", action="store_true")
     parser.add_argument("--attention_pooling", action="store_true")
     parser.add_argument("--attention_dim", type=int, default=None)
+    parser.add_argument("--joint_batch", action="store_true")
 
     args = parser.parse_args()
     return args

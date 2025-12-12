@@ -33,7 +33,7 @@ from utils.model import ContrastiveLossEmbedding
 
 
 class Trainer:
-    def __init__(self, args, model_config, len_dataloader, loss_fn):
+    def __init__(self, args, model_config, len_dataloader):
 
         self.rank = dist.get_rank()
         self.local_rank = int(os.environ.get("LOCAL_RANK", 0))
@@ -47,7 +47,7 @@ class Trainer:
         if self.rank == 0:
             os.makedirs(args.output_dir, exist_ok=True)
 
-        self.model, task_type, lora_modules = get_model(args, model_config, loss_fn)
+        self.model, task_type, lora_modules = get_model(args, model_config)
 
         if args.activation_checkpointing:
             # Disable cache first
@@ -79,7 +79,7 @@ class Trainer:
 
         self.model = DDP(self.model, device_ids=[self.local_rank])
         # self.model = torch.compile(self.model)
-        self.model.compile(mode="reduce-overhead")
+        # self.model.compile(mode="reduce-overhead")
 
         # self.model.compile(
         #     mode="default",
@@ -95,137 +95,12 @@ class Trainer:
         )
         # print(self.model)
 
-    # def train(
-    #     self,
-    #     args: ArgumentParser,
-    #     train_loader: DataLoader,
-    #     loss_fn: Callable,
-    # ):
     def train(
         self,
-        args,
-        tokenizer,
+        args: ArgumentParser,
+        train_loader: DataLoader,
+        loss_fn: Callable,
     ):
-
-        # for name, param in self.model.named_parameters():
-        #     if param.requires_grad and RANK ==0:
-        #         print("requires_grad:", name)
-        text = "The quick brown fox jumps over the lazy dog"
-        repeat_count = 2000  # This gives about 2400+ characters
-        text = (text * repeat_count).strip()
-
-        loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
-        text_batches_d = [text for i in range(args.per_device_train_batch_size)]
-
-        text_batches_q = [text for i in range(2 * args.per_device_train_batch_size)]
-        doc_ids = torch.tensor(
-            [
-                int(i + args.per_device_train_batch_size * RANK)
-                for i in range(args.per_device_train_batch_size)
-            ],
-            dtype=torch.long,
-            device=self.model.device,
-        )
-
-        args.max_seq_len = 1024
-        # Tokenize as a batch of sequences
-
-        inputs_q = tokenizer(
-            text_batches_q,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=512,
-        )
-        inputs_d = tokenizer(
-            text_batches_d,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=args.max_seq_len,
-        )
-
-        print("input_ids shape", inputs_q["input_ids"].shape)
-        toks_batch = torch.numel(inputs_q["input_ids"])
-        toks_batch_q = torch.numel(inputs_q["input_ids"])
-        print("toks batch", toks_batch)
-
-        self.model.train()
-        # warmup
-        for _ in range(args.gradient_accumulation_steps * 2):
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                batch_q = {k: v.to(self.model.device) for k, v in inputs_q.items()}
-                # batch_d = {k: v.to(self.model.device) for k, v in inputs.items()}
-                # print(batch_q, batch_d, doc_ids)
-
-                # loss = self.model(batch_q, batch_d, doc_ids)
-
-                # batch = {k: v.to(self.model.device) for k, v in inputs_q.items()}
-                out = self.model(**batch_q)
-                out_q = out[: args.args.per_device_train_batch_size]
-                out_d = out[args.args.per_device_train_batch_size :]
-                # batch = {k: v.to(self.model.device) for k, v in inputs.items()}
-                # out_d = self.model(**batch_d)
-
-                # loss = (outputs_q**2).mean()
-                loss = self.loss_fn(
-                    query_embeddings=out_q,
-                    doc_embeddings=out_d,
-                    doc_ids=doc_ids,
-                )
-
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.clip_grad_thresh)
-            self.optimizer.step()
-            self.lr_scheduler.step()
-            self.optimizer.zero_grad()
-
-        local_total_tokens = 0
-        dist.barrier()
-        start = time.time()
-        for i in range(10):
-
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-
-                # batch_q = {k: v.to(self.model.device) for k, v in inputs_q.items()}
-                batch_d = {k: v.to(self.model.device) for k, v in inputs.items()}
-                local_total_tokens += toks_batch_q  # + toks_batch
-
-                # loss = self.model(batch_q, batch_d, doc_ids)
-
-                # batch = {k: v.to(self.model.device) for k, v in inputs_q.items()}
-                out_q = self.model(**batch_q)
-
-                # batch = {k: v.to(self.model.device) for k, v in inputs.items()}
-                # out_d = self.model(**batch_d)
-
-                # loss = (outputs_q**2).mean()
-                loss = self.loss_fn(
-                    query_embeddings=out_q,
-                    doc_embeddings=out_d,
-                    doc_ids=doc_ids,
-                )
-
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.clip_grad_thresh)
-            self.optimizer.step()
-            self.lr_scheduler.step()
-            self.optimizer.zero_grad()
-
-        total_time = time.time() - start
-
-        if WORLD_SIZE > 1:
-            num_tokens = torch.tensor([local_total_tokens]).to("cuda")
-            dist.all_reduce(num_tokens)
-            num_tokens = num_tokens.item()
-        else:
-            num_tokens = local_total_tokens
-
-        if RANK == 0:
-            throughput = num_tokens / total_time / WORLD_SIZE
-            print(f"processed {throughput/10**6: .2f} million token/sec/gpu")
-
-        assert False, "benchmarking finished"
 
         filename = ""
         if args.out_filename != "":
@@ -301,10 +176,11 @@ class Trainer:
                 # same as before but the gradients will be sync
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 
-                    queries_embeddings = self.model(query_inputs, query_mask)
-                    document_embeddings = self.model(doc_inputs, doc_mask)
+                    queries_embeddings = self.model(
+                        input_ids=query_inputs, attention_mask=query_mask
+                    )
+                    document_embeddings = self.model(input_ids=doc_inputs, attention_mask=doc_mask)
 
-                    # gradients are averaged across gpus by DDP, even if loss is not. / WORLD SIZE is not necessary.
                     loss = loss_fn(
                         queries_embeddings=queries_embeddings,
                         document_embeddings=document_embeddings,
@@ -396,28 +272,6 @@ def main():
     )
 
     if RANK == 0:
-        print("model setup")
-
-    loss_fn = EmbeddingGemmaLoss(temperature=0.07)
-    if WORLD_SIZE > 1 and args.distributed_loss:
-        loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
-
-    model_config = AutoConfig.from_pretrained(args.model_name_or_path)
-
-    dist.barrier()
-    trainer = Trainer(len_dataloader=1000, model_config=model_config, args=args, loss_fn=loss_fn)
-
-    dist.barrier()
-    trainer.train(args, tokenizer)
-    #     args=args,
-    #     train_dataloader=train_loader,
-    #     tokenizer=tokenizer,
-    #     loss_fn=loss_fn,
-    # )
-
-    assert False
-
-    if RANK == 0:
         print("loading msmarco")
         start = time.time()
     hf_corpus = load_dataset("mteb/msmarco", name="corpus")
@@ -485,20 +339,19 @@ def main():
     if RANK == 0:
         print("model setup")
 
-    # model_config = AutoConfig.from_pretrained(args.model_name_or_path)
+    model_config = AutoConfig.from_pretrained(args.model_name_or_path)
 
     # dist.barrier()
-    # trainer = Trainer(
-    #     len_dataloader=len(train_loader),
-    #     model_config=model_config,
-    #     args=args,
-    # )
+    trainer = Trainer(
+        len_dataloader=len(train_loader),
+        model_config=model_config,
+        args=args,
+    )
 
     dist.barrier()
     trainer.train(
         args=args,
-        train_dataloader=train_loader,
-        tokenizer=tokenizer,
+        train_loader=train_loader,
         loss_fn=loss_fn,
     )
     dist.destroy_process_group()
