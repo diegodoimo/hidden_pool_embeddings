@@ -6,7 +6,7 @@ from typing import Optional
 
 from torch.utils.data import DistributedSampler
 from torch.nn.utils.rnn import pad_sequence
-
+from functools import partial
 
 # taken from embeddinggemma
 # https://github.com/huggingface/transformers/blob/bdee0889714e9cb3e53d3b1b2a626919479d356c/src/transformers/models/gemma3/convert_gemma3_weights.py#L700C1-L715C10
@@ -76,6 +76,102 @@ def prepare_msmarco(hf_queries, hf_corpus, hf_qrels):
     return data_query, data_doc
 
 
+def tokenize_batch(
+    examples,
+    query_prompt,
+    doc_prompt,
+    tokenizer,
+    max_query_len,
+    max_passage_len,
+    num_hard_negatives=None,
+) -> Dict[str, List]:
+    """Tokenize a batch of examples with prompts."""
+    batch_size = len(examples["query"])
+
+    # Prepend prompts
+    queries_with_prompt = [query_prompt + q for q in examples["query"]]
+    pos_with_prompt = [
+        doc_prompt.format(title=title, text=text)
+        for title, text in zip(examples["pos_title"], examples["pos_passage"])
+    ]
+
+    # Tokenize queries
+    query_encs = tokenizer(
+        queries_with_prompt,
+        max_length=max_query_len,
+        truncation=True,
+        padding=False,
+        return_attention_mask=False,
+    )
+
+    # Tokenize positive passages
+    pos_encs = tokenizer(
+        pos_with_prompt,
+        max_length=max_passage_len,
+        truncation=True,
+        padding=False,
+        return_attention_mask=False,
+    )
+
+    # Initialize output
+    result = {
+        "query_text": queries_with_prompt,
+        "pos_text": pos_with_prompt,
+        "query_token_ids": query_encs["input_ids"],
+        "pos_token_ids": pos_encs["input_ids"],
+        "pos_ids": [int(ids) for ids in examples["pos_ids"]],
+        "query_len": [len(ids) for ids in query_encs["input_ids"]],
+        "pos_len": [len(ids) for ids in pos_encs["input_ids"]],
+        "total_len": [],
+    }
+
+    # Process negatives if available
+    if "neg_passages" in examples:
+        for i in range(batch_size):
+            neg_passages = examples["neg_passages"][i]
+
+            # Take first num_hard_negatives
+            neg_passages_subset = neg_passages[:num_hard_negatives]
+
+            # Prepend document prompt to negatives
+            neg_with_prompt = [doc_prompt + neg for neg in neg_passages_subset]
+
+            # Tokenize negatives
+            neg_encs = tokenizer(
+                neg_with_prompt,
+                max_length=max_passage_len,
+                truncation=True,
+                padding=False,
+                return_attention_mask=False,
+            )
+
+            neg_token_ids_list = neg_encs["input_ids"]
+
+            # Pad with positive passage if not enough negatives
+            # while len(neg_token_ids_list) < num_hard_negatives:
+            #     neg_token_ids_list.append(pos_encs["input_ids"][i])
+
+            result["neg_token_ids"].append(neg_token_ids_list)
+
+            # Calculate average negative length
+            avg_neg_len = np.mean([len(neg) for neg in neg_token_ids_list])
+            result["avg_neg_len"].append(avg_neg_len)
+            result["total_len"].append(
+                result["query_len"][i] + result["pos_len"][i] + avg_neg_len * num_hard_negatives
+            )
+    else:
+        # No negatives provided
+        for i in range(batch_size):
+            # result["neg_token_ids"].append([pos_encs["input_ids"][i]] * num_hard_negatives)
+            # result["avg_neg_len"].append(result["pos_len"][i])
+            # result["total_len"].append(
+            #     result["query_len"][i] + result["pos_len"][i] * (1 + num_hard_negatives)
+            # )
+            result["total_len"].append(result["query_len"][i] + result["pos_len"][i])
+
+    return result
+
+
 def msmarco_dataset(
     queries_dataset: Dataset,
     pos_passages_dataset: Dataset,
@@ -142,93 +238,19 @@ def msmarco_dataset(
             }
         )
 
-    def tokenize_batch(examples: Dict[str, List]) -> Dict[str, List]:
-        """Tokenize a batch of examples with prompts."""
-        batch_size = len(examples["query"])
-
-        # Prepend prompts
-        queries_with_prompt = [query_prompt + q for q in examples["query"]]
-        pos_with_prompt = [
-            doc_prompt.format(title=title, text=text)
-            for title, text in zip(examples["pos_title"], examples["pos_passage"])
-        ]
-
-        # Tokenize queries
-        query_encs = tokenizer(
-            queries_with_prompt,
-            max_length=max_query_len,
-            truncation=True,
-            padding=False,
-            return_attention_mask=False,
-        )
-
-        # Tokenize positive passages
-        pos_encs = tokenizer(
-            pos_with_prompt,
-            max_length=max_passage_len,
-            truncation=True,
-            padding=False,
-            return_attention_mask=False,
-        )
-
-        # Initialize output
-        result = {
-            "query_token_ids": query_encs["input_ids"],
-            "pos_token_ids": pos_encs["input_ids"],
-            "pos_ids": [int(ids) for ids in examples["pos_ids"]],
-            "query_len": [len(ids) for ids in query_encs["input_ids"]],
-            "pos_len": [len(ids) for ids in pos_encs["input_ids"]],
-            "total_len": [],
-        }
-
-        # Process negatives if available
-        if "neg_passages" in examples:
-            for i in range(batch_size):
-                neg_passages = examples["neg_passages"][i]
-
-                # Take first num_hard_negatives
-                neg_passages_subset = neg_passages[:num_hard_negatives]
-
-                # Prepend document prompt to negatives
-                neg_with_prompt = [doc_prompt + neg for neg in neg_passages_subset]
-
-                # Tokenize negatives
-                neg_encs = tokenizer(
-                    neg_with_prompt,
-                    max_length=max_passage_len,
-                    truncation=True,
-                    padding=False,
-                    return_attention_mask=False,
-                )
-
-                neg_token_ids_list = neg_encs["input_ids"]
-
-                # Pad with positive passage if not enough negatives
-                # while len(neg_token_ids_list) < num_hard_negatives:
-                #     neg_token_ids_list.append(pos_encs["input_ids"][i])
-
-                result["neg_token_ids"].append(neg_token_ids_list)
-
-                # Calculate average negative length
-                avg_neg_len = np.mean([len(neg) for neg in neg_token_ids_list])
-                result["avg_neg_len"].append(avg_neg_len)
-                result["total_len"].append(
-                    result["query_len"][i] + result["pos_len"][i] + avg_neg_len * num_hard_negatives
-                )
-        else:
-            # No negatives provided
-            for i in range(batch_size):
-                # result["neg_token_ids"].append([pos_encs["input_ids"][i]] * num_hard_negatives)
-                # result["avg_neg_len"].append(result["pos_len"][i])
-                # result["total_len"].append(
-                #     result["query_len"][i] + result["pos_len"][i] * (1 + num_hard_negatives)
-                # )
-                result["total_len"].append(result["query_len"][i] + result["pos_len"][i])
-
-        return result
-
     if rank is None or rank == 0:
         print(f"Tokenizing {len(combined)} examples with batch_size={batch_size}...")
+
+    tokenize_batch = partial(
+        tokenize_batch,
+        query_prompt=query_prompt,
+        doc_prompt=doc_prompt,
+        tokenizer=tokenizer,
+        max_query_len=max_query_len,
+        max_passage_len=max_passage_len,
+        num_hard_negatives=num_hard_negatives,
+    )
+
     # Apply batched tokenization
     tokenized_dataset = combined.map(
         tokenize_batch, batched=True, batch_size=batch_size, remove_columns=combined.column_names

@@ -29,6 +29,8 @@ from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLoss
 import mteb
 from typing import Callable
 from utils.model import ContrastiveLossEmbedding
+from utils.test_retrieval import get_retrieval_test_set
+from utils.test_retrieval import evaluate_retrieval
 
 
 class Trainer:
@@ -77,7 +79,7 @@ class Trainer:
         self.model = self.model.to(self.device)
 
         self.model = DDP(self.model, device_ids=[self.local_rank])
-        #self.model = torch.compile(self.model)
+        # self.model = torch.compile(self.model)
         # self.model.compile(mode="reduce-overhead")
 
         # self.model.compile(
@@ -99,6 +101,7 @@ class Trainer:
         args: ArgumentParser,
         train_loader: DataLoader,
         loss_fn: Callable,
+        evaluator,
     ):
 
         filename = ""
@@ -175,9 +178,7 @@ class Trainer:
                 # same as before but the gradients will be sync
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 
-                    query_embeddings = self.model(
-                        input_ids=query_inputs, attention_mask=query_mask
-                    )
+                    query_embeddings = self.model(input_ids=query_inputs, attention_mask=query_mask)
                     doc_embeddings = self.model(input_ids=doc_inputs, attention_mask=doc_mask)
 
                     loss = loss_fn(
@@ -221,7 +222,7 @@ class Trainer:
 
                 if completed_steps in eval_steps:
                     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                        evaluate(self.model, args)
+                        evaluate(self.model, evaluator)
 
                     if RANK == 0:
                         print(f"iter {completed_steps}.")
@@ -239,7 +240,7 @@ class Trainer:
                     save_model(self.model, output_dir, RANK=RANK, dist_type=args.dist_type)
 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                stats = evaluate()
+                stats = evaluate(self.model, evaluator)
 
             if RANK == 0:
                 print(f"iter {completed_steps}. vqa accuracy {stats['vqa_acc']}")
@@ -307,6 +308,7 @@ def main():
         print(f"msmarco tokenized in {time.time()-start}")
         start = time.time()
         print("dataloader preparation")
+
     # 3. Create length-balanced sampler
     sampler = LengthBalancedDistributedSampler(
         tokenized_dataset,
@@ -330,6 +332,10 @@ def main():
         pin_memory=True,
     )
 
+    # **************************************
+    # classification_evaluator = evaluate_classification(tasks=["SCIDOCS"], tokenizer=tokenizer)
+    retrieval_evaluator = evaluate_retrieval(tasks=["SCIDOCS"], tokenizer=tokenizer)
+
     # Initialize loss and optimizer
     loss_fn = EmbeddingGemmaLoss(temperature=0.07)
     if WORLD_SIZE > 1 and args.distributed_loss:
@@ -352,28 +358,14 @@ def main():
         args=args,
         train_loader=train_loader,
         loss_fn=loss_fn,
+        evaluator=retrieval_evaluator,
     )
     dist.destroy_process_group()
 
 
-def evaluate(model, args):
-
-    # benchmark = mteb.get_benchmark(bench_dict[args.benchmark])
-
-    # res = mteb.evaluate(model, tasks=task, overwrite_strategy="always")
-
-    # instance = res.task_results[0]
-    # splits = set(instance.scores.keys())
-
-    # for split in splits:
-    #     results[instance.task_name] = {
-    #         "main_score": instance.scores[split][0]["main_score"],
-    #         "task_type": instance.task_type,
-    #         "split": split,
-    #     }
-
-    # print({np.mean([score["main_score"] for score in results.values()])})
-    return
+def evaluate(model, evaluator):
+    results = evaluator.evaluate(model)
+    print(results)
 
 
 if __name__ == "__main__":

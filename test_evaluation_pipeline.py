@@ -1,0 +1,54 @@
+from utils.test_retrieval import evaluate_retrieval
+import os
+import torch
+from torch.nn.parallel import DistributedDataParallel as DDP
+import argparse
+from transformers import AutoModel, AutoTokenizer
+import torch.distributed as dist
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_name_or_path", type=str)
+    args = parser.parse_args()
+    return args
+
+
+def main():
+    args = parse_args()
+
+    dist.init_process_group("nccl")
+    torch.cuda.set_device(dist.get_rank())
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        "Qwen/Qwen3-Embedding-0.6B",
+        use_fast=False,
+        trust_remote_code=True,
+    )
+
+    retrieval_evaluator = evaluate_retrieval(
+        tasks=[
+            "SCIDOCS",
+            "ArguAna",
+            "SciFact",
+        ],
+        tokenizer=tokenizer,
+    )
+
+    model = AutoModel.from_pretrained(
+        "Qwen/Qwen3-Embedding-0.6B",
+        torch_dtype=torch.bfloat16,
+        use_flash_attention_2=False,
+    ).to("cuda")
+
+    model = DDP(model, device_ids=[LOCAL_RANK])
+    results = retrieval_evaluator.evaluate(model)
+    print(results)
+
+
+if __name__ == "__main__":
+
+    WORLD_SIZE = int(os.environ["WORLD_SIZE"])
+    LOCAL_RANK = int(os.environ["LOCAL_RANK"])
+    RANK = int(os.environ["RANK"])
+    main()

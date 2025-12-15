@@ -1,0 +1,245 @@
+import mteb
+import torch
+from torch.utils.data import DataLoader
+from mteb.abstasks.retrieval import _filter_queries_without_positives
+from mteb.types import PromptType
+from ._create_dataloaders import create_dataset
+
+from typing import cast
+from copy import copy
+from mteb.types import HFSubset
+from datasets import DatasetDict
+from functools import partial
+import numpy as np
+import torch.distributed as dist
+from mteb._evaluators.retrieval_metrics import calculate_retrieval_scores
+import torch.nn.functional as F
+
+
+def last_token_pool(last_hidden_states, attention_mask):
+    left_padding = attention_mask[:, -1].sum() == attention_mask.shape[0]
+    if left_padding:
+        return last_hidden_states[:, -1]
+    else:
+        sequence_lengths = attention_mask.sum(dim=1) - 1
+        batch_size = last_hidden_states.shape[0]
+        return last_hidden_states[
+            torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths
+        ]
+
+
+def abs_task_preprocessing(task, eval_split):
+
+    subsets_to_run = None
+
+    task.dataset = cast(dict[HFSubset, DatasetDict], task.dataset)
+
+    if task.hf_subsets is None:
+        hf_subsets = list(task.dataset.keys())
+    else:
+        hf_subsets = copy(task.hf_subsets)
+
+    if subsets_to_run is not None:  # allow overwrites of pre-filtering
+        hf_subsets = [s for s in hf_subsets if s in subsets_to_run]
+
+    for hf_subset in hf_subsets:
+        if hf_subset not in task.dataset and hf_subset == "default":
+            data_split = task.dataset[eval_split]
+        else:
+            data_split = task.dataset[hf_subset][eval_split]
+
+    return data_split
+
+
+class evaluate_retrieval:
+
+    def __init__(self, tokenizer, tasks):
+        self.tokenizer = tokenizer
+        self.task_names = tasks
+
+        self.world_size = dist.get_world_size()
+        self.rank = dist.get_rank()
+
+        self.datasets = self.prepare_datasets()
+
+        print(self.datasets[tasks[0]]["dataset"]["queries"][0])
+
+    def prepare_datasets(self, max_passage_len=4096):
+
+        datasets = {}
+        for task in self.task_names:
+            task = mteb.get_task(self.task_name)
+
+            eval_splits = task.metadata.eval_splits
+            assert len(eval_splits) == 1
+            eval_split = eval_splits[0]
+
+            task.load_data()
+            task.convert_v1_dataset_format_to_v2()
+
+            data_split = abs_task_preprocessing(task, eval_split)
+
+            data_split["relevant_docs"], data_split["queries"] = _filter_queries_without_positives(
+                data_split["relevant_docs"], data_split["queries"]
+            )
+
+            queries_dataset = create_dataset(
+                self.tokenizer,
+                dataset=data_split["queries"],
+                task_metadata=task.metadata,
+                prompt_type=PromptType.query,
+            )
+
+            corpus_dataset = create_dataset(
+                self.tokenizer,
+                dataset=data_split["corpus"],
+                task_metadata=task.metadata,
+                prompt_type=PromptType.query,
+            )
+
+            tokenize = partial(
+                self.tokenizer,
+                max_length=max_passage_len,
+                truncation=True,
+                padding=False,
+                return_attention_mask=False,
+            )
+            queries_dataset.map(tokenize, batched=True, batch_size=1000)
+            corpus_dataset.map(tokenize, batched=True, batch_size=1000)
+
+            datasets[task] = {
+                "dataset": {
+                    "queries": queries_dataset,
+                    "corpus": corpus_dataset,
+                    "relevant_docs": data_split["relevant_docs"],
+                },
+                "task_specific_score": task.task_specific_score,
+            }
+
+        return datasets
+
+    @torch.inference_mode()
+    def encode(self, model, loader):
+
+        embeddings = []
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            for batch in loader:
+                batch = {key: val.to(self.model.device) for key, val in batch.items()}
+                out_embeddings = model(
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch["attention_mask"],
+                )
+
+                out_embeddings = last_token_pool(
+                    out_embeddings.last_hidden_state,
+                    batch["attention_mask"],
+                )
+                out_embeddings = F.normalize(out_embeddings, p=2, dim=1)
+
+                gathered = [torch.zeros_like(out_embeddings) for _ in range(self.world_size)]
+                dist.all_gather(gathered, out_embeddings)
+
+                # Concatenate across ranks for this batch
+                batch_embeddings = torch.cat(gathered, dim=0)
+                embeddings.append(batch_embeddings.float())
+
+        embeddings = torch.cat(embeddings, dim=0)
+
+        return embeddings
+
+    def evaluate_one(
+        self,
+        dataset,
+        model,
+        top_k=None,
+        k_values=[1, 3, 5, 10, 20, 100, 1000],
+        ignore_identical_ids: bool = False,
+        skip_first_result: bool = False,
+    ):
+
+        if top_k is None:
+            top_k = max(k_values)
+
+        model = model.eval()
+
+        query_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["queries"]["id"])}
+        doc_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["corpus"]["id"])}
+
+        sampler_queries = None
+        sampler_corpus = None
+        if self.world_size > 1:
+            sampler_queries = torch.utils.data.distributed.DistributedSampler(
+                dataset["queries"], shuffle=False, drop_last=False
+            )
+            sampler_corpus = torch.utils.data.distributed.DistributedSampler(
+                dataset["corpus"], shuffle=False, drop_last=False
+            )
+
+        queries_loader = DataLoader(
+            dataset["queries"],
+            sampler=sampler_queries,
+            batch_size=64,
+            num_workers=64,
+            pin_memory=True,
+        )
+        corpus_loader = DataLoader(
+            dataset["corpus"],
+            sampler=sampler_corpus,
+            batch_size=64,
+            num_workers=64,
+            pin_memory=True,
+        )
+
+        query_embeddings = self.encode(model, queries_loader)
+        corpus_embeddings = self.encode(model, corpus_loader)
+
+        scores = torch.matmul(query_embeddings, corpus_embeddings.T)
+        top_scores, top_indices = torch.topk(scores, k=top_k, dim=1)
+
+        del scores
+        top_scores = top_scores.cpu()
+        top_indices = top_indices.cpu()
+
+        results = {}
+        for i in range(len(top_scores)):
+            results[query_idx_to_id[i]] = {
+                doc_idx_to_id[index]: top_scores[i, j] for j, index in enumerate(top_indices[i])
+            }
+
+        qrels = dataset["relevant_docs"]
+        if ignore_identical_ids:
+            # Remove identical ids from results dict
+            for qid, rels in results.items():
+                for pid in list(rels):
+                    if qid == pid:
+                        results[qid].pop(pid)
+
+        (
+            all_scores,
+            ndcg,
+            _map,
+            recall,
+            precision,
+            naucs,
+            mrr,
+            naucs_mrr,
+            cv_recall,
+        ) = calculate_retrieval_scores(results, qrels, list(k_values), skip_first_result)
+
+        task_specific_scores = task_specific_scores(
+            all_scores,
+            dataset["relevant_docs"],
+            results,
+        )
+        return task_specific_scores
+
+    def evaluate(self, model):
+        results = {}
+        for name, task in self.datasets.items():
+            results[name] = self.evaluate_one(
+                dataset=task["dataset"],
+                model=model,
+                task_specific_score=task["task_specific_score"],
+            )
+
+        return results

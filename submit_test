@@ -28,6 +28,7 @@ export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
 export PYTHONUNBUFFERED=1
 
 
+#test evbal pipeline
 torchrun \
     --nnodes=$SLURM_NTASKS \
     --node-rank=$SLURM_NODEID \
@@ -35,6 +36,19 @@ torchrun \
     --rdzv-id=$SLURM_PROCID \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
-    test_model.py  \
+    test_evaluation_pipeline.py  \
     --model_name_or_path google/embeddinggemma-300m \
-    --benchmark mteb_multilingual_v2
+
+
+# test model
+
+# torchrun \
+#     --nnodes=$SLURM_NTASKS \
+#     --node-rank=$SLURM_NODEID \
+#     --nproc-per-node=$GPU_NUMBER \
+#     --rdzv-id=$SLURM_PROCID \
+#     --rdzv-backend=c10d \
+#     --rdzv-endpoint=$head_node:0 \
+#     test_model.py  \
+#     --model_name_or_path google/embeddinggemma-300m \
+#     --benchmark mteb_multilingual_v2
