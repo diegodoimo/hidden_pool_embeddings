@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=50G       
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:H100:2
 
 
 env_path=\/orfeo/cephfs/scratch/area/ddoimo/open/hidden_pool_embeddings

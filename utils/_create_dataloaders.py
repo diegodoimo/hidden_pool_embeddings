@@ -310,9 +310,7 @@ def create_dataset(
             batch_size=batch_size,
             input_column=input_column,
         )
-
-        tokenized_dataset = tokenizer(dataset)
-        return tokenized_dataset
+        return dataset
 
     if prompt_type == PromptType.document:
 
@@ -322,10 +320,7 @@ def create_dataset(
             input_column=input_column,
             batch_size=batch_size,
         )
-
-        tokenized_dataset = tokenizer(dataset)
-
-        return tokenized_dataset
+        return dataset
 
     if "text" in task_metadata.modalities and input_column is not None:
         return _create_dataloader_from_texts(

@@ -14,7 +14,7 @@ import numpy as np
 import torch.distributed as dist
 from mteb._evaluators.retrieval_metrics import calculate_retrieval_scores
 import torch.nn.functional as F
-
+from torch.nn.utils.rnn import pad_sequence
 
 def last_token_pool(last_hidden_states, attention_mask):
     left_padding = attention_mask[:, -1].sum() == attention_mask.shape[0]
@@ -51,6 +51,22 @@ def abs_task_preprocessing(task, eval_split):
     return data_split
 
 
+def collate_fn_with_padding(batch, pad_token_id=0):
+    
+    query_token_ids = [torch.tensor(item["input_ids"]) for item in batch]
+
+    # Pad queries and create attention masks
+    query_token_ids_padded = pad_sequence(
+        query_token_ids, batch_first=True, padding_value=pad_token_id
+    )
+    query_attention_mask = (query_token_ids_padded != pad_token_id).long()
+
+
+    return {
+        "input_ids": query_token_ids_padded,
+        "attention_mask": query_attention_mask,
+    }
+
 class evaluate_retrieval:
 
     def __init__(self, tokenizer, tasks):
@@ -64,11 +80,31 @@ class evaluate_retrieval:
 
         print(self.datasets[tasks[0]]["dataset"]["queries"][0])
 
+    @staticmethod
+    def tokenize_batch(examples, tokenizer, max_passage_len, instruction=""):
+        prompt = [instruction + q for q in examples["text"]]
+
+        tokens = tokenizer(
+                prompt,
+                max_length=max_passage_len,
+                truncation=True,
+                padding=False,
+                return_attention_mask=False,
+            )
+
+        result = {
+            "text": examples["text"],
+            "input_ids": tokens["input_ids"],
+            "id": examples["id"]
+        }
+        return result
+
+
     def prepare_datasets(self, max_passage_len=4096):
 
         datasets = {}
-        for task in self.task_names:
-            task = mteb.get_task(self.task_name)
+        for task_name in self.task_names:
+            task = mteb.get_task(task_name)
 
             eval_splits = task.metadata.eval_splits
             assert len(eval_splits) == 1
@@ -98,22 +134,20 @@ class evaluate_retrieval:
             )
 
             tokenize = partial(
-                self.tokenizer,
-                max_length=max_passage_len,
-                truncation=True,
-                padding=False,
-                return_attention_mask=False,
+                self.tokenize_batch,
+                tokenizer=self.tokenizer,
+                max_passage_len=4096,
             )
-            queries_dataset.map(tokenize, batched=True, batch_size=1000)
-            corpus_dataset.map(tokenize, batched=True, batch_size=1000)
+            queries_dataset = queries_dataset.map(tokenize, batched=True, batch_size=1000)
+            corpus_dataset = corpus_dataset.map(tokenize, batched=True, batch_size=1000)
 
-            datasets[task] = {
+            datasets[task_name] = {
                 "dataset": {
                     "queries": queries_dataset,
                     "corpus": corpus_dataset,
                     "relevant_docs": data_split["relevant_docs"],
                 },
-                "task_specific_score": task.task_specific_score,
+                "task_specific_scores": task.task_specific_scores,
             }
 
         return datasets
@@ -124,7 +158,7 @@ class evaluate_retrieval:
         embeddings = []
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             for batch in loader:
-                batch = {key: val.to(self.model.device) for key, val in batch.items()}
+                batch = {key: val.to(model.device) for key, val in batch.items()}
                 out_embeddings = model(
                     input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
@@ -151,6 +185,8 @@ class evaluate_retrieval:
         self,
         dataset,
         model,
+        task_specific_scores,
+        batch_size=8,
         top_k=None,
         k_values=[1, 3, 5, 10, 20, 100, 1000],
         ignore_identical_ids: bool = False,
@@ -178,16 +214,18 @@ class evaluate_retrieval:
         queries_loader = DataLoader(
             dataset["queries"],
             sampler=sampler_queries,
-            batch_size=64,
-            num_workers=64,
+            batch_size=batch_size,
+            num_workers=16,
             pin_memory=True,
+            collate_fn=collate_fn_with_padding
         )
         corpus_loader = DataLoader(
             dataset["corpus"],
             sampler=sampler_corpus,
-            batch_size=64,
-            num_workers=64,
+            batch_size=batch_size,
+            num_workers=16,
             pin_memory=True,
+            collate_fn=collate_fn_with_padding
         )
 
         query_embeddings = self.encode(model, queries_loader)
@@ -226,20 +264,21 @@ class evaluate_retrieval:
             cv_recall,
         ) = calculate_retrieval_scores(results, qrels, list(k_values), skip_first_result)
 
-        task_specific_scores = task_specific_scores(
+        results = task_specific_scores(
             all_scores,
             dataset["relevant_docs"],
             results,
         )
-        return task_specific_scores
+        return results
 
-    def evaluate(self, model):
+    def evaluate(self, model, batch_size=64):
         results = {}
         for name, task in self.datasets.items():
             results[name] = self.evaluate_one(
                 dataset=task["dataset"],
                 model=model,
-                task_specific_score=task["task_specific_score"],
+                task_specific_scores=task["task_specific_scores"],
+                batch_size=batch_size,
             )
 
         return results

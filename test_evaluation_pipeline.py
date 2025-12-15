@@ -38,11 +38,10 @@ def main():
     model = AutoModel.from_pretrained(
         "Qwen/Qwen3-Embedding-0.6B",
         torch_dtype=torch.bfloat16,
-        use_flash_attention_2=False,
     ).to("cuda")
 
     model = DDP(model, device_ids=[LOCAL_RANK])
-    results = retrieval_evaluator.evaluate(model)
+    results = retrieval_evaluator.evaluate(model, batch_size=32)
     print(results)
 
 
