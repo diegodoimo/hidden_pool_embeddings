@@ -37,7 +37,7 @@ def main():
 
     model = AutoModel.from_pretrained(
         "Qwen/Qwen3-Embedding-0.6B",
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
     ).to("cuda")
 
     model = DDP(model, device_ids=[LOCAL_RANK])

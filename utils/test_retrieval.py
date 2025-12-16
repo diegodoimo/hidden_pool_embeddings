@@ -15,6 +15,7 @@ import torch.distributed as dist
 from mteb._evaluators.retrieval_metrics import calculate_retrieval_scores
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
+from mteb._evaluators.retrieval_metrics import make_score_dict
 
 def last_token_pool(last_hidden_states, attention_mask):
     left_padding = attention_mask[:, -1].sum() == attention_mask.shape[0]
@@ -31,7 +32,6 @@ def last_token_pool(last_hidden_states, attention_mask):
 def abs_task_preprocessing(task, eval_split):
 
     subsets_to_run = None
-
     task.dataset = cast(dict[HFSubset, DatasetDict], task.dataset)
 
     if task.hf_subsets is None:
@@ -47,8 +47,8 @@ def abs_task_preprocessing(task, eval_split):
             data_split = task.dataset[eval_split]
         else:
             data_split = task.dataset[hf_subset][eval_split]
-
-    return data_split
+    assert len(hf_subsets)==1, hf_subsets
+    return data_split, hf_subset
 
 
 def collate_fn_with_padding(batch, pad_token_id=0):
@@ -60,8 +60,7 @@ def collate_fn_with_padding(batch, pad_token_id=0):
         query_token_ids, batch_first=True, padding_value=pad_token_id
     )
     query_attention_mask = (query_token_ids_padded != pad_token_id).long()
-
-
+    assert query_token_ids_padded.dtype == torch.int64, batch
     return {
         "input_ids": query_token_ids_padded,
         "attention_mask": query_attention_mask,
@@ -70,31 +69,22 @@ def collate_fn_with_padding(batch, pad_token_id=0):
 class evaluate_retrieval:
 
     def __init__(self, tokenizer, tasks):
-        self.tokenizer = tokenizer
-        self.task_names = tasks
-
+        
         self.world_size = dist.get_world_size()
         self.rank = dist.get_rank()
-
+        self.tokenizer = tokenizer
+        self.task_names = tasks
         self.datasets = self.prepare_datasets()
-
-        print(self.datasets[tasks[0]]["dataset"]["queries"][0])
 
     @staticmethod
     def tokenize_batch(examples, tokenizer, max_passage_len, instruction=""):
         prompt = [instruction + q for q in examples["text"]]
 
-        tokens = tokenizer(
-                prompt,
-                max_length=max_passage_len,
-                truncation=True,
-                padding=False,
-                return_attention_mask=False,
-            )
+        tokens = [tokenizer.encode(text) for text in prompt]
 
         result = {
             "text": examples["text"],
-            "input_ids": tokens["input_ids"],
+            "input_ids": tokens,
             "id": examples["id"]
         }
         return result
@@ -107,13 +97,15 @@ class evaluate_retrieval:
             task = mteb.get_task(task_name)
 
             eval_splits = task.metadata.eval_splits
+            self.main_score = task.metadata.main_score
             assert len(eval_splits) == 1
             eval_split = eval_splits[0]
 
+            self.hf_split = eval_split
             task.load_data()
             task.convert_v1_dataset_format_to_v2()
 
-            data_split = abs_task_preprocessing(task, eval_split)
+            data_split, self.hf_subset = abs_task_preprocessing(task, eval_split)
 
             data_split["relevant_docs"], data_split["queries"] = _filter_queries_without_positives(
                 data_split["relevant_docs"], data_split["queries"]
@@ -150,15 +142,20 @@ class evaluate_retrieval:
                 "task_specific_scores": task.task_specific_scores,
             }
 
+
         return datasets
 
     @torch.inference_mode()
     def encode(self, model, loader):
 
+        # distributed sampler will duplicate examples at the end
+        num_samples = len(loader.dataset)
         embeddings = []
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            for batch in loader:
-                batch = {key: val.to(model.device) for key, val in batch.items()}
+        
+        for batch in loader:
+            batch = {key: val.to(model.device) for key, val in batch.items()}
+
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 out_embeddings = model(
                     input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
@@ -170,16 +167,17 @@ class evaluate_retrieval:
                 )
                 out_embeddings = F.normalize(out_embeddings, p=2, dim=1)
 
-                gathered = [torch.zeros_like(out_embeddings) for _ in range(self.world_size)]
-                dist.all_gather(gathered, out_embeddings)
+            gathered = [torch.zeros_like(out_embeddings) for _ in range(self.world_size)]
+            dist.all_gather(gathered, out_embeddings)
 
-                # Concatenate across ranks for this batch
-                batch_embeddings = torch.cat(gathered, dim=0)
-                embeddings.append(batch_embeddings.float())
+            # Concatenate across ranks for this batch
+            batch_embeddings = torch.cat(gathered, dim=0)
+            embeddings.append(batch_embeddings.float())
 
         embeddings = torch.cat(embeddings, dim=0)
 
-        return embeddings
+
+        return embeddings[:num_samples]
 
     def evaluate_one(
         self,
@@ -211,13 +209,15 @@ class evaluate_retrieval:
                 dataset["corpus"], shuffle=False, drop_last=False
             )
 
+        collate_fn = partial(collate_fn_with_padding, pad_token_id=self.tokenizer.pad_token_id)
+
         queries_loader = DataLoader(
             dataset["queries"],
             sampler=sampler_queries,
             batch_size=batch_size,
             num_workers=16,
             pin_memory=True,
-            collate_fn=collate_fn_with_padding
+            collate_fn=collate_fn
         )
         corpus_loader = DataLoader(
             dataset["corpus"],
@@ -225,7 +225,7 @@ class evaluate_retrieval:
             batch_size=batch_size,
             num_workers=16,
             pin_memory=True,
-            collate_fn=collate_fn_with_padding
+            collate_fn=collate_fn
         )
 
         query_embeddings = self.encode(model, queries_loader)
@@ -236,12 +236,13 @@ class evaluate_retrieval:
 
         del scores
         top_scores = top_scores.cpu()
-        top_indices = top_indices.cpu()
+        top_indices = top_indices.tolist()
 
         results = {}
         for i in range(len(top_scores)):
+
             results[query_idx_to_id[i]] = {
-                doc_idx_to_id[index]: top_scores[i, j] for j, index in enumerate(top_indices[i])
+                doc_idx_to_id[index]: top_scores[i, j].item() for j, index in enumerate(top_indices[i])
             }
 
         qrels = dataset["relevant_docs"]
@@ -264,21 +265,41 @@ class evaluate_retrieval:
             cv_recall,
         ) = calculate_retrieval_scores(results, qrels, list(k_values), skip_first_result)
 
-        results = task_specific_scores(
+        task_specific_scores_ = task_specific_scores(
             all_scores,
             dataset["relevant_docs"],
             results,
+            hf_split=self.hf_split,
+            hf_subset=self.hf_subset,
+
         )
-        return results
+        _previous_results_model_meta = None
+        scores = make_score_dict(
+            ndcg,
+            _map,
+            recall,
+            precision,
+            mrr,
+            naucs,
+            naucs_mrr,
+            cv_recall,
+            task_specific_scores_,
+            _previous_results_model_meta
+        )
+        scores["main_score"] = scores[self.main_score]
+        return {self.main_score: scores[self.main_score]}
 
     def evaluate(self, model, batch_size=64):
         results = {}
         for name, task in self.datasets.items():
+            if self.rank == 0:
+                print(f"processing datasets {name}")
+
             results[name] = self.evaluate_one(
                 dataset=task["dataset"],
                 model=model,
                 task_specific_scores=task["task_specific_scores"],
-                batch_size=batch_size,
+                batch_size=batch_size
             )
 
         return results
