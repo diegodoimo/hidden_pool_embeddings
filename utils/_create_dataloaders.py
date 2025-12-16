@@ -90,7 +90,6 @@ def _create_dataloader_for_retrieval_corpus(
     """
     filtered_ds = dataset.filter(_is_valid_corpus_row)
     new_ds = filtered_ds.map(_corpus_to_dict)
-    print(len(new_ds))
     return new_ds
     # new_ds = dataset.map(_corpus_to_dict, desc="Converting corpus dict")
     # return torch.utils.data.DataLoader(
@@ -125,7 +124,6 @@ def _create_text_dataloader_for_queries(
     queries = filtered_queries.map(
         _combine_queries_with_instruction_text
     )
-    print(len(queries))
     return queries
     # return torch.utils.data.DataLoader(
     #     queries,
