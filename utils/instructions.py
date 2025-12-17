@@ -2,6 +2,7 @@
 
 import mteb
 
+
 def get_instruction(
     self,
     task_metadata: TaskMetadata,
@@ -63,6 +64,7 @@ def format_instruction(
             )
         return self.instruction_template.format(instruction=instruction)
     return self.instruction_template(instruction, prompt_type)
+
 
 def get_task_instruction(
     self,
