@@ -16,6 +16,8 @@ from mteb._evaluators.retrieval_metrics import calculate_retrieval_scores
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from mteb._evaluators.retrieval_metrics import make_score_dict
+from utils.instructions import get_instruction
+
 
 def last_token_pool(last_hidden_states, attention_mask):
     left_padding = attention_mask[:, -1].sum() == attention_mask.shape[0]
@@ -125,10 +127,13 @@ class evaluate_retrieval:
                 prompt_type=PromptType.query,
             )
 
+            intruction = self.get_instruction()
+
             tokenize = partial(
                 self.tokenize_batch,
                 tokenizer=self.tokenizer,
                 max_passage_len=4096,
+                intruction=intruction,
             )
             queries_dataset = queries_dataset.map(tokenize, batched=True, batch_size=1000)
             corpus_dataset = corpus_dataset.map(tokenize, batched=True, batch_size=1000)
