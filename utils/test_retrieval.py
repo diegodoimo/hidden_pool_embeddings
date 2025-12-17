@@ -16,6 +16,7 @@ from mteb._evaluators.retrieval_metrics import calculate_retrieval_scores
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 
+
 def last_token_pool(last_hidden_states, attention_mask):
     left_padding = attention_mask[:, -1].sum() == attention_mask.shape[0]
     if left_padding:
@@ -52,7 +53,7 @@ def abs_task_preprocessing(task, eval_split):
 
 
 def collate_fn_with_padding(batch, pad_token_id=0):
-    
+
     query_token_ids = [torch.tensor(item["input_ids"]) for item in batch]
 
     # Pad queries and create attention masks
@@ -61,11 +62,11 @@ def collate_fn_with_padding(batch, pad_token_id=0):
     )
     query_attention_mask = (query_token_ids_padded != pad_token_id).long()
 
-
     return {
         "input_ids": query_token_ids_padded,
         "attention_mask": query_attention_mask,
     }
+
 
 class evaluate_retrieval:
 
@@ -85,20 +86,15 @@ class evaluate_retrieval:
         prompt = [instruction + q for q in examples["text"]]
 
         tokens = tokenizer(
-                prompt,
-                max_length=max_passage_len,
-                truncation=True,
-                padding=False,
-                return_attention_mask=False,
-            )
+            prompt,
+            max_length=max_passage_len,
+            truncation=True,
+            padding=False,
+            return_attention_mask=False,
+        )
 
-        result = {
-            "text": examples["text"],
-            "input_ids": tokens["input_ids"],
-            "id": examples["id"]
-        }
+        result = {"text": examples["text"], "input_ids": tokens["input_ids"], "id": examples["id"]}
         return result
-
 
     def prepare_datasets(self, max_passage_len=4096):
 
@@ -217,7 +213,7 @@ class evaluate_retrieval:
             batch_size=batch_size,
             num_workers=16,
             pin_memory=True,
-            collate_fn=collate_fn_with_padding
+            collate_fn=collate_fn_with_padding,
         )
         corpus_loader = DataLoader(
             dataset["corpus"],
@@ -225,7 +221,7 @@ class evaluate_retrieval:
             batch_size=batch_size,
             num_workers=16,
             pin_memory=True,
-            collate_fn=collate_fn_with_padding
+            collate_fn=collate_fn_with_padding,
         )
 
         query_embeddings = self.encode(model, queries_loader)
