@@ -80,7 +80,7 @@ def get_task_instruction(
     Returns:
         The instruction to be used for encoding sentences.
     """
-    instruction = self.get_instruction(task_metadata, prompt_type)
+    instruction = get_instruction(task_metadata, prompt_type)
     if self.instruction_template and len(instruction) > 0:
         return self.format_instruction(instruction, prompt_type)
     return instruction
