@@ -43,23 +43,25 @@ def parse_args():
 def main():
 
     args = parse_args()
-    # results = Results()
+
     results = {}
-    bench_dict = {"mteb_multilingual_v2": "MTEB(Multilingual, v2)", "mteb_eng_v2": "MTEB(eng, v2)"}
-    tasks_dict = {"classification", "retrieval", "clustering"}
+    # bench_dict = {"mteb_multilingual_v2": "MTEB(Multilingual, v2)", "mteb_eng_v2": "MTEB(eng, v2)"}
+    # tasks_dict = {"classification", "retrieval", "clustering"}
 
     print("loading model")
     model = mteb.get_model(args.model_name_or_path)
 
-    print("loading benchmark")
-    benchmark = mteb.get_benchmark(bench_dict[args.benchmark])
+    # print("loading benchmark")
+    # benchmark = mteb.get_benchmark(bench_dict[args.benchmark])
 
-    task_types = set(task.metadata.type for task in benchmark.tasks)
+    # task_types = set(task.metadata.type for task in benchmark.tasks)
 
-    tasks = []
-    for task in benchmark.tasks:
-        if task.metadata.type == "Retrieval":
-            tasks.append(task)
+    # tasks = []
+    # for task in benchmark.tasks:
+    #     if task.metadata.type == "Retrieval":
+    #         tasks.append(task)
+
+    tasks = mteb.get_tasks(tasks=["ArguAna"])
 
     print("evaluating tasks")
     start0 = time.time()
@@ -81,8 +83,8 @@ def main():
         print({np.mean([score["main_score"] for score in results.values()])})
 
     print(results)
-    with open("./results.json", "w") as f:
-        json.dump(results, f, indent=4)
+    # with open("./results.json", "w") as f:
+    #     json.dump(results, f, indent=4)
 
 
 if __name__ == "__main__":

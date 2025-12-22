@@ -41,6 +41,21 @@ def _create_dataloader_from_texts(
     )
 
 
+def _is_valid_corpus_row(row: dict[str, str]) -> bool:
+    """Check if a corpus row has non-empty text content."""
+    if "text" not in row or not row["text"] or not row["text"].strip():
+        return False
+    return True
+
+
+def _is_valid_query_row(row: dict[str, str]) -> bool:
+    """Check if a query row has non-empty text content."""
+    if "text" not in row or not row["text"] or not row["text"].strip():
+        return False
+    return True
+
+
+
 def _corpus_to_dict(
     row: dict[str, str],
 ) -> dict[str, str]:
@@ -73,7 +88,8 @@ def _create_dataloader_for_retrieval_corpus(
     Returns:
         A dataloader with the corpus.
     """
-    new_ds = dataset.map(_corpus_to_dict)
+    filtered_ds = dataset.filter(_is_valid_corpus_row)
+    new_ds = filtered_ds.map(_corpus_to_dict)
     return new_ds
     # new_ds = dataset.map(_corpus_to_dict, desc="Converting corpus dict")
     # return torch.utils.data.DataLoader(
@@ -84,7 +100,6 @@ def _create_dataloader_for_retrieval_corpus(
 
 def _combine_queries_with_instruction_text(row: dict[str, str]) -> dict[str, str]:
     row["query"] = row["text"]
-
     if "instruction" in row and row["instruction"] is not None:
         row["text"] = row["query"] + " " + row["instruction"]
     else:
@@ -105,9 +120,9 @@ def _create_text_dataloader_for_queries(
     Returns:
         A dataloader with the queries.
     """
-    queries = queries.map(
-        _combine_queries_with_instruction_text,
-        desc="Processing queries for dataloading",
+    filtered_queries = queries.filter(_is_valid_query_row)
+    queries = filtered_queries.map(
+        _combine_queries_with_instruction_text
     )
     return queries
     # return torch.utils.data.DataLoader(

@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=50G       
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:2
+#SBATCH --gres=gpu:H100:1
 
 
 env_path=\/orfeo/cephfs/scratch/area/ddoimo/open/hidden_pool_embeddings
@@ -29,19 +29,6 @@ export PYTHONUNBUFFERED=1
 
 
 #test evbal pipeline
-torchrun \
-    --nnodes=$SLURM_NTASKS \
-    --node-rank=$SLURM_NODEID \
-    --nproc-per-node=$GPU_NUMBER \
-    --rdzv-id=$SLURM_PROCID \
-    --rdzv-backend=c10d \
-    --rdzv-endpoint=$head_node:0 \
-    test_evaluation_pipeline.py  \
-    --model_name_or_path google/embeddinggemma-300m \
-
-
-# test model
-
 # torchrun \
 #     --nnodes=$SLURM_NTASKS \
 #     --node-rank=$SLURM_NODEID \
@@ -49,6 +36,19 @@ torchrun \
 #     --rdzv-id=$SLURM_PROCID \
 #     --rdzv-backend=c10d \
 #     --rdzv-endpoint=$head_node:0 \
-#     test_model.py  \
+#     test_evaluation_pipeline.py  \
 #     --model_name_or_path google/embeddinggemma-300m \
-#     --benchmark mteb_multilingual_v2
+
+
+# test model
+
+torchrun \
+    --nnodes=$SLURM_NTASKS \
+    --node-rank=$SLURM_NODEID \
+    --nproc-per-node=$GPU_NUMBER \
+    --rdzv-id=$SLURM_PROCID \
+    --rdzv-backend=c10d \
+    --rdzv-endpoint=$head_node:0 \
+    test_model.py  \
+    --model_name_or_path "Qwen/Qwen3-Embedding-0.6B" \
+    --benchmark mteb_multilingual_v2
