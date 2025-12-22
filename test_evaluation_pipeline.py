@@ -5,6 +5,15 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import argparse
 from transformers import AutoModel, AutoTokenizer
 import torch.distributed as dist
+from sentence_transformers import SentenceTransformer
+from utils._create_dataloaders import (
+    instruction_template_qwen3,
+    instruction_template_embeddinggemma,
+)
+
+model = SentenceTransformer("google/embeddinggemma-300m")
+
+model.prompts
 
 
 def parse_args():
@@ -27,12 +36,9 @@ def main():
     )
 
     retrieval_evaluator = evaluate_retrieval(
-        tasks=[
-            "SCIDOCS",
-            "ArguAna",
-            "SciFact",
-        ],
+        tasks=["ArguAna"],
         tokenizer=tokenizer,
+        instruction_template=instruction_template_qwen3,
     )
 
     model = AutoModel.from_pretrained(

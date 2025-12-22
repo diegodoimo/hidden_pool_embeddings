@@ -16,7 +16,6 @@ from mteb._evaluators.retrieval_metrics import calculate_retrieval_scores
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from mteb._evaluators.retrieval_metrics import make_score_dict
-from utils.instructions import get_task_instruction
 
 
 def last_token_pool(last_hidden_states, attention_mask):
@@ -79,15 +78,6 @@ class evaluate_retrieval:
         self.task_names = tasks
         self.datasets = self.prepare_datasets(instruction_template)
 
-    @staticmethod
-    def tokenize_batch(examples, tokenizer, max_passage_len, instruction=""):
-        prompt = [instruction + q for q in examples["text"]]
-
-        tokens = [tokenizer.encode(text) for text in prompt]
-
-        result = {"text": examples["text"], "input_ids": tokens, "id": examples["id"]}
-        return result
-
     def prepare_datasets(self, instruction_template, max_passage_len=4096):
 
         datasets = {}
@@ -114,29 +104,17 @@ class evaluate_retrieval:
                 dataset=data_split["queries"],
                 task_metadata=task.metadata,
                 prompt_type=PromptType.query,
+                instruction_template=instruction_template,
             )
-
+            print(queries_dataset[0]["text"])
             corpus_dataset = create_dataset(
                 self.tokenizer,
                 dataset=data_split["corpus"],
                 task_metadata=task.metadata,
-                prompt_type=PromptType.query,
-            )
-
-            instruction = get_task_instruction(
-                task_metadata=task.metadata,
-                prompt_type=PromptType.query,
+                prompt_type=PromptType.document,
                 instruction_template=instruction_template,
             )
-
-            tokenize = partial(
-                self.tokenize_batch,
-                tokenizer=self.tokenizer,
-                max_passage_len=4096,
-                intruction=instruction,
-            )
-            queries_dataset = queries_dataset.map(tokenize, batched=True, batch_size=1000)
-            corpus_dataset = corpus_dataset.map(tokenize, batched=True, batch_size=1000)
+            print(corpus_dataset[0]["text"])
 
             datasets[task_name] = {
                 "dataset": {
