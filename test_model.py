@@ -7,6 +7,21 @@ import json
 import numpy as np
 
 
+# print("loading benchmark")
+# bench_dict = {"mteb_multilingual_v2": "MTEB(Multilingual, v2)", "mteb_eng_v2": "MTEB(eng, v2)"}
+# benchmark = mteb.get_benchmark("MTEB(Multilingual, v2)")
+# benchmarks = mteb.get_benchmarks()
+
+
+# task_types = set(task.metadata.prompt for benchmark in benchmarks for task in benchmark.tasks)
+
+# for benchmark in benchmarks:
+#     for task in benchmark.tasks:
+#         print(task.metadata.name)
+#         print(task.metadata.prompt)
+# task_types
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_path", type=str, default="")

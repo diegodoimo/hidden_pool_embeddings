@@ -5,6 +5,11 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import argparse
 from transformers import AutoModel, AutoTokenizer
 import torch.distributed as dist
+from sentence_transformers import SentenceTransformer
+from utils._create_dataloaders import (
+    instruction_template_qwen3,
+    instruction_template_embeddinggemma,
+)
 
 
 def parse_args():
@@ -21,18 +26,16 @@ def main():
     torch.cuda.set_device(dist.get_rank())
 
     tokenizer = AutoTokenizer.from_pretrained(
-        "Qwen/Qwen3-Embedding-0.6B",
+        args.model_name_or_path,
         use_fast=False,
-        trust_remote_code=True,
+        trust_remote_code=True
     )
 
     retrieval_evaluator = evaluate_retrieval(
-        tasks=[
-            "SCIDOCS",
-            "ArguAna",
-            "SciFact",
-        ],
+        tasks=["ArguAna"],
         tokenizer=tokenizer,
+        instruction_template=instruction_template_qwen3,
+        padding_side="right",
     )
 
     model = AutoModel.from_pretrained(
@@ -43,6 +46,8 @@ def main():
     model = DDP(model, device_ids=[LOCAL_RANK])
     results = retrieval_evaluator.evaluate(model, batch_size=32)
     print(results)
+    
+    dist.destroy_process_group()
 
 
 if __name__ == "__main__":
