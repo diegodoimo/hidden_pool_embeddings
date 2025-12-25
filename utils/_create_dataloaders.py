@@ -24,9 +24,9 @@ def instruction_template_qwen3(prompt_type, task_metadata, row) -> str:
     if prompt_type == PromptType.query:
         if task_metadata.prompt is not None:
             instruction = task_metadata.prompt["query"]
-            prompt = f"Instruct: {instruction.strip()}\nQuery: {text.strip()}"
+            prompt = f"Instruct: {instruction.strip()}\nQuery:{text.strip()}"
         else:
-            prompt = f"Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: {text.strip()}"
+            prompt = f"Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:{text.strip()}"
 
     elif prompt_type == PromptType.document:
 

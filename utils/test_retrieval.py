@@ -137,17 +137,17 @@ class evaluate_retrieval:
         for batch in loader:
             batch = {key: val.to(model.device) for key, val in batch.items()}
 
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                out_embeddings = model(
-                    input_ids=batch["input_ids"],
-                    attention_mask=batch["attention_mask"],
-                )
+            # with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            out_embeddings = model(
+                input_ids=batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+            )
 
-                out_embeddings = last_token_pool(
-                    out_embeddings.last_hidden_state,
-                    batch["attention_mask"],
-                )
-                out_embeddings = F.normalize(out_embeddings, p=2, dim=1)
+            out_embeddings = last_token_pool(
+                out_embeddings.last_hidden_state,
+                batch["attention_mask"],
+            )
+            out_embeddings = F.normalize(out_embeddings, p=2, dim=1)
 
             gathered = [torch.zeros_like(out_embeddings) for _ in range(self.world_size)]
             dist.all_gather(gathered, out_embeddings)
