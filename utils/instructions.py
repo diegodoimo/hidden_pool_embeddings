@@ -2,33 +2,6 @@ import mteb
 from mteb.types import PromptType
 from mteb import TaskMetadata
 
-
-# QWEN3
-
-
-{
-    "BitextMining",
-    "Classification",
-    "Clustering",
-    "Compositionality",
-    "DocumentUnderstanding",
-    "ImageClassification",
-    "ImageClustering",
-    "InstructionReranking",
-    "MultilabelClassification",
-    "PairClassification",
-    "Regression",
-    "Reranking",
-    "Retrieval",
-    "STS",
-    "Summarization",
-    "VisionCentricQA",
-    "VisualSTS(eng)",
-    "VisualSTS(multi)",
-    "ZeroShotClassification",
-}
-
-
 def get_prompt(
     self,
     task_metadata: TaskMetadata,

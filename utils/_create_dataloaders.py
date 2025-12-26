@@ -24,6 +24,7 @@ def instruction_template_qwen3(prompt_type, task_metadata, row) -> str:
     if prompt_type == PromptType.query:
         if task_metadata.prompt is not None:
             instruction = task_metadata.prompt["query"]
+            # just to mimick the broken mteb code
             prompt = f"Instruct: {instruction.strip()}\nQuery:{text.strip()}"
         else:
             prompt = f"Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:{text.strip()}"
@@ -41,9 +42,10 @@ def instruction_template_qwen3(prompt_type, task_metadata, row) -> str:
 
 
 def instruction_template_embeddinggemma(prompt_type, task_metadata, row):
+
     text = row["text"]
 
-    # we do not use task specific instruction in embeddinggemma
+    # we do not use  task specific instruction in embeddinggemma
     if prompt_type == PromptType.query:
         prompt = TASK_PROMPTS[task_metadata.type]
 
@@ -74,22 +76,27 @@ def _is_valid_query_row(row: dict[str, str]) -> bool:
     return True
 
 
-def _build_prompt(
+def _build_prompt_qwen(
+    rows,
     tokenizer,
     instruction_template,
     prompt_type,
     task_metadata,
-    rows: dict[str, str],
-) -> dict[str, str]:
+    eot_id,
+):
 
-    text_prompts = [instruction_template(prompt_type, task_metadata, row=row) for row in rows]
-    tokens = [tokenizer.encode(prompt) for prompt in text_prompts]
+    # at this stage we have {"id": [id1, id2, id3, ...], "text": [text1, text2, text3, ...], }
+    num_rows = len(rows["text"])
+    row_dicts = [{key: rows[key][i] for key in rows.keys()} for i in range(num_rows)]
+
+    text_prompts = [instruction_template(prompt_type, task_metadata, row=row) for row in row_dicts]
+    # we use the dafault add_special_tokens = True, tokenizer.encode do not add the special token
+    tokens = [tokenizer.encode(prompt) + [eot_id] for prompt in text_prompts]
 
     new_rows = {
         "id": rows["id"],
         "input_ids": tokens,
         "text": text_prompts,
-        "body": rows["text"],
     }
 
     return new_rows
@@ -134,11 +141,12 @@ def create_dataset(
             raise ValueError(f"Can't handle prompt type different from query or document")
 
         input_to_dict = partial(
-            _build_prompt,
+            _build_prompt_qwen,
             tokenizer=tokenizer,
             instruction_template=instruction_template,
             prompt_type=prompt_type,
             task_metadata=task_metadata,
+            eot_id=tokenizer.pad_token_id,
         )
 
         new_ds = filtered_ds.map(
