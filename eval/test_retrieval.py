@@ -125,10 +125,6 @@ class evaluate_retrieval:
                 tokenizer=self.tokenizer,
                 prompt_type=PromptType.document,
             )
-            # print(corpus_dataset[0]["text"])
-
-            # with open("my_inputs.txt", "a") as file:
-            #     file.write(corpus_dataset[0]["text"]+"\n")
 
             datasets[task_name] = {
                 "dataset": {

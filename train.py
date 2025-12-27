@@ -333,8 +333,12 @@ def main():
     )
 
     # **************************************
-    # classification_evaluator = evaluate_classification(tasks=["SCIDOCS"], tokenizer=tokenizer)
-    retrieval_evaluator = evaluate_retrieval(tasks=["SCIDOCS"], tokenizer=tokenizer)
+    retrieval_evaluator = evaluate_retrieval(
+        tasks=["ArguAna"],
+        tokenizer=tokenizer,
+        instruction_template=instruction_template_qwen3,
+        padding_side="right",
+    )
 
     # Initialize loss and optimizer
     loss_fn = EmbeddingGemmaLoss(temperature=0.07)
