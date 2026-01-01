@@ -1,4 +1,4 @@
-from utils.test_retrieval import evaluate_retrieval
+from preprocessing.test_retrieval import evaluate_retrieval
 import os
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -6,7 +6,7 @@ import argparse
 from transformers import AutoModel, AutoTokenizer
 import torch.distributed as dist
 from sentence_transformers import SentenceTransformer
-from utils._create_dataloaders import (
+from preprocessing.create_datasets import (
     instruction_template_qwen3,
     instruction_template_embeddinggemma,
 )
@@ -26,9 +26,7 @@ def main():
     torch.cuda.set_device(dist.get_rank())
 
     tokenizer = AutoTokenizer.from_pretrained(
-        args.model_name_or_path,
-        use_fast=False,
-        trust_remote_code=True
+        args.model_name_or_path, use_fast=False, trust_remote_code=True
     )
 
     retrieval_evaluator = evaluate_retrieval(
@@ -46,7 +44,7 @@ def main():
     model = DDP(model, device_ids=[LOCAL_RANK])
     results = retrieval_evaluator.evaluate(model, batch_size=32)
     print(results)
-    
+
     dist.destroy_process_group()
 
 

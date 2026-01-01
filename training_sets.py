@@ -190,6 +190,17 @@ size_response.raise_for_status()
 size_data = size_response.json()
 
 
+task = mteb.get_task("mteb/msmarco-v2"])
+
+
+name = task.metadata.dataset["path"]
+if name.lower() == "aggregate tasks do not have a path":
+    return None, None  # Return None to indicate no result
+
+eval_splits = task.metadata.eval_splits
+
+
+
 response = requests.get(API_URL, params={"dataset": name}, timeout=10)
 response.raise_for_status()
 splits_info = response.json().get("splits", [])

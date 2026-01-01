@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import DataLoader
 from mteb.abstasks.retrieval import _filter_queries_without_positives
 from mteb.types import PromptType
-from ._create_dataloaders import create_dataset
+from .create_datasets import create_dataset
 
 from typing import cast
 from copy import copy

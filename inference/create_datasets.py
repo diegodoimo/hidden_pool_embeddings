@@ -76,7 +76,7 @@ def _is_valid_query_row(row: dict[str, str]) -> bool:
     return True
 
 
-def _build_prompt_qwen(
+def _build_prompt(
     rows,
     tokenizer,
     instruction_template,
@@ -96,7 +96,8 @@ def _build_prompt_qwen(
     new_rows = {
         "id": rows["id"],
         "input_ids": tokens,
-        "text": text_prompts,
+        "prompt": text_prompts,
+        "input_text": row_dicts,
     }
 
     return new_rows
@@ -141,7 +142,7 @@ def create_dataset(
             raise ValueError(f"Can't handle prompt type different from query or document")
 
         input_to_dict = partial(
-            _build_prompt_qwen,
+            _build_prompt,
             tokenizer=tokenizer,
             instruction_template=instruction_template,
             prompt_type=prompt_type,

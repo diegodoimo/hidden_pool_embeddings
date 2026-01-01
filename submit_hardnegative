@@ -35,6 +35,5 @@ torchrun \
     --rdzv-id=$SLURM_PROCID \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
-    hard_negative_mining.py  \
-    --model_name_or_path google/embeddinggemma-300m \
-    --benchmark mteb_multilingual_v2
+    mine_hard_negatives.py  \
+    --model_name_or_path "Qwen/Qwen3-Embedding-0.6B" \
