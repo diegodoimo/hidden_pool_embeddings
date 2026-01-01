@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 
 from datasets import Dataset, Features, Value, Sequence
-from load_datasets import load_data_retrieval
+from .load_datasets import load_data_retrieval
 from tasks import get_task
 from pathlib import Path
 
@@ -106,7 +106,7 @@ class HardNegativesMiner:
 
             task = get_task(task_name)
 
-            data_split = load_data_retrieval(task_name)
+            data_split = load_data_retrieval(task)
 
             assert len(data_split["queries"]["text"]) > 1
             assert len(data_split["queries"]["text"]) == len(data_split["positives"]["text"])
@@ -269,6 +269,15 @@ class HardNegativesMiner:
             )
 
             # Create dataset
+
+            print(len(task["dataset"]["anchor_id"]))
+            print(len(task["dataset"]["anchor_text"]))
+            print(len(task["dataset"]["positive_id"]))
+            print(len(task["dataset"]["positive_text"]))
+            print(len(negative_texts))
+            print(len(negative_indices))
+            print(len(negative_indices[0]))
+
             data = {
                 "anchor_id": task["dataset"]["anchor_id"],
                 "anchor_text": task["dataset"]["anchor_text"],

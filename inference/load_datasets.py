@@ -143,52 +143,89 @@ def create_hf_dataset(
     has_title,
 ):
 
-    if has_title:
-        positives_ = [
-            {"text": text, "id": id_, "title": title}
-            for text, id_, title in zip(positive_texts, positive_ids, positive_titles)
-        ]
-        documents_ = [
-            {"text": text, "id": id_, "title": title}
-            for text, id_, title in zip(document_texts, document_ids, document_titles)
-        ]
-    else:
-        positives_ = [{"text": text, "id": id_} for text, id_ in zip(positive_texts, positive_ids)]
-        documents_ = [{"text": text, "id": id_} for text, id_, in zip(document_texts, document_ids)]
+    queries_ds = Dataset.from_dict(
+        {
+            "text": query_texts,
+            "id": query_ids,
+        },
+        features=Features(
+            {
+                "text": Value("string"),
+                "id": Value("string"),
+            }
+        ),
+    )
 
-    data = {
-        "queries": [{"text": text, "id": id_} for text, id_ in zip(query_texts, query_ids)],
-        "positives": positives_,
-        "corpus": documents_,
+
+
+    if has_title:
+
+
+        positives_ds = Dataset.from_dict(
+            {
+                "text": positive_texts,
+                "id": positive_ids,
+                "title": positive_titles,
+            },
+            features=Features(
+                {
+                    "text": Value("string"),
+                    "id": Value("string"),
+                    "title": Value("string"),
+                }
+            ),
+        )
+
+        corpus_ds = Dataset.from_dict(
+            {
+                "text": document_texts,
+                "id": document_ids,
+                "title": document_titles,
+            },
+            features=Features(
+                {
+                    "text": Value("string"),
+                    "id": Value("string"),
+                    "title": Value("string"),
+                }
+            ),
+        )
+    else:
+
+        positives_ds = Dataset.from_dict(
+            {
+                "text": positive_texts,
+                "id": positive_ids,
+            },
+            features=Features(
+                {
+                    "text": Value("string"),
+                    "id": Value("string"),
+                }
+            ),
+        )
+
+        corpus_ds = Dataset.from_dict(
+            {
+                "text": document_texts,
+                "id": document_ids,
+            },
+            features=Features(
+                {
+                    "text": Value("string"),
+                    "id": Value("string"),
+                }
+            ),
+        )
+
+
+    return {
+        "queries": queries_ds,
+        "positives": positives_ds,
+        "corpus": corpus_ds,
     }
 
-    # Define schema based on whether titles are present
-    if has_title:
-        features = Features(
-            {
-                "queries": {"text": Value("string"), "id": Value("string")},
-                "positives": {
-                    "text": Value("string"),
-                    "id": Value("string"),
-                    "title": Value("string"),
-                },
-                "corpus": {
-                    "text": Value("string"),
-                    "id": Value("string"),
-                    "title": Value("string"),
-                },
-            }
-        )
-    else:
-        features = Features(
-            {
-                "queries": {"text": Value("string"), "id": Value("string")},
-                "positives": {"text": Value("string"), "id": Value("string")},
-                "corpus": {"text": Value("string"), "id": Value("string")},
-            }
-        )
-    hf_dataset = Dataset.from_dict(data, features=features)
-    return hf_dataset
+    
 
 
 def load_data_classification(task, balance_dataset=True):

@@ -1,9 +1,6 @@
 from .abs_task import AbsTask, TaskMetadata
 import json
-
-
-with open("task_prompts_qwen3.json", "r") as f:
-    TASK_PROMPTS = json.load(f)
+from .prompts import QWEN3_PROMPTS as TASK_PROMPTS
 
 
 class MSMARCO(AbsTask):
