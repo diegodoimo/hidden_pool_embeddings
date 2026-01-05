@@ -78,6 +78,11 @@ def load_data_retrieval(task) -> Dataset:
             else:
                 positive_texts.append(positive_entry)
 
+        # queries can be repeted many times in the search
+        # for negatives we just want unique queries
+        unique_query_ids = set(query_ids)
+        unique_queries = [queries_dict[id_] for id_ in unique_query_ids]
+
         # Extract all documents from corpus
         document_ids = list(corpus_dict.keys())
         if has_title:
@@ -117,6 +122,8 @@ def load_data_retrieval(task) -> Dataset:
 
     # Create HuggingFace Dataset
     hf_dataset = create_hf_dataset(
+        unique_queries,
+        unique_query_ids,
         query_texts,
         query_ids,
         positive_texts,
@@ -132,6 +139,8 @@ def load_data_retrieval(task) -> Dataset:
 
 
 def create_hf_dataset(
+    unique_queries,
+    unique_ids,
     query_texts,
     query_ids,
     positive_texts,
@@ -156,10 +165,20 @@ def create_hf_dataset(
         ),
     )
 
-
+    unique_queries_ds = Dataset.from_dict(
+        {
+            "text": unique_queries,
+            "id": unique_ids,
+        },
+        features=Features(
+            {
+                "text": Value("string"),
+                "id": Value("string"),
+            }
+        ),
+    )
 
     if has_title:
-
 
         positives_ds = Dataset.from_dict(
             {
@@ -218,14 +237,12 @@ def create_hf_dataset(
             ),
         )
 
-
     return {
+        "unique_queries": unique_queries_ds,
         "queries": queries_ds,
         "positives": positives_ds,
         "corpus": corpus_ds,
     }
-
-    
 
 
 def load_data_classification(task, balance_dataset=True):

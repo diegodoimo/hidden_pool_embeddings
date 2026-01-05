@@ -191,7 +191,7 @@ class HardNegativesMiner:
         sampler_corpus = None
         if self.world_size > 1:
             sampler_queries = torch.utils.data.distributed.DistributedSampler(
-                dataset["queries"], shuffle=False, drop_last=False
+                dataset["unique_queries"], shuffle=False, drop_last=False
             )
             sampler_corpus = torch.utils.data.distributed.DistributedSampler(
                 dataset["corpus"], shuffle=False, drop_last=False
@@ -204,7 +204,7 @@ class HardNegativesMiner:
         )
 
         queries_loader = DataLoader(
-            dataset["queries"],
+            dataset["unique_queries"],
             sampler=sampler_queries,
             batch_size=batch_size,
             num_workers=16,
@@ -231,12 +231,20 @@ class HardNegativesMiner:
             largest=True,
         )
 
-        negative_texts = []
-        negative_indices = []
-        for row_indices in top_indices:
-            negative_indices.append(list(np.array(dataset["corpus"]["id"])[row_indices[50:65]]))
-            negative_texts.append(list(np.array(dataset["corpus"]["text"])[row_indices[50:65]]))
-        return negative_texts, negative_indices
+        # negative_texts = []
+        # negative_indices = []
+        # for row_indices in top_indices:
+        #     negative_indices.append(list(np.array(dataset["corpus"]["id"])[row_indices[50:65]]))
+        #     negative_texts.append(list(np.array(dataset["corpus"]["text"])[row_indices[50:65]]))
+
+        hard_negatives = {}
+        unique_query_ids = list(dataset["unique_queries"]["id"])
+        for row_indices, q_id in zip(top_indices, unique_query_ids):
+            negative_indices = list(np.array(dataset["corpus"]["id"])[row_indices[50:65]])
+            negative_texts = list(np.array(dataset["corpus"]["text"])[row_indices[50:65]])
+            hard_negatives[q_id] = {"text": negative_texts, "id": negative_indices}
+
+        return hard_negatives
 
     def mine_negatives(self, model, batch_size=64):
 
