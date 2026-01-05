@@ -63,9 +63,8 @@ def load_data_retrieval(task) -> Dataset:
                 continue
 
             # Extract query
-            query_text = queries_dict[anchor_id]
             query_ids.append(anchor_id)
-            query_texts.append(query_text)
+            query_texts.append(queries_dict[anchor_id])
 
             # Extract positive
             positive_entry = corpus_dict[positive_id]
@@ -89,7 +88,6 @@ def load_data_retrieval(task) -> Dataset:
 
     else:
         dataset = load_dataset(task.hf_name, name=task.hf_subset, split=task.split)
-
         # Assume dataset has matching lengths and indices correspond to pairs
         query_texts = list(dataset[task.anchor_name])
         positive_texts = list(dataset[task.positive_name])
@@ -155,7 +153,6 @@ def create_hf_dataset(
             }
         ),
     )
-
 
 
     if has_title:

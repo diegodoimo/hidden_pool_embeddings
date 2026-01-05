@@ -17,7 +17,7 @@ from datasets import Dataset, Features, Value, Sequence
 from .load_datasets import load_data_retrieval
 from tasks import get_task
 from pathlib import Path
-
+import time 
 
 def last_token_pool(last_hidden_states, attention_mask):
     left_padding = attention_mask[:, -1].sum() == attention_mask.shape[0]
@@ -117,7 +117,9 @@ class HardNegativesMiner:
             # data_split["relevant_docs"], data_split["queries"] = _filter_queries_without_positives(
             #    data_split["relevant_docs"], data_split["queries"]
             # )
-
+            
+            print("num anchors", len(data_split["queries"]))
+            
             queries_dataset = create_dataset(
                 dataset=data_split["queries"],
                 task_metadata=task.metadata,
@@ -125,6 +127,8 @@ class HardNegativesMiner:
                 tokenizer=self.tokenizer,
                 prompt_type=PromptType.query,
             )
+
+            print("num docs", len(data_split["corpus"])) 
 
             corpus_dataset = create_dataset(
                 dataset=data_split["corpus"],
@@ -134,12 +138,17 @@ class HardNegativesMiner:
                 prompt_type=PromptType.document,
             )
 
+            print(f"number tokenized anchors: {len(queries_dataset)}")
+            print(f"number tokenized docs: {len(corpus)}")
+
+
             datasets[task_name] = {
                 "dataset": {
                     "queries": queries_dataset,
+                    "positives": data_split["positives"],
                     "corpus": corpus_dataset,
+
                 },
-                "ignore_identical_ids": task.ignore_identical_ids,
             }
 
         return datasets
@@ -220,9 +229,22 @@ class HardNegativesMiner:
             collate_fn=collate_fn,
         )
 
+
+        if self.rank == 0:
+            start = time.time()
+            print(f"building query embeddings")
         query_embeddings = self.encode(model, queries_loader)
+
+        if self.rank == 0:
+            print(f"duration: {time.time()-start}")
+            print(f"building document embeddings")
+        start = time.time()
         corpus_embeddings = self.encode(model, corpus_loader)
 
+        if self.rank == 0:
+            print(f"duration: {time.time()-start}")
+            print(f"finding hard negatives")
+        start = time.time()
         scores = torch.matmul(query_embeddings, corpus_embeddings.T)
         top_scores, top_indices = torch.topk(
             scores,
@@ -231,11 +253,30 @@ class HardNegativesMiner:
             largest=True,
         )
 
+
+        if self.rank == 0:
+            print(f"duration: {time.time()-start}")
+            print(f"building negative lists")
+
+        start = time.time()
+        top_scores = top_scores.cpu().numpy()
+        top_indices = top_indices.cpu().numpy()
         negative_texts = []
         negative_indices = []
+
+        if self.rank == 0:
+            print(dataset["corpus"]["id"][0:5])
+            print(dataset["corpus"]["text"][0:5])
+
+        array_ids = np.array(dataset["corpus"]["id"])   
+        array_texts = np.array(dataset["corpus"]["text"])
+
         for row_indices in top_indices:
-            negative_indices.append(list(np.array(dataset["corpus"]["id"])[row_indices[50:65]]))
-            negative_texts.append(list(np.array(dataset["corpus"]["text"])[row_indices[50:65]]))
+            negative_indices.append(list(array_ids[row_indices[50:65]]) )
+            negative_texts.append(list(array_texts[row_indices[50:65]]) )
+
+        if self.rank == 0:
+            print(f"duration: {time.time()-start}")
         return negative_texts, negative_indices
 
     def mine_negatives(self, model, batch_size=64):
@@ -243,19 +284,22 @@ class HardNegativesMiner:
         for name, task in self.datasets.items():
             new_dataset = {}
 
+
+
+            dataset = task["dataset"]
             if self.rank == 0:
                 print(f"processing datasets {name}")
+                print(dataset.keys())
 
             negative_texts, negative_indices = self.mine_one(
-                dataset=task["dataset"],
-                ignore_identical_ids=task["ignore_identical_ids"],
-                hf_split=task["hf_split"],
-                hf_subset=task["hf_subset"],
-                main_score=task["main_score"],
+                dataset=dataset,
                 model=model,
                 batch_size=batch_size,
             )
 
+
+            if self.rank == 0:
+                print(f"saving dataset")
             # Define schema
             features = Features(
                 {
@@ -263,28 +307,29 @@ class HardNegativesMiner:
                     "anchor_text": Value("string"),
                     "positive_id": Value("string"),
                     "positive_text": Value("string"),
-                    "negative_ids": Sequence(Value("string")),
-                    "negative_texts": Sequence(Value("string")),
+                    "negative_id": Sequence(Value("string")),
+                    "negative_text": Sequence(Value("string")),
                 }
             )
 
             # Create dataset
 
-            print(len(task["dataset"]["anchor_id"]))
-            print(len(task["dataset"]["anchor_text"]))
-            print(len(task["dataset"]["positive_id"]))
-            print(len(task["dataset"]["positive_text"]))
+            print(len(dataset["queries"]["id"]))
+            print(len(dataset["queries"]["text"]))
+            print(len(dataset["positives"]["id"]))
+            print(len(dataset["positives"]["text"]))
+            print(len())
             print(len(negative_texts))
             print(len(negative_indices))
             print(len(negative_indices[0]))
 
             data = {
-                "anchor_id": task["dataset"]["anchor_id"],
-                "anchor_text": task["dataset"]["anchor_text"],
-                "positive_id": task["dataset"]["positive_id"],
-                "positive_text": task["dataset"]["positive_text"],
-                "negative_ids": negative_texts,  # List of lists
-                "negative_texts": negative_indices,
+                "anchor_id": dataset["queries"]["id"],
+                "anchor_text": dataset["queries"]["text"],
+                "positive_id": dataset["positives"]["id"],
+                "positive_text": dataset["positives"]["text"],
+                "negative_id": negative_indices,
+                "negative_text": negative_texts
             }
 
             dataset = Dataset.from_dict(data, features=features)
