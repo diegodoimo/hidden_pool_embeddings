@@ -122,7 +122,7 @@ class HardNegativesMiner:
             print("num anchors", len(data_split["queries"]))
 
             queries_dataset = create_dataset(
-                dataset=data_split["queries"],
+                dataset=data_split["unique_queries"],
                 task_metadata=task.metadata,
                 instruction_template=instruction_template,
                 tokenizer=self.tokenizer,
@@ -144,8 +144,9 @@ class HardNegativesMiner:
 
             datasets[task_name] = {
                 "dataset": {
-                    "queries": queries_dataset,
+                    "queries": data_split["queries"],
                     "positives": data_split["positives"],
+                    "unique_queries": queries_dataset,
                     "corpus": corpus_dataset,
                 },
             }
