@@ -97,7 +97,7 @@ def _build_prompt(
         "id": rows["id"],
         "input_ids": tokens,
         "prompt": text_prompts,
-        "input_text": row_dicts,
+        "text": rows["text"],
     }
 
     return new_rows
@@ -127,35 +127,35 @@ def create_dataset(
         A tokenized dataset.
     """
 
-    input_type = task_metadata.get_modalities(prompt_type)
+    #input_type = task_metadata.get_modalities(prompt_type)
 
-    if input_type == ["text"]:  # text only
+    #if input_type == ["text"]:  # text only
 
-        if prompt_type == PromptType.document:
-            filtered_ds = dataset.filter(_is_valid_corpus_row)
-        elif prompt_type == PromptType.query:
-            if not isinstance(dataset["text"][0], list):
-                filtered_ds = dataset.filter(_is_valid_query_row)
-            else:
-                raise ValueError(f"Can't handle queries type queries for conversation")
+    if prompt_type == PromptType.document:
+        filtered_ds = dataset.filter(_is_valid_corpus_row)
+    elif prompt_type == PromptType.query:
+        if not isinstance(dataset["text"][0], list):
+            filtered_ds = dataset.filter(_is_valid_query_row)
         else:
-            raise ValueError(f"Can't handle prompt type different from query or document")
+            raise ValueError(f"Can't handle queries type queries for conversation")
+    else:
+        raise ValueError(f"Can't handle prompt type different from query or document")
 
-        input_to_dict = partial(
-            _build_prompt,
-            tokenizer=tokenizer,
-            instruction_template=instruction_template,
-            prompt_type=prompt_type,
-            task_metadata=task_metadata,
-            eot_id=tokenizer.pad_token_id,
-        )
+    input_to_dict = partial(
+        _build_prompt,
+        tokenizer=tokenizer,
+        instruction_template=instruction_template,
+        prompt_type=prompt_type,
+        task_metadata=task_metadata,
+        eot_id=tokenizer.pad_token_id,
+    )
 
-        new_ds = filtered_ds.map(
-            input_to_dict,
-            batched=True,
-            batch_size=1000,
-        )
+    new_ds = filtered_ds.map(
+        input_to_dict,
+        batched=True,
+        batch_size=1000,
+    )
 
-        return new_ds
+    return new_ds
 
-    raise ValueError(f"Can't handle queries type {input_type}")
+    #raise ValueError(f"Can't handle queries type {input_type}")
