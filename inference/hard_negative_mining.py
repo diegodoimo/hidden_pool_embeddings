@@ -296,8 +296,8 @@ class HardNegativesMiner:
                 batch_size=batch_size,
             )
 
-            negative_texts = [hard_negatives[id_]["texts"] for id_ in dataset["queries"]["id"]]
-            negative_indices = [hard_negatives[id_]["texts"] for id_ in dataset["queries"]["id"]]
+            negative_texts = [hard_negatives[id_]["text"] for id_ in dataset["queries"]["id"]]
+            negative_indices = [hard_negatives[id_]["text"] for id_ in dataset["queries"]["id"]]
 
             if self.rank == 0:
                 print(f"saving dataset")
