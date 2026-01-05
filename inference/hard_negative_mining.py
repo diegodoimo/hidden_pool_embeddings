@@ -140,7 +140,7 @@ class HardNegativesMiner:
             )
 
             print(f"number tokenized anchors: {len(queries_dataset)}")
-            print(f"number tokenized docs: {len(corpus)}")
+            print(f"number tokenized docs: {len(corpus_dataset)}")
 
             datasets[task_name] = {
                 "dataset": {
