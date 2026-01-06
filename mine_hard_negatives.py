@@ -31,7 +31,7 @@ def main():
 
     miner = HardNegativesMiner(
         path=f"./results/datasets_negatives/{path_to_name[args.model_name_or_path]}",
-        tasks=["msmarco"],
+        tasks=["nfcorpus"], #msmarco
         tokenizer=tokenizer,
         instruction_template=instruction_template_qwen3,
         padding_side="right",

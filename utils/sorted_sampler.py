@@ -46,14 +46,9 @@ class LenghtSortedSampler(Sampler[_T_co]):
         self.total_size = self.num_samples * self.num_replicas
         self.seed = seed
 
-
-
-
-    def __iter__(self) -> Iterator[_T_co]:
-
         # indices = list(range(len(self.dataset)))  # type: ignore[arg-type]
         lengths = [len(instance) for instance in self.dataset["input_ids"]]
-        indices = list(np.argsort(lengths)[::-1])
+        indices = list(np.argsort(lengths))[::-1]
         # add extra samples to make it evenly divisible
         padding_size = self.total_size - len(indices)
 
@@ -68,6 +63,11 @@ class LenghtSortedSampler(Sampler[_T_co]):
 
         # subsample
         self.indices = indices[self.rank : self.total_size : self.num_replicas]
+
+
+
+    def __iter__(self) -> Iterator[_T_co]:
+
         if len(self.indices) != self.num_samples:
             raise AssertionError(
                 f"Number of subsampled indices ({len(self.indices)}) does not match num_samples ({self.num_samples})"

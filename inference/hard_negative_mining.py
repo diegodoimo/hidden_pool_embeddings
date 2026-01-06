@@ -59,7 +59,6 @@ def collate_fn_with_padding(batch, pad_token_id=0, padding_side="right"):
 
     query_token_ids = [torch.tensor(item["input_ids"]) for item in batch]
     query_attention_mask = [torch.ones_like(input_ids) for input_ids in query_token_ids]
-    indices = [torch.tensor(item["id"]) for item in batch]
 
     # Pad queries and create attention masks
     query_token_ids_padded = pad_sequence(
@@ -162,10 +161,12 @@ class HardNegativesMiner:
     def encode(self, model, loader, prompt_type):
 
         # distributed sampler will duplicate examples at the end
+
         indices = None
         if hasattr(loader.sampler, "indices"):
             indices = loader.sampler.indices
             assert isinstance(indices, list)
+        
 
         num_samples = len(loader.dataset)
         embeddings = []
@@ -235,8 +236,10 @@ class HardNegativesMiner:
 
         for chunk_idx in range(0, N_corpus, chunk_size):
 
-            subcorpus = corpus_dataset.select()
-            sampler_corpus = LenghtSortedSampler(subcorpus, shuffle=False, drop_last=False)
+            torch.cuda.empty_cache()
+            
+            subcorpus = corpus_dataset.select(range(chunk_idx, min(chunk_idx + chunk_size, N_corpus)))
+            sampler_corpus = LenghtSortedSampler(subcorpus)
             corpus_loader = DataLoader(
                 subcorpus,
                 sampler=sampler_corpus,
@@ -279,12 +282,14 @@ class HardNegativesMiner:
 
         # --- 4. Distributed Merging (if using multiple GPUs) ---
         if self.world_size > 1:
-            scores_list = [torch.empty_like(top_scores) for _ in self.world_size]
-            indices_list = [torch.empty_like(top_indices) for _ in self.world_size]
+            scores_list = [torch.empty_like(top_scores) for _ in range(self.world_size)]
+            indices_list = [torch.empty_like(top_indices) for _ in range(self.world_size)]
+            
             dist.all_gather(scores_list, top_scores)
             dist.all_gather(indices_list, top_indices)
-            all_scores = torch.cat(scores_list)
-            all_indices = torch.cat(indices_list)
+            
+            all_scores = torch.cat(scores_list, dim = 0)
+            all_indices = torch.cat(indices_list, dim = 0)
 
             top_scores, top_indices = torch.topk(
                 all_scores,
@@ -316,9 +321,10 @@ class HardNegativesMiner:
         #         dataset["corpus"], shuffle=False, drop_last=False
         #     )
 
-        sampler_queries = LenghtSortedSampler(
-            dataset["unique_queries"], shuffle=False, drop_last=False
-        )
+        sampler_queries = LenghtSortedSampler(dataset["unique_queries"])
+
+        print(sampler_queries.indices)
+        print(hasattr(sampler_queries, "indices"))
 
         collate_fn = partial(
             collate_fn_with_padding,
