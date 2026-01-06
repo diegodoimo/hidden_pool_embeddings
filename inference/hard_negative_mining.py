@@ -366,7 +366,7 @@ class HardNegativesMiner:
         top_scores, top_indices = self.search(
             model=model,
             query_embeddings=query_embeddings,
-            dataset=dataset["corpus"],
+            corpus_dataset=dataset["corpus"],
             collate_fn=collate_fn,
             top_k=top_k,
             batch_size=batch_size,
