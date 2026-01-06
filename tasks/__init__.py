@@ -3,6 +3,7 @@ from .retrieval_tasks import *
 
 
 NAME_TO_TASK = {
+    "msmarco": MSMARCO,
     "msmarco-v2": MSMARCOv2,
     "hotpotqa": HotpotQA,
     "naturalquestions": NaturalQuestions,

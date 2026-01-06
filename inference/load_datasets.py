@@ -1,18 +1,75 @@
 from datasets import load_dataset
 from tasks.retrieval_tasks import *
 from datasets import Dataset, Features, Value
+import time 
+import os
 
+RANK = int(os.environ["RANK"])
+# def get_dict(dataset, id_field, text_field, title_field=None):
+
+#     ids = dataset[id_field]
+#     texts = dataset[text_field]
+
+#     if title_field:
+#         titles = dataset[title_field]
+#         return dict(zip(ids, zip(texts, titles)))
+#     else:
+#         return dict(zip(ids, texts))
+
+
+
+# def get_dict(dataset, id_field, text_field, title_field=None):
+
+#     if title_field:
+#         return {row[id_field]: (row[text_field], row[title_field]) 
+#                 for row in dataset}
+#     else:
+#         return {row[id_field]: row[text_field] 
+#                 for row in dataset}
+
+
+# def get_dict(dataset, id_field, text_field, title_field=None):
+#     # Access columns directly instead of iterating rows
+#     ids = dataset[id_field]
+#     texts = dataset[text_field]
+    
+#     if title_field:
+#         titles = dataset[title_field]
+#         return {id_: (text, title) 
+#                 for id_, text, title in zip(ids, texts, titles)}
+#     else:
+#         return {id_: text for id_, text in zip(ids, texts)}
+
+
+
+
+from multiprocessing import Pool
+import os
+
+def process_chunk(args):
+    chunk, id_field, text_field, title_field = args
+    if title_field:
+        return {row[id_field]: (row[text_field], row[title_field]) 
+                for row in chunk}
+    else:
+        return {row[id_field]: row[text_field] for row in chunk}
 
 def get_dict(dataset, id_field, text_field, title_field=None):
+    #n_workers = os.cpu_count()-2
+    n_workers = 16
+    chunk_size = len(dataset) // n_workers
+    
+    chunks = [dataset.select(range(i, min(i + chunk_size, len(dataset)))) 
+              for i in range(0, len(dataset), chunk_size)]
+    
+    with Pool(n_workers) as pool:
+        results = pool.map(process_chunk, 
+                          [(chunk, id_field, text_field, title_field) 
+                           for chunk in chunks])
+    
+    # Merge dictionaries
+    return {k: v for d in results for k, v in d.items()}
 
-    ids = dataset[id_field]
-    texts = dataset[text_field]
-
-    if title_field:
-        titles = dataset[title_field]
-        return dict(zip(ids, zip(texts, titles)))
-    else:
-        return dict(zip(ids, texts))
 
 
 def load_data_retrieval(task) -> Dataset:
@@ -35,8 +92,16 @@ def load_data_retrieval(task) -> Dataset:
         anchors_ = load_dataset(task.hf_name, name=task.anchor_name, split=task.anchor_name)
         corpus = load_dataset(task.hf_name, name=task.positive_name, split=task.positive_name)
 
-        print("Mapping datasets to dict...")
+        
+        if RANK ==0:
+            print(f"Mapping {len(anchors_)} queries to dict...")
+            start = time.time()
         queries_dict = get_dict(anchors_, task.anchor_fields["id"], task.anchor_fields["text"])
+
+        if RANK ==0: 
+            print(f"{(time.time() - start): .2f} sec for {len(queries_dict)} samples")
+            start = time.time()
+            print(f"Mapping {len(corpus)} docs to dict...")
         corpus_dict = get_dict(
             corpus,
             task.corpus_fields["id"],
@@ -45,8 +110,10 @@ def load_data_retrieval(task) -> Dataset:
         )
 
         has_title = task.corpus_fields.get("title", None) is not None
-
-        print("Extracting positives from qrels...")
+        if RANK ==0: 
+            print(f"{(time.time() - start)/60: .2f} min for {len(corpus_dict)} samples")
+            print("Extracting positives from qrels...")
+            
         query_ids = []
         query_texts = []
         positive_ids = []

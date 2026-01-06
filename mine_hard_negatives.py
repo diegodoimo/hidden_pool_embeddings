@@ -15,7 +15,8 @@ def parse_args():
     return args
 
 
-path_to_name = {"Qwen/Qwen3-Embedding-0.6B": "qwen3_600m"}
+path_to_name = {"Qwen/Qwen3-Embedding-0.6B": "qwen3_600m", 
+            "Qwen/Qwen3-Embedding-8B": "qwen3_8b"}
 
 
 def main():
@@ -30,7 +31,7 @@ def main():
 
     miner = HardNegativesMiner(
         path=f"./results/datasets_negatives/{path_to_name[args.model_name_or_path]}",
-        tasks=["nfcorpus"],
+        tasks=["msmarco"],
         tokenizer=tokenizer,
         instruction_template=instruction_template_qwen3,
         padding_side="right",
@@ -40,6 +41,7 @@ def main():
         args.model_name_or_path,
         dtype=torch.bfloat16,
     ).to("cuda")
+
 
     model = DDP(model, device_ids=[LOCAL_RANK])
 

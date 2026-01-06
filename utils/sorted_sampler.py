@@ -14,7 +14,7 @@ __all__ = ["DistributedSampler"]
 _T_co = TypeVar("_T_co", covariant=True)
 
 
-class TestDistributedSampler(Sampler[_T_co]):
+class LenghtSortedSampler(Sampler[_T_co]):
 
     def __init__(
         self,
@@ -46,12 +46,14 @@ class TestDistributedSampler(Sampler[_T_co]):
         self.total_size = self.num_samples * self.num_replicas
         self.seed = seed
 
+
+
+
     def __iter__(self) -> Iterator[_T_co]:
 
         # indices = list(range(len(self.dataset)))  # type: ignore[arg-type]
-
-        indices = list(np.argsort([len(instance) for instance in self.dataset["input_ids"]])[::-1])
-
+        lengths = [len(instance) for instance in self.dataset["input_ids"]]
+        indices = list(np.argsort(lengths)[::-1])
         # add extra samples to make it evenly divisible
         padding_size = self.total_size - len(indices)
 
@@ -65,14 +67,14 @@ class TestDistributedSampler(Sampler[_T_co]):
             )
 
         # subsample
-        indices = indices[self.rank : self.total_size : self.num_replicas]
-        if len(indices) != self.num_samples:
+        self.indices = indices[self.rank : self.total_size : self.num_replicas]
+        if len(self.indices) != self.num_samples:
             raise AssertionError(
-                f"Number of subsampled indices ({len(indices)}) does not match num_samples ({self.num_samples})"
+                f"Number of subsampled indices ({len(self.indices)}) does not match num_samples ({self.num_samples})"
             )
 
         # pyrefly: ignore [bad-return]
-        return iter(indices)
+        return iter(self.indices)
 
     def __len__(self) -> int:
         return self.num_samples

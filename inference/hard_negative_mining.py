@@ -16,6 +16,7 @@ from torch.nn.utils.rnn import pad_sequence
 from datasets import Dataset, Features, Value, Sequence
 from .load_datasets import load_data_retrieval
 from tasks import get_task
+from utils.sorted_sampler import LenghtSortedSampler
 from pathlib import Path
 import time
 
@@ -58,6 +59,7 @@ def collate_fn_with_padding(batch, pad_token_id=0, padding_side="right"):
 
     query_token_ids = [torch.tensor(item["input_ids"]) for item in batch]
     query_attention_mask = [torch.ones_like(input_ids) for input_ids in query_token_ids]
+    indices = [torch.tensor(item["id"]) for item in batch]
 
     # Pad queries and create attention masks
     query_token_ids_padded = pad_sequence(
@@ -119,7 +121,8 @@ class HardNegativesMiner:
             #    data_split["relevant_docs"], data_split["queries"]
             # )
 
-            print("num anchors", len(data_split["queries"]))
+            if self.rank ==0:
+                print("tokenizing dataset: num anchors", len(data_split["queries"]))
 
             queries_dataset = create_dataset(
                 dataset=data_split["unique_queries"],
@@ -129,7 +132,8 @@ class HardNegativesMiner:
                 prompt_type=PromptType.query,
             )
 
-            print("num docs", len(data_split["corpus"]))
+            if self.rank ==0:
+                print("tokenizing dataset num docs", len(data_split["corpus"]))
 
             corpus_dataset = create_dataset(
                 dataset=data_split["corpus"],
@@ -138,9 +142,10 @@ class HardNegativesMiner:
                 tokenizer=self.tokenizer,
                 prompt_type=PromptType.document,
             )
-
-            print(f"number tokenized anchors: {len(queries_dataset)}")
-            print(f"number tokenized docs: {len(corpus_dataset)}")
+            
+            if self.rank ==0:
+                print(f"number tokenized anchors: {len(queries_dataset)}")
+                print(f"number tokenized docs: {len(corpus_dataset)}")
 
             datasets[task_name] = {
                 "dataset": {
@@ -154,14 +159,26 @@ class HardNegativesMiner:
         return datasets
 
     @torch.inference_mode()
-    def encode(self, model, loader):
+    def encode(self, model, loader, prompt_type):
 
         # distributed sampler will duplicate examples at the end
+        indices = None
+        if hasattr(loader.sampler, "indices"):
+            indices = loader.sampler.indices
+            assert isinstance(indices, list)
+            
         num_samples = len(loader.dataset)
         embeddings = []
 
+        print_every = 5*10**5//(self.batch_size*self.world_size)
+
         for i, batch in enumerate(loader):
+            
+            if (i+1)%print_every==0 and self.rank ==0:
+                print(f"{(self.batch_size*self.world_size*i)/10**6: .2f}/{num_samples/10**6: .2f} M samples processed")
+            
             batch = {key: val.to(model.device) for key, val in batch.items()}
+
 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 out_embeddings = model(
@@ -172,18 +189,128 @@ class HardNegativesMiner:
                     out_embeddings.last_hidden_state,
                     batch["attention_mask"],
                 )
-
                 batch_embeddings = F.normalize(out_embeddings, p=2, dim=1)
-
-            # gathered = [torch.zeros_like(out_embeddings) for _ in range(self.world_size)]
-            # dist.all_gather(gathered, out_embeddings)
-
-            # Concatenate across ranks for this batch
-            # batch_embeddings = torch.cat(gathered, dim=0)
             embeddings.append(batch_embeddings.float())
 
         embeddings = torch.cat(embeddings, dim=0)
-        return embeddings[:num_samples]
+        indices = torch.tensor(indices)
+
+
+        if self.world_size > 1 and prompt_type == PromptType.query:
+            gathered = [torch.zeros_like(embeddings) for _ in range(self.world_size)]
+            dist.all_gather(gathered, embeddings)
+            # Concatenate across ranks for this batch
+            embeddings = torch.cat(gathered, dim=0)
+            embeddings = embeddings[:num_samples]
+        
+            # Also gather indices if we tracked them
+            if indices is not None:
+                gathered_indices = [torch.zeros_like(indices) for _ in range(self.world_size)]
+                dist.all_gather(gathered_indices, indices)
+                indices = torch.cat(gathered_indices, dim=0)
+                indices = indices[:num_samples]
+
+        # Restore original order
+        # Create a mapping from shuffled position to original position
+        # Sort back to original order
+        if self.world_size == 1 or prompt_type == PromptType.query:
+            sorted_positions = torch.argsort(indices)
+            embeddings = embeddings[sorted_positions]
+            return embeddings
+
+        return embeddings, indices
+
+
+    def search(self, query_embeddings, corpus_embeddings):
+
+
+        N_corpus = corpus_embeddings.shape[0]
+        N_queries = query_embeddings.shape[0]
+
+        # Initialize global top-k results on the GPU
+        # top_scores: (N_queries, top_k), filled with -inf
+        # top_indices: (N_queries, top_k), filled with -1
+        top_scores = torch.full((N_queries, top_k), -float('inf'), device=query_embeddings.device)
+        top_indices = torch.full((N_queries, top_k), -1, dtype=torch.long, device=query_embeddings.device)
+
+
+        # Iterate over corpus chunks
+        for chunk_idx in range(0, N_corpus, chunk_size):
+            corpus_chunk = corpus_embeddings[chunk_idx:chunk_idx + chunk_size].to(query_embeddings.device)
+            scores = torch.matmul(query_embeddings, corpus_chunk.T)
+
+            chunk_top_scores, chunk_top_indices = torch.topk(
+                scores,
+                k=min(top_k, scores.shape[1]), # Use min(top_k, chunk_size)
+                dim=1,
+                largest=True,
+            )
+
+            # Adjust the indices to be corpus-absolute indices
+            # If the chunk starts at index 50000, and a doc in the chunk is index 10,
+            # its absolute index is 50010.
+            chunk_absolute_indices = chunk_top_indices + chunk_idx
+
+            # --- 3. Merge Local Ranks to Keep Global Top-K ---
+            # This operation efficiently merges the results from the current chunk
+            # with the best results found so far.
+            
+            # Combine current global top-k (top_scores/top_indices) with
+            # the current chunk's top-k (chunk_top_scores/chunk_absolute_indices)
+            combined_scores = torch.cat([top_scores, chunk_top_scores], dim=1)
+            combined_indices = torch.cat([top_indices, chunk_absolute_indices], dim=1)
+            
+            # Find the true global top-k among the combined results
+            # Note: We need k=top_k
+            top_k_in_combined_scores, top_k_in_combined_indices = torch.topk(
+                combined_scores,
+                k=top_k,
+                dim=1,
+                largest=True,
+            )
+
+            # Update the global top-k results
+            top_scores = top_k_in_combined_scores
+            # Use the indices to select the correct original index from combined_indices
+            top_indices = torch.gather(combined_indices, 1, top_k_in_combined_indices)
+
+        # --- 4. Distributed Merging (if using multiple GPUs) ---
+        if self.world_size > 1:
+             # Gather all local (top_scores, top_indices) from all GPUs to rank 0.
+             # You will need a custom all_gather or all_reduce operation here
+             # depending on your distributed setup (DDP, torch.distributed).
+             
+             # For a standard DDP setup, you can use torch.distributed.all_gather_object 
+             # or flatten the tensors and use torch.distributed.gather.
+             
+             # Example (simplified for one-dimensional gathering):
+             # all_top_scores = [torch.zeros_like(top_scores) for _ in range(self.world_size)]
+             # torch.distributed.gather(top_scores, gather_list=all_top_scores, dst=0)
+             
+             # The merging logic is the same as step 3 (Merge Local Ranks), but across GPUs.
+             # Let's assume you have a list of all gathered results:
+             # all_top_scores/all_top_indices is a list of (N_queries_local, top_k) from all ranks.
+             
+             if self.rank == 0:
+                 # Concatenate results from all GPUs
+                 # Note: Requires care if N_queries is not evenly divisible across ranks
+                 all_combined_scores = torch.cat(all_gathered_scores_list, dim=1)
+                 all_combined_indices = torch.cat(all_gathered_indices_list, dim=1)
+                 
+                 # Re-run the global top-k calculation across the gathered results
+                 final_top_scores, final_top_rank_indices = torch.topk(
+                     all_combined_scores,
+                     k=top_k,
+                     dim=1,
+                     largest=True,
+                 )
+                 final_top_indices = torch.gather(all_combined_indices, 1, final_top_rank_indices)
+                 
+                 # The final results are final_top_scores and final_top_indices
+
+        return top_scores, top_indices
+
+
 
     def mine_one(
         self,
@@ -196,15 +323,19 @@ class HardNegativesMiner:
         top_k = 100
         model = model.eval()
 
-        sampler_queries = None
-        sampler_corpus = None
-        if self.world_size > 1:
-            sampler_queries = torch.utils.data.distributed.DistributedSampler(
-                dataset["unique_queries"], shuffle=False, drop_last=False
-            )
-            sampler_corpus = torch.utils.data.distributed.DistributedSampler(
-                dataset["corpus"], shuffle=False, drop_last=False
-            )
+        # sampler_queries = None
+        # sampler_corpus = None
+        # if self.world_size > 1:
+        #     sampler_queries = torch.utils.data.distributed.DistributedSampler(
+        #         dataset["unique_queries"], shuffle=False, drop_last=False
+        #     )
+        #     sampler_corpus = torch.utils.data.distributed.DistributedSampler(
+        #         dataset["corpus"], shuffle=False, drop_last=False
+        #     )
+
+
+        sampler_queries = LenghtSortedSampler(dataset["unique_queries"], shuffle=False, drop_last=False)
+        sampler_corpus = LenghtSortedSampler(dataset["corpus"], shuffle=False, drop_last=False)
 
         collate_fn = partial(
             collate_fn_with_padding,
@@ -232,25 +363,30 @@ class HardNegativesMiner:
         if self.rank == 0:
             start = time.time()
             print(f"building query embeddings")
-        query_embeddings = self.encode(model, queries_loader)
+        query_embeddings = self.encode(model, queries_loader, prompt_type = PromptType.query)
 
         if self.rank == 0:
             print(f"duration: {time.time()-start}")
             print(f"building document embeddings")
         start = time.time()
-        corpus_embeddings = self.encode(model, corpus_loader)
+        corpus_embeddings, corpus_indices = self.encode(model, corpus_loader, prompt_type = PromptType.document)
+
+        # scores = torch.matmul(query_embeddings, corpus_embeddings.T)
+        # top_scores, top_indices = torch.topk(
+        #     scores,
+        #     k=min(top_k + 1, len(scores[1]) if len(scores) > 1 else len(scores[-1])),
+        #     dim=1,
+        #     largest=True,
+        # )
+
+        top_scores, top_indices = self.search(query_embeddings, corpus_embeddings, corpus_indices)
+
 
         if self.rank == 0:
             print(f"duration: {time.time()-start}")
             print(f"finding hard negatives")
+
         start = time.time()
-        scores = torch.matmul(query_embeddings, corpus_embeddings.T)
-        top_scores, top_indices = torch.topk(
-            scores,
-            k=min(top_k + 1, len(scores[1]) if len(scores) > 1 else len(scores[-1])),
-            dim=1,
-            largest=True,
-        )
 
         if self.rank == 0:
             print(f"duration: {time.time()-start}")
@@ -281,14 +417,14 @@ class HardNegativesMiner:
         return hard_negatives
 
     def mine_negatives(self, model, batch_size=64):
-
+        
+        self.batch_size = batch_size
         for name, task in self.datasets.items():
             new_dataset = {}
 
             dataset = task["dataset"]
             if self.rank == 0:
                 print(f"processing datasets {name}")
-                print(dataset.keys())
 
             hard_negatives = self.mine_one(
                 dataset=dataset,
