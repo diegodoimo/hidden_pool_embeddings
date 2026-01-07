@@ -1,4 +1,4 @@
-from inference.test_retrieval import evaluate_retrieval
+from inference.test_retrieval_ddp_update import evaluate_retrieval
 import os
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -34,6 +34,7 @@ def main():
         tokenizer=tokenizer,
         instruction_template=instruction_template_qwen3,
         padding_side="right",
+        new_inference_mode=False,
     )
 
     model = AutoModel.from_pretrained(

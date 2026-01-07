@@ -17,75 +17,20 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from mteb._evaluators.retrieval_metrics import make_score_dict
 from utils.sorted_sampler import LenghtSortedSampler
-from .helpers import search, encode
-
-
-def last_token_pool(last_hidden_states, attention_mask):
-    left_padding = attention_mask[:, -1].sum() == attention_mask.shape[0]
-    if left_padding:
-        return last_hidden_states[:, -1]
-    else:
-        sequence_lengths = attention_mask.sum(dim=1) - 1
-        batch_size = last_hidden_states.shape[0]
-        return last_hidden_states[
-            torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths
-        ]
-
-
-def abs_task_preprocessing(task, eval_split):
-
-    subsets_to_run = None
-    task.dataset = cast(dict[HFSubset, DatasetDict], task.dataset)
-
-    if task.hf_subsets is None:
-        hf_subsets = list(task.dataset.keys())
-    else:
-        hf_subsets = copy(task.hf_subsets)
-
-    if subsets_to_run is not None:  # allow overwrites of pre-filtering
-        hf_subsets = [s for s in hf_subsets if s in subsets_to_run]
-
-    for hf_subset in hf_subsets:
-        if hf_subset not in task.dataset and hf_subset == "default":
-            data_split = task.dataset[eval_split]
-        else:
-            data_split = task.dataset[hf_subset][eval_split]
-    assert len(hf_subsets) == 1, hf_subsets
-    return data_split, hf_subset
-
-
-def collate_fn_with_padding(batch, pad_token_id=0, padding_side="right"):
-
-    query_token_ids = [torch.tensor(item["input_ids"]) for item in batch]
-    query_attention_mask = [torch.ones_like(input_ids) for input_ids in query_token_ids]
-
-    # Pad queries and create attention masks
-    query_token_ids_padded = pad_sequence(
-        query_token_ids,
-        batch_first=True,
-        padding_value=pad_token_id,
-        padding_side=padding_side,
-    )
-
-    query_attention_mask = pad_sequence(
-        query_attention_mask,
-        batch_first=True,
-        padding_value=0,
-        padding_side=padding_side,
-    )
-    # query_attention_mask = (query_token_ids_padded != pad_token_id).long()
-    # query_attention_mask[:, -1]=1
-
-    assert query_token_ids_padded.dtype == torch.int64, batch
-    return {
-        "input_ids": query_token_ids_padded,
-        "attention_mask": query_attention_mask,
-    }
+from .helpers import (
+    search,
+    encode,
+    collate_fn_with_padding,
+    abs_task_preprocessing,
+    last_token_pool,
+)
 
 
 class evaluate_retrieval:
 
-    def __init__(self, tokenizer, tasks, instruction_template, padding_side="right"):
+    def __init__(
+        self, tokenizer, tasks, instruction_template, padding_side="right", new_inference_mode=False
+    ):
 
         self.world_size = dist.get_world_size()
         self.rank = dist.get_rank()
@@ -93,6 +38,7 @@ class evaluate_retrieval:
         self.task_names = tasks
         self.datasets = self.prepare_datasets(instruction_template)
         self.padding_side = padding_side
+        self.new_inference_mode = new_inference_mode
 
     def prepare_datasets(self, instruction_template, max_passage_len=4096):
 
@@ -197,23 +143,24 @@ class evaluate_retrieval:
         query_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["queries"]["id"])}
         doc_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["corpus"]["id"])}
 
-        # sampler_queries = None
-        # sampler_corpus = None
-        # if self.world_size > 1:
-        #     sampler_queries = torch.utils.data.distributed.DistributedSampler(
-        #         dataset["queries"], shuffle=False, drop_last=False
-        #     )
-        #     sampler_corpus = torch.utils.data.distributed.DistributedSampler(
-        #         dataset["corpus"], shuffle=False, drop_last=False
-        #     )
-
-        sampler_queries = LenghtSortedSampler(dataset["queries"], shuffle=False, drop_last=False)
-
         collate_fn = partial(
             collate_fn_with_padding,
             pad_token_id=self.tokenizer.pad_token_id,
             padding_side=self.padding_side,
         )
+
+        sampler_queries = None
+        sampler_corpus = None
+        if self.world_size > 1:
+            sampler_queries = torch.utils.data.distributed.DistributedSampler(
+                dataset["queries"], shuffle=False, drop_last=False
+            )
+            sampler_corpus = torch.utils.data.distributed.DistributedSampler(
+                dataset["corpus"], shuffle=False, drop_last=False
+            )
+
+        if self.new_inference_mode:
+            sampler_queries = LenghtSortedSampler(dataset["queries"])
 
         queries_loader = DataLoader(
             dataset["queries"],
@@ -224,36 +171,37 @@ class evaluate_retrieval:
             collate_fn=collate_fn,
         )
 
-        query_embeddings = encode(model, queries_loader)
+        if self.new_inference_mode:
+            query_embeddings = encode(model, queries_loader, world_size=self.world_size)
+            top_scores, top_indices = search(
+                model=model,
+                query_embeddings=query_embeddings,
+                dataset=dataset["corpus"],
+                collate_fn=collate_fn,
+                top_k=top_k,
+                batch_size=batch_size,
+                chunk_size=10**5,
+            )
+        else:
+            corpus_loader = DataLoader(
+                dataset["corpus"],
+                sampler=sampler_corpus,
+                batch_size=batch_size,
+                num_workers=16,
+                pin_memory=True,
+                collate_fn=collate_fn,
+            )
 
-        # corpus_loader = DataLoader(
-        #     dataset["corpus"],
-        #     sampler=sampler_corpus,
-        #     batch_size=batch_size,
-        #     num_workers=16,
-        #     pin_memory=True,
-        #     collate_fn=collate_fn,
-        # )
+            query_embeddings = self.encode(model, queries_loader)
+            corpus_embeddings = self.encode(model, corpus_loader)
 
-        # corpus_embeddings = self.encode(model, corpus_loader)
-
-        # scores = torch.matmul(query_embeddings, corpus_embeddings.T)
-        # top_scores, top_indices = torch.topk(
-        #     scores,
-        #     k=min(top_k + 1, len(scores[1]) if len(scores) > 1 else len(scores[-1])),
-        #     dim=1,
-        #     largest=True,
-        # )
-
-        top_scores, top_indices = search(
-            model=model,
-            query_embeddings=query_embeddings,
-            dataset=dataset["corpus"],
-            collate_fn=collate_fn,
-            top_k=top_k,
-            batch_size=batch_size,
-            chunk_size=10**5,
-        )
+            scores = torch.matmul(query_embeddings, corpus_embeddings.T)
+            top_scores, top_indices = torch.topk(
+                scores,
+                k=min(top_k + 1, len(scores[1]) if len(scores) > 1 else len(scores[-1])),
+                dim=1,
+                largest=True,
+            )
 
         del scores
         top_scores = top_scores.cpu()

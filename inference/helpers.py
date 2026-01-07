@@ -98,8 +98,10 @@ def search(
 
     for chunk_idx in range(0, N_corpus, chunk_size):
 
-        subcorpus = corpus_dataset.select()
-        sampler_corpus = LenghtSortedSampler(subcorpus, shuffle=False, drop_last=False)
+        torch.cuda.empty_cache()
+
+        subcorpus = corpus_dataset.select(range(chunk_idx, min(chunk_idx + chunk_size, N_corpus)))
+        sampler_corpus = LenghtSortedSampler(subcorpus)
         corpus_loader = DataLoader(
             subcorpus,
             sampler=sampler_corpus,
@@ -124,6 +126,7 @@ def search(
             largest=True,
         )
 
+        # print(chunk_top_indices, chunk_top_indices.shape, local_indicies)
         chunk_absolute_indices = local_indicies[chunk_top_indices] + chunk_idx
 
         combined_scores = torch.cat([top_scores, chunk_top_scores], dim=1)
@@ -143,12 +146,14 @@ def search(
 
     # --- 4. Distributed Merging (if using multiple GPUs) ---
     if world_size > 1:
-        scores_list = [torch.empty_like(top_scores) for _ in world_size]
-        indices_list = [torch.empty_like(top_indices) for _ in world_size]
+        scores_list = [torch.empty_like(top_scores) for _ in range(world_size)]
+        indices_list = [torch.empty_like(top_indices) for _ in range(world_size)]
+
         dist.all_gather(scores_list, top_scores)
         dist.all_gather(indices_list, top_indices)
-        all_scores = torch.cat(scores_list)
-        all_indices = torch.cat(indices_list)
+
+        all_scores = torch.cat(scores_list, dim=0)
+        all_indices = torch.cat(indices_list, dim=0)
 
         top_scores, top_indices = torch.topk(
             all_scores,
@@ -165,6 +170,7 @@ def search(
 def encode(model, loader, prompt_type, world_size):
 
     # distributed sampler will duplicate examples at the end
+
     indices = None
     if hasattr(loader.sampler, "indices"):
         indices = loader.sampler.indices
@@ -190,7 +196,7 @@ def encode(model, loader, prompt_type, world_size):
         embeddings.append(batch_embeddings.float())
 
     embeddings = torch.cat(embeddings, dim=0)
-    indices = torch.tensor(indices)
+    indices = torch.tensor(indices, device=embeddings.device)
 
     if world_size > 1 and prompt_type == PromptType.query:
         gathered = [torch.zeros_like(embeddings) for _ in range(world_size)]
