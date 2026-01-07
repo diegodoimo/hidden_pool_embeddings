@@ -1,4 +1,4 @@
-from preprocessing.test_retrieval import evaluate_retrieval
+from inference.test_retrieval import evaluate_retrieval
 import os
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -6,7 +6,7 @@ import argparse
 from transformers import AutoModel, AutoTokenizer
 import torch.distributed as dist
 from sentence_transformers import SentenceTransformer
-from preprocessing.create_datasets import (
+from inference.create_datasets import (
     instruction_template_qwen3,
     instruction_template_embeddinggemma,
 )

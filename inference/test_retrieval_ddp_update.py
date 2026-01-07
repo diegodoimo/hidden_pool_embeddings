@@ -16,6 +16,8 @@ from mteb._evaluators.retrieval_metrics import calculate_retrieval_scores
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
 from mteb._evaluators.retrieval_metrics import make_score_dict
+from utils.sorted_sampler import LenghtSortedSampler
+from .helpers import search, encode
 
 
 def last_token_pool(last_hidden_states, attention_mask):
@@ -195,15 +197,17 @@ class evaluate_retrieval:
         query_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["queries"]["id"])}
         doc_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["corpus"]["id"])}
 
-        sampler_queries = None
-        sampler_corpus = None
-        if self.world_size > 1:
-            sampler_queries = torch.utils.data.distributed.DistributedSampler(
-                dataset["queries"], shuffle=False, drop_last=False
-            )
-            sampler_corpus = torch.utils.data.distributed.DistributedSampler(
-                dataset["corpus"], shuffle=False, drop_last=False
-            )
+        # sampler_queries = None
+        # sampler_corpus = None
+        # if self.world_size > 1:
+        #     sampler_queries = torch.utils.data.distributed.DistributedSampler(
+        #         dataset["queries"], shuffle=False, drop_last=False
+        #     )
+        #     sampler_corpus = torch.utils.data.distributed.DistributedSampler(
+        #         dataset["corpus"], shuffle=False, drop_last=False
+        #     )
+
+        sampler_queries = LenghtSortedSampler(dataset["queries"], shuffle=False, drop_last=False)
 
         collate_fn = partial(
             collate_fn_with_padding,
@@ -219,24 +223,36 @@ class evaluate_retrieval:
             pin_memory=True,
             collate_fn=collate_fn,
         )
-        corpus_loader = DataLoader(
-            dataset["corpus"],
-            sampler=sampler_corpus,
-            batch_size=batch_size,
-            num_workers=16,
-            pin_memory=True,
+
+        query_embeddings = encode(model, queries_loader)
+
+        # corpus_loader = DataLoader(
+        #     dataset["corpus"],
+        #     sampler=sampler_corpus,
+        #     batch_size=batch_size,
+        #     num_workers=16,
+        #     pin_memory=True,
+        #     collate_fn=collate_fn,
+        # )
+
+        # corpus_embeddings = self.encode(model, corpus_loader)
+
+        # scores = torch.matmul(query_embeddings, corpus_embeddings.T)
+        # top_scores, top_indices = torch.topk(
+        #     scores,
+        #     k=min(top_k + 1, len(scores[1]) if len(scores) > 1 else len(scores[-1])),
+        #     dim=1,
+        #     largest=True,
+        # )
+
+        top_scores, top_indices = search(
+            model=model,
+            query_embeddings=query_embeddings,
+            dataset=dataset["corpus"],
             collate_fn=collate_fn,
-        )
-
-        query_embeddings = self.encode(model, queries_loader)
-        corpus_embeddings = self.encode(model, corpus_loader)
-
-        scores = torch.matmul(query_embeddings, corpus_embeddings.T)
-        top_scores, top_indices = torch.topk(
-            scores,
-            k=min(top_k + 1, len(scores[1]) if len(scores) > 1 else len(scores[-1])),
-            dim=1,
-            largest=True,
+            top_k=top_k,
+            batch_size=batch_size,
+            chunk_size=10**5,
         )
 
         del scores
