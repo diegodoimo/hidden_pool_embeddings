@@ -166,7 +166,6 @@ class HardNegativesMiner:
         if hasattr(loader.sampler, "indices"):
             indices = loader.sampler.indices
             assert isinstance(indices, list)
-        
 
         num_samples = len(loader.dataset)
         embeddings = []
@@ -188,7 +187,7 @@ class HardNegativesMiner:
             embeddings.append(batch_embeddings.float())
 
         embeddings = torch.cat(embeddings, dim=0)
-        indices = torch.tensor(indices)
+        indices = torch.tensor(indices, device = embeddings.device)
 
         if self.world_size > 1 and prompt_type == PromptType.query:
             gathered = [torch.zeros_like(embeddings) for _ in range(self.world_size)]
@@ -263,6 +262,7 @@ class HardNegativesMiner:
                 largest=True,
             )
 
+            #print(chunk_top_indices, chunk_top_indices.shape, local_indicies)
             chunk_absolute_indices = local_indicies[chunk_top_indices] + chunk_idx
 
             combined_scores = torch.cat([top_scores, chunk_top_scores], dim=1)

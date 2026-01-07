@@ -64,8 +64,6 @@ class LenghtSortedSampler(Sampler[_T_co]):
         # subsample
         self.indices = indices[self.rank : self.total_size : self.num_replicas]
 
-
-
     def __iter__(self) -> Iterator[_T_co]:
 
         if len(self.indices) != self.num_samples:
