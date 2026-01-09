@@ -24,7 +24,7 @@ from .helpers import (
     abs_task_preprocessing,
     last_token_pool,
 )
-
+import time
 
 class evaluate_retrieval:
 
@@ -111,11 +111,12 @@ class evaluate_retrieval:
 
                 batch_embeddings = F.normalize(out_embeddings, p=2, dim=1)
 
-            # gathered = [torch.zeros_like(out_embeddings) for _ in range(self.world_size)]
-            # dist.all_gather(gathered, out_embeddings)
+            if self.world_size > 1:
+                gathered = [torch.zeros_like(out_embeddings) for _ in range(self.world_size)]
+                dist.all_gather(gathered, out_embeddings)
 
-            # Concatenate across ranks for this batch
-            # batch_embeddings = torch.cat(gathered, dim=0)
+                # Concatenate across ranks for this batch
+                batch_embeddings = torch.cat(gathered, dim=0)
             embeddings.append(batch_embeddings.float())
 
         embeddings = torch.cat(embeddings, dim=0)
@@ -143,6 +144,10 @@ class evaluate_retrieval:
         query_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["queries"]["id"])}
         doc_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["corpus"]["id"])}
 
+
+        print(f"rank {self.rank}: query_idx_to_id: {len(query_idx_to_id)}")
+        print(f"rank {self.rank}: doc_idx_to_id: {len(query_idx_to_id)}")
+
         collate_fn = partial(
             collate_fn_with_padding,
             pad_token_id=self.tokenizer.pad_token_id,
@@ -162,6 +167,11 @@ class evaluate_retrieval:
         if self.new_inference_mode:
             sampler_queries = LenghtSortedSampler(dataset["queries"])
 
+        if self.rank ==0:
+            print("num queries", len(dataset["queries"]))
+            print("num documents", len(dataset["queries"]))
+
+
         queries_loader = DataLoader(
             dataset["queries"],
             sampler=sampler_queries,
@@ -172,16 +182,27 @@ class evaluate_retrieval:
         )
 
         if self.new_inference_mode:
-            query_embeddings = encode(model, queries_loader, world_size=self.world_size)
+            dist.barrier()
+            start = time.time()
+            query_embeddings = encode(model, queries_loader, prompt_type= PromptType.query, world_size=self.world_size)
+            dist.barrier()
+            if self.rank == 0:
+                print(f"time to encode queries: {time.time()-start}")
+            time.time()
+            
             top_scores, top_indices = search(
                 model=model,
                 query_embeddings=query_embeddings,
-                dataset=dataset["corpus"],
+                corpus_dataset=dataset["corpus"],
                 collate_fn=collate_fn,
                 top_k=top_k,
                 batch_size=batch_size,
-                chunk_size=10**5,
+                chunk_size=2*10**3,
             )
+
+            dist.barrier()
+            if self.rank == 0:
+                print(f"time to encode docs + search: {time.time()-start}")
         else:
             corpus_loader = DataLoader(
                 dataset["corpus"],
@@ -192,7 +213,13 @@ class evaluate_retrieval:
                 collate_fn=collate_fn,
             )
 
+            dist.barrier()
+            start = time.time()
             query_embeddings = self.encode(model, queries_loader)
+            dist.barrier()
+            if self.rank == 0:
+                print(f"time to encode queries: {time.time()-start}")
+            time.time()
             corpus_embeddings = self.encode(model, corpus_loader)
 
             scores = torch.matmul(query_embeddings, corpus_embeddings.T)
@@ -202,8 +229,10 @@ class evaluate_retrieval:
                 dim=1,
                 largest=True,
             )
+            dist.barrier()
+            if self.rank == 0:
+                print(f"time to encode docs + search: {time.time()-start}")
 
-        del scores
         top_scores = top_scores.cpu()
         top_indices = top_indices.tolist()
 

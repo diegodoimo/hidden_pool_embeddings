@@ -3,6 +3,7 @@ from tasks.retrieval_tasks import *
 from datasets import Dataset, Features, Value
 import time 
 import os
+from multiprocessing import Pool
 
 RANK = int(os.environ["RANK"])
 # def get_dict(dataset, id_field, text_field, title_field=None):
@@ -39,12 +40,6 @@ RANK = int(os.environ["RANK"])
 #                 for id_, text, title in zip(ids, texts, titles)}
 #     else:
 #         return {id_: text for id_, text in zip(ids, texts)}
-
-
-
-
-from multiprocessing import Pool
-import os
 
 def process_chunk(args):
     chunk, id_field, text_field, title_field = args
@@ -86,8 +81,8 @@ def load_data_retrieval(task) -> Dataset:
     """
 
     if task.has_multiple_datasets:
-
-        print("Loading datasets...")
+        if RANK ==0:
+            print("Loading datasets...")
         qrels = load_dataset(task.hf_name, name=task.qrels_name, split=task.split)
         anchors_ = load_dataset(task.hf_name, name=task.anchor_name, split=task.anchor_name)
         corpus = load_dataset(task.hf_name, name=task.positive_name, split=task.positive_name)
@@ -120,6 +115,14 @@ def load_data_retrieval(task) -> Dataset:
         positive_texts = []
         positive_titles = [] if has_title else None
 
+        unique_query_ids = []
+        unique_query_texts = []
+        unique_positive_ids = []
+        unique_positive_texts = []
+        unique_positive_titles = [] if has_title else None
+
+        seen_queries = set()
+
         for qrel in qrels:
             anchor_id = qrel[task.qrels_fields["anchor_id"]]
             positive_id = qrel[task.qrels_fields["positive_id"]]
@@ -144,10 +147,23 @@ def load_data_retrieval(task) -> Dataset:
             else:
                 positive_texts.append(positive_entry)
 
-        # queries can be repeted many times in the search
-        # for negatives we just want unique queries
-        unique_query_ids = set(query_ids)
-        unique_queries = [queries_dict[id_] for id_ in unique_query_ids]
+            # queries can be repeted many times in the search
+            # for negatives we just want unique queries
+            if anchor_id not in seen_queries:
+                seen_queries.add(anchor_id)
+                unique_query_ids.append(anchor_id)
+                unique_query_texts.append(queries_dict[anchor_id])
+                unique_positive_ids.append(positive_id)
+
+                if has_title:
+                    text, title = positive_entry
+                    unique_positive_texts.append(text)
+                    unique_positive_titles.append(title)
+                else:
+                    unique_positive_texts.append(positive_entry)
+
+        # unique_query_ids = set(query_ids)
+        # unique_queries = [queries_dict[id_] for id_ in unique_query_ids]
 
         # Extract all documents from corpus
         document_ids = list(corpus_dict.keys())
@@ -159,7 +175,11 @@ def load_data_retrieval(task) -> Dataset:
             document_titles = None
 
     else:
-        dataset = load_dataset(task.hf_name, name=task.hf_subset, split=task.split)
+        if task.hf_subset:
+            dataset = load_dataset(task.hf_name, name=task.hf_subset, split=task.split)
+        else:
+            dataset = load_dataset(task.hf_name, split=task.split)
+
         # Assume dataset has matching lengths and indices correspond to pairs
         query_texts = list(dataset[task.anchor_name])
         positive_texts = list(dataset[task.positive_name])
@@ -174,8 +194,8 @@ def load_data_retrieval(task) -> Dataset:
         document_ids = positive_ids.copy()
 
         # Check if titles exist in dataset
-        has_title = (
-            hasattr(task, "corpus_fields") and task.corpus_fields.get("title", None) is not None
+        has_corpus_fields = task.corpus_fields is not None
+        has_title = (has_corpus_fields and task.corpus_fields.get("title", None) is not None
         )
         if has_title and task.corpus_fields["title"] in dataset.column_names:
             positive_titles = list(dataset[task.corpus_fields["title"]])
@@ -184,87 +204,63 @@ def load_data_retrieval(task) -> Dataset:
             has_title = False
             positive_titles = None
             document_titles = None
+        
+        unique_query_texts = query_texts
+        unique_query_ids = query_ids
 
-    # Create HuggingFace Dataset
-    hf_dataset = create_hf_dataset(
-        unique_queries,
-        unique_query_ids,
-        query_texts,
-        query_ids,
-        positive_texts,
-        positive_ids,
-        positive_titles,
-        document_texts,
-        document_ids,
-        document_titles,
-        has_title,
-    )
+        unique_positive_texts = positive_texts
+        unique_positive_ids = positive_ids
+        unique_positve_titles = unique_positive_titles
+
+
+    # # Create HuggingFace Dataset
+    queries_ds = dict_to_dataset(texts = query_texts, ids = query_ids)
+    unique_queries_ds = dict_to_dataset(texts = unique_query_texts, ids = unique_query_ids)
+
+    positives_ds = dict_to_dataset(texts = positive_texts, ids = positive_ids, titles= positive_titles)
+    unique_positive_ds = dict_to_dataset(texts = unique_positive_texts, ids = unique_positive_ids, titles= unique_positive_titles)
+    
+    corpus_ds = dict_to_dataset(texts = document_texts, ids = document_ids, titles= document_titles)
+
+    hf_dataset = {
+        "unique_queries": unique_queries_ds,
+        "unique_positives": unique_positive_ds,
+        "queries": queries_ds,
+        "positives": positives_ds,
+        "corpus": corpus_ds,
+    }
+
+
+    # # Create HuggingFace Dataset
+    # hf_dataset = create_hf_dataset(
+    #     unique_queries,
+    #     unique_query_ids,
+    #     unique_positives, 
+    #     unique_positive_ids,
+    #     unique_positive_titles,
+    #     query_texts,
+    #     query_ids,
+    #     positive_texts,
+    #     positive_ids,
+    #     positive_titles,
+    #     document_texts,
+    #     document_ids,
+    #     document_titles,
+    #     has_title,
+    # )
 
     return hf_dataset
 
 
-def create_hf_dataset(
-    unique_queries,
-    unique_ids,
-    query_texts,
-    query_ids,
-    positive_texts,
-    positive_ids,
-    positive_titles,
-    document_texts,
-    document_ids,
-    document_titles,
-    has_title,
-):
+def dict_to_dataset(texts, ids, titles = None):
 
-    queries_ds = Dataset.from_dict(
-        {
-            "text": query_texts,
-            "id": query_ids,
-        },
-        features=Features(
+    if titles is not None:
+
+        dataset = Dataset.from_dict(
             {
-                "text": Value("string"),
-                "id": Value("string"),
-            }
-        ),
-    )
-
-    unique_queries_ds = Dataset.from_dict(
-        {
-            "text": unique_queries,
-            "id": unique_ids,
-        },
-        features=Features(
-            {
-                "text": Value("string"),
-                "id": Value("string"),
-            }
-        ),
-    )
-
-    if has_title:
-
-        positives_ds = Dataset.from_dict(
-            {
-                "text": positive_texts,
-                "id": positive_ids,
-                "title": positive_titles,
-            },
-            features=Features(
-                {
-                    "text": Value("string"),
-                    "id": Value("string"),
-                    "title": Value("string"),
-                }
-            ),
-        )
-
-        corpus_ds = Dataset.from_dict(
-            {
-                "text": document_texts,
-                "id": document_ids,
-                "title": document_titles,
+                "text": texts,
+                "id": ids,
+                "title": titles,
             },
             features=Features(
                 {
@@ -275,42 +271,170 @@ def create_hf_dataset(
             ),
         )
     else:
-
-        positives_ds = Dataset.from_dict(
+        dataset = Dataset.from_dict(
+        {
+            "text": texts,
+            "id": ids,
+        },
+        features=Features(
             {
-                "text": positive_texts,
-                "id": positive_ids,
-            },
-            features=Features(
-                {
-                    "text": Value("string"),
-                    "id": Value("string"),
-                }
-            ),
-        )
+                "text": Value("string"),
+                "id": Value("string"),
+            }
+        ),
+    )
 
-        corpus_ds = Dataset.from_dict(
-            {
-                "text": document_texts,
-                "id": document_ids,
-            },
-            features=Features(
-                {
-                    "text": Value("string"),
-                    "id": Value("string"),
-                }
-            ),
-        )
+    return dataset
+
+
+# def create_hf_dataset(
+#     unique_queries,
+#     unique_ids,
+#     query_texts,
+#     query_ids,
+#     positive_texts,
+#     positive_ids,
+#     positive_titles,
+#     document_texts,
+#     document_ids,
+#     document_titles,
+#     has_title,
+# ):
+
+#     queries_ds = dict_to_dataset(texts = query_texts, ids = query_ids)
+#     unique_queries_ds = dict_to_dataset(texts = unique_query_texts, ids = unique_query_ids)
+
+#     positive_ds = dict_to_dataset(texts = positive_texts, ids = positive_ids, titles= positive_titles)
+#     unique_positive_ds = dict_to_dataset(texts = unique_positive_texts, ids = unique_positive_ids, titles= unique_positive_titles)
     
-    #corpus_ds = corpus_ds.select(range(5*10**5))
-    #unique_queries_ds = unique_queries_ds.select(range(10**5))
+#     corpus_ds = dict_to_dataset(texts = corpus_texts, ids = corpus_ids, titles= corpus_titles)
+    
+#      Dataset.from_dict(
+#         {
+#             "text": query_texts,
+#             "id": query_ids,
+#         },
+#         features=Features(
+#             {
+#                 "text": Value("string"),
+#                 "id": Value("string"),
+#             }
+#         ),
+#     )
 
-    return {
-        "unique_queries": unique_queries_ds,
-        "queries": queries_ds,
-        "positives": positives_ds,
-        "corpus": corpus_ds,
-    }
+#     unique_queries_ds = Dataset.from_dict(
+#         {
+#             "text": unique_queries,
+#             "id": unique_ids,
+#         },
+#         features=Features(
+#             {
+#                 "text": Value("string"),
+#                 "id": Value("string"),
+#             }
+#         ),
+#     )
+
+#     if has_title:
+
+#         positives_ds = Dataset.from_dict(
+#             {
+#                 "text": positive_texts,
+#                 "id": positive_ids,
+#                 "title": positive_titles,
+#             },
+#             features=Features(
+#                 {
+#                     "text": Value("string"),
+#                     "id": Value("string"),
+#                     "title": Value("string"),
+#                 }
+#             ),
+#         )
+
+
+#         unique_positives_ds = Dataset.from_dict(
+#             {
+#                 "text": unique_positive_texts,
+#                 "id": unique_positive_ids,
+#                 "title": unique_positive_titles,
+#             },
+#             features=Features(
+#                 {
+#                     "text": Value("string"),
+#                     "id": Value("string"),
+#                     "title": Value("string"),
+#                 }
+#             ),
+#         )
+
+#         corpus_ds = Dataset.from_dict(
+#             {
+#                 "text": document_texts,
+#                 "id": document_ids,
+#                 "title": document_titles,
+#             },
+#             features=Features(
+#                 {
+#                     "text": Value("string"),
+#                     "id": Value("string"),
+#                     "title": Value("string"),
+#                 }
+#             ),
+#         )
+#     else:
+
+#         positives_ds = Dataset.from_dict(
+#             {
+#                 "text": positive_texts,
+#                 "id": positive_ids,
+#             },
+#             features=Features(
+#                 {
+#                     "text": Value("string"),
+#                     "id": Value("string"),
+#                 }
+#             ),
+#         )
+
+#         unique_positives_ds = Dataset.from_dict(
+#             {
+#                 "text": unique_positive_texts,
+#                 "id": unique_positive_ids,
+#             },
+#             features=Features(
+#                 {
+#                     "text": Value("string"),
+#                     "id": Value("string"),
+#                 }
+#             ),
+#         )
+
+
+
+#         corpus_ds = Dataset.from_dict(
+#             {
+#                 "text": document_texts,
+#                 "id": document_ids,
+#             },
+#             features=Features(
+#                 {
+#                     "text": Value("string"),
+#                     "id": Value("string"),
+#                 }
+#             ),
+#         )
+    
+#     # corpus_ds = corpus_ds.select(range(2*10**6))
+#     # unique_queries_ds = unique_queries_ds.select(range(10**5))
+
+#     return {
+#         "unique_queries": unique_queries_ds,
+#         "unique_positives": unique_positives_ds
+#         "queries": queries_ds,
+#         "positives": positives_ds,
+#         "corpus": corpus_ds,
+#     }
 
 
 def load_data_classification(task, balance_dataset=True):

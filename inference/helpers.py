@@ -11,13 +11,21 @@ from mteb.types import PromptType
 import torch.distributed as dist
 import torch.nn.functional as F
 from utils.sorted_sampler import LenghtSortedSampler
-
+import time 
 # ***********************************************************************************************
 
 
-def collate_fn_with_padding(batch, pad_token_id=0, padding_side="right"):
+def collate_fn_with_padding(batch, pad_token_id=0, padding_side="right", tokenizer = None, eot_id =None):
 
-    query_token_ids = [torch.tensor(item["input_ids"]) for item in batch]
+    input_text = [item["prompt"] for item in batch]
+    tokens = tokenizer(
+        input_text,
+        add_special_tokens=False,
+        return_attention_mask=False,
+    )["input_ids"]
+    query_token_ids = [torch.tensor(tok + [eot_id]) for tok in tokens]
+
+    #query_token_ids = [torch.tensor(item["input_ids"]) for item in batch]
     query_attention_mask = [torch.ones_like(input_ids) for input_ids in query_token_ids]
 
     # Pad queries and create attention masks
@@ -34,8 +42,6 @@ def collate_fn_with_padding(batch, pad_token_id=0, padding_side="right"):
         padding_value=0,
         padding_side=padding_side,
     )
-    # query_attention_mask = (query_token_ids_padded != pad_token_id).long()
-    # query_attention_mask[:, -1]=1
 
     assert query_token_ids_padded.dtype == torch.int64, batch
     return {
@@ -85,9 +91,11 @@ def search(
     collate_fn,
     top_k=100,
     batch_size=64,
-    chunk_size=10**5,
+    chunk_size=10**4,
+    print_every = 10**5,
 ):
     world_size = dist.get_world_size()
+    rank = dist.get_rank()
     N_queries = query_embeddings.shape[0]
     N_corpus = len(corpus_dataset)
 
@@ -95,12 +103,20 @@ def search(
     top_indices = torch.full(
         (N_queries, top_k), -1, dtype=torch.long, device=query_embeddings.device
     )
-
-    for chunk_idx in range(0, N_corpus, chunk_size):
-
+    interval = print_every // chunk_size + 1 
+    dist.barrier()
+    start = time.time()
+    
+    for i, chunk_idx in enumerate(range(0, N_corpus, chunk_size)):
+        
         torch.cuda.empty_cache()
+        dist.barrier()
+
+        if (i+1) % interval == 0 and rank == 0:
+            print(f"processed {chunk_idx//10**3}k/{N_corpus//10**3}k samples in {(time.time()-start)/60} mins")
 
         subcorpus = corpus_dataset.select(range(chunk_idx, min(chunk_idx + chunk_size, N_corpus)))
+
         sampler_corpus = LenghtSortedSampler(subcorpus)
         corpus_loader = DataLoader(
             subcorpus,
@@ -117,18 +133,17 @@ def search(
             prompt_type=PromptType.document,
             world_size=world_size,
         )
-        scores = torch.matmul(query_embeddings, local_corpus_chunk.T)
 
+        scores = torch.matmul(query_embeddings, local_corpus_chunk.T)
         chunk_top_scores, chunk_top_indices = torch.topk(
             scores,
             k=min(top_k, scores.shape[1]),  # Use min(top_k, chunk_size)
             dim=1,
             largest=True,
-        )
+        ) 
 
         # print(chunk_top_indices, chunk_top_indices.shape, local_indicies)
         chunk_absolute_indices = local_indicies[chunk_top_indices] + chunk_idx
-
         combined_scores = torch.cat([top_scores, chunk_top_scores], dim=1)
         combined_indices = torch.cat([top_indices, chunk_absolute_indices], dim=1)
 
@@ -152,8 +167,8 @@ def search(
         dist.all_gather(scores_list, top_scores)
         dist.all_gather(indices_list, top_indices)
 
-        all_scores = torch.cat(scores_list, dim=0)
-        all_indices = torch.cat(indices_list, dim=0)
+        all_scores = torch.cat(scores_list, dim=1)
+        all_indices = torch.cat(indices_list, dim=1)
 
         top_scores, top_indices = torch.topk(
             all_scores,
@@ -197,6 +212,8 @@ def encode(model, loader, prompt_type, world_size):
 
     embeddings = torch.cat(embeddings, dim=0)
     indices = torch.tensor(indices, device=embeddings.device)
+
+
 
     if world_size > 1 and prompt_type == PromptType.query:
         gathered = [torch.zeros_like(embeddings) for _ in range(world_size)]
