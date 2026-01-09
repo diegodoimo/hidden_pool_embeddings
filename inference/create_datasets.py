@@ -109,21 +109,20 @@ def _build_prompt(
     # we use the dafault add_special_tokens = True, tokenizer.encode do not add the special token
     # tokens = [tokenizer.encode(prompt) + [eot_id] for prompt in text_prompts]
 
-    tokens = tokenizer(
-        text_prompts,
-        add_special_tokens=False,
-        return_attention_mask=False,
-    )["input_ids"]
+    # tokens = tokenizer(
+    #     text_prompts,
+    #     add_special_tokens=False,
+    #     return_attention_mask=False,
+    # )["input_ids"]
 
-    tokens = [tok + [eot_id] for tok in tokens]
+    # tokens = [tok + [eot_id] for tok in tokens]
 
     new_rows = {
-        "id": rows["id"],
-        "input_ids": tokens,
+        "id": rows["id"], 
         "prompt": text_prompts,
         "text": rows["text"],
     }
-
+    #"input_ids": tokens,
     return new_rows
 
 
@@ -178,7 +177,7 @@ def create_dataset(
         input_to_dict,
         batched=True,
         batch_size=10000,
-        num_proc=4,
+        #num_proc=1,
     )
 
     return new_ds
@@ -186,22 +185,22 @@ def create_dataset(
     # raise ValueError(f"Can't handle queries type {input_type}")
 
 
-# def instruction_template_embeddinggemma(prompt_type, task_metadata, row):
+def instruction_template_embeddinggemma(prompt_type, task_metadata, row):
 
-#     text = row["text"]
+    text = row["text"]
 
-#     # we do not use  task specific instruction in embeddinggemma
-#     if prompt_type == PromptType.query:
-#         prompt = TASK_PROMPTS[task_metadata.type]
+    # we do not use  task specific instruction in embeddinggemma
+    if prompt_type == PromptType.query:
+        prompt = TASK_PROMPTS[task_metadata.type]
 
-#     elif prompt_type == PromptType.document:
-#         prompt = TASK_PROMPTS["Retrieval-document"]
+    elif prompt_type == PromptType.document:
+        prompt = TASK_PROMPTS["Retrieval-document"]
 
-#         title = None
-#         if "title" in row and len(row["title"]) > 0:
-#             title = row["title"]
+        title = None
+        if "title" in row and len(row["title"]) > 0:
+            title = row["title"]
 
-#         if title is not None:
-#             prompt = TASK_PROMPTS["document"].format(title=title)
+        if title is not None:
+            prompt = TASK_PROMPTS["document"].format(title=title)
 
-#     return (prompt + text).strip()
+    return (prompt + text).strip()

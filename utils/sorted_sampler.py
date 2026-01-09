@@ -47,7 +47,8 @@ class LenghtSortedSampler(Sampler[_T_co]):
         self.seed = seed
 
         # indices = list(range(len(self.dataset)))  # type: ignore[arg-type]
-        lengths = [len(instance) for instance in self.dataset["input_ids"]]
+        #lengths = [len(instance) for instance in self.dataset["input_ids"]]
+        lengths = [len(instance) for instance in self.dataset["prompt"]]
         indices = list(np.argsort(lengths))[::-1]
         # add extra samples to make it evenly divisible
         padding_size = self.total_size - len(indices)
@@ -62,7 +63,20 @@ class LenghtSortedSampler(Sampler[_T_co]):
             )
 
         # subsample
-        self.indices = indices[self.rank : self.total_size : self.num_replicas]
+        self.indices = []
+        for i in range(0, self.total_size, self.num_replicas):
+            # Get the next batch of num_replicas consecutive indices
+            batch_end = min(self.total_size, i + self.num_replicas)
+            batch = indices[i:batch_end]
+
+            if self.total_size - i > self.num_replicas:
+                #do not shuffle the last batch
+                np.random.shuffle(batch)
+
+            if self.rank < len(batch):
+                self.indices.append(batch[self.rank])
+        
+        #self.indices = indices[self.rank : self.total_size : self.num_replicas]
 
     def __iter__(self) -> Iterator[_T_co]:
 

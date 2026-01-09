@@ -22,16 +22,19 @@ path_to_name = {"Qwen/Qwen3-Embedding-0.6B": "qwen3_600m",
 def main():
     args = parse_args()
 
-    dist.init_process_group("nccl")
+    dist.init_process_group("nccl", device_id = LOCAL_RANK)
     torch.cuda.set_device(dist.get_rank())
 
+    #enable tensorfloat32
+    torch.set_float32_matmul_precision('high')
+    
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name_or_path, use_fast=False, trust_remote_code=True
     )
 
     miner = HardNegativesMiner(
         path=f"./results/datasets_negatives/{path_to_name[args.model_name_or_path]}",
-        tasks=["nfcorpus"], #msmarco
+        tasks=["nfcorpus", "hotpotqa", "naturalquestions"], #msmarco "nfcorpus"
         tokenizer=tokenizer,
         instruction_template=instruction_template_qwen3,
         padding_side="right",
@@ -41,12 +44,12 @@ def main():
         args.model_name_or_path,
         dtype=torch.bfloat16,
     ).to("cuda")
-
-
+    
+    model = model.eval()
+    
     model = DDP(model, device_ids=[LOCAL_RANK])
-
+    model = torch.compile(model)
     miner.mine_negatives(model, batch_size=32)
-
     dist.destroy_process_group()
 
 

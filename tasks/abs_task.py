@@ -6,7 +6,7 @@ from dataclasses import dataclass
 class AbsTask(ABC):
     # Required class-level attributes
     hf_name: str
-    hf_subset_name: Optional[str] = None
+    hf_subset: Optional[str] = None
     split: str
     has_multiple_datasets: bool
 

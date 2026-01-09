@@ -75,6 +75,7 @@ class HotpotQA(AbsTask):
 
 class NaturalQuestions(AbsTask):
     # ignore_identical_ids = True
+    # why do I have to redefine the hf_subset_attribute here?
     hf_name = "sentence-transformers/natural-questions"
     split = "train"
     has_multiple_datasets = False
@@ -86,7 +87,7 @@ class NaturalQuestions(AbsTask):
 class ALL_NLI(AbsTask):
     # ignore_identical_ids = True
     hf_name = "sentence-transformers/all-nli"
-    hf_subset_name = "triplet"
+    hf_subset = "triplet"
     split = "train"
     has_multiple_datasets = False
     anchor_name = "anchor"
