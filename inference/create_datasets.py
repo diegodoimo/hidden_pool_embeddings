@@ -1,6 +1,7 @@
 from mteb.types import PromptType
 from functools import partial
 
+
 # EMBEDDINGGEMMA
 TASK_PROMPTS = {
     "document": "title: {title} | text: ",
