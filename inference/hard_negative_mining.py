@@ -164,7 +164,6 @@ class HardNegativesMiner:
     ):
 
         sampler_queries = LenghtSortedSampler(dataset["unique_queries"])
-
         collate_fn = partial(
             collate_fn_with_padding,
             pad_token_id=self.tokenizer.pad_token_id,
@@ -172,7 +171,6 @@ class HardNegativesMiner:
             tokenizer=self.tokenizer,
             eot_id=self.tokenizer.pad_token_id,
         )
-
         queries_loader = DataLoader(
             dataset["unique_queries"],
             sampler=sampler_queries,
@@ -182,9 +180,10 @@ class HardNegativesMiner:
             collate_fn=collate_fn,
         )
 
+        sampler_positives = LenghtSortedSampler(dataset["unique_positives"])
         positives_loader = DataLoader(
             dataset["unique_positives"],
-            sampler=sampler_queries,
+            sampler=sampler_positives,
             batch_size=batch_size,
             num_workers=16,
             pin_memory=True,
@@ -211,9 +210,11 @@ class HardNegativesMiner:
             world_size=self.world_size,
         )
 
-        query_positve_scores = (query_embeddings*positive_embeddings).sum(dim = 1)
-        query_positive_scores.cpu().numpy()
-        del positive_emebddings
+        query_positive_scores = (query_embeddings*positive_embeddings).sum(dim = 1)
+        
+        query_positive_scores = query_positive_scores.cpu().numpy()
+
+        del positive_embeddings
         torch.cuda.empty_cache()
         
         dist.barrier()
@@ -315,7 +316,7 @@ class HardNegativesMiner:
 
 
         if discarded and self.rank ==0:
-            print(f"{discarded} examples have less than 24 hard negatives, {discarded/top_scores.shape[0]*100: .2f}")
+            print(f"{discarded} examples have less than 24 hard negatives, {discarded/top_scores.shape[0]*100: .2f}%")
 
         return hard_negatives
 
@@ -324,6 +325,9 @@ class HardNegativesMiner:
 
         self.batch_size = batch_size
         for name in self.task_names:
+            
+            if self.rank == 0:
+                print(f"preparing dataset {name}\n")
 
             dataset = self.prepare_dataset(task_name = name)
 
@@ -332,7 +336,7 @@ class HardNegativesMiner:
             #dataset = task["dataset"]
 
             if self.rank == 0:
-                print(f"processing dataset {name}")
+                print(f"processing dataset {name}\n")
 
             hard_negatives = self.mine_one(
                 dataset=dataset,
@@ -348,7 +352,8 @@ class HardNegativesMiner:
             #         negative_indices.append(hard_negatives[id_]["id"])
 
             if self.rank == 0:
-                print(f"saving dataset")
+                print(f"saving dataset {name}\n")
+
             # Define schema
             features = Features(
                 {
@@ -362,7 +367,6 @@ class HardNegativesMiner:
             )
 
             # Create dataset
-
             data = {
                 "anchor_id": dataset["queries"]["id"],
                 "anchor_text": dataset["queries"]["text"],

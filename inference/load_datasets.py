@@ -230,7 +230,6 @@ def load_data_retrieval(task) -> Dataset:
         "corpus": corpus_ds,
     }
 
-
     # # Create HuggingFace Dataset
     # hf_dataset = create_hf_dataset(
     #     unique_queries,
