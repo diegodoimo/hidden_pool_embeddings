@@ -109,8 +109,8 @@ def search(
     
     for i, chunk_idx in enumerate(range(0, N_corpus, chunk_size)):
         
-        torch.cuda.empty_cache()
         dist.barrier()
+        torch.cuda.empty_cache()
 
         if (i+1) % interval == 0 and rank == 0:
             print(f"processed {chunk_idx//10**3}k/{N_corpus//10**3}k samples in {(time.time()-start)/60} mins")
@@ -161,6 +161,8 @@ def search(
         top_scores = top_k_in_combined_scores
         top_indices = torch.gather(combined_indices, 1, top_k_in_combined_indices)
 
+    dist.barrier()
+
     # --- 4. Distributed Merging (if using multiple GPUs) ---
     if world_size > 1:
         scores_list = [torch.empty_like(top_scores) for _ in range(world_size)]
@@ -195,11 +197,19 @@ def encode(model, loader, world_size, prompt_type, divided_by_chunks=False):
     num_samples = len(loader.dataset)
     embeddings = []
 
+    # num_iters = len(loader)
+    # avg_length = []
+    # batch_size = next(iter(loader)["input_ids"].shape()[0])
+
     for i, batch in enumerate(loader):
 
         batch = {key: val.to(model.device) for key, val in batch.items()}
+        
+        # if i < num_iters -1:
+        #     avg_length.append(batch["input_ids"].shape()[0])
 
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+
             out_embeddings = model(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
@@ -236,7 +246,6 @@ def encode(model, loader, world_size, prompt_type, divided_by_chunks=False):
     # Restore original order
     sorted_positions = torch.argsort(indices)
     embeddings = embeddings[sorted_positions]
-    
     return embeddings
 
 

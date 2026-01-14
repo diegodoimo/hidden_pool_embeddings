@@ -6,48 +6,15 @@ import os
 from multiprocessing import Pool
 
 RANK = int(os.environ["RANK"])
-# def get_dict(dataset, id_field, text_field, title_field=None):
 
-#     ids = dataset[id_field]
-#     texts = dataset[text_field]
-
-#     if title_field:
-#         titles = dataset[title_field]
-#         return dict(zip(ids, zip(texts, titles)))
-#     else:
-#         return dict(zip(ids, texts))
-
-
-
-# def get_dict(dataset, id_field, text_field, title_field=None):
-
-#     if title_field:
-#         return {row[id_field]: (row[text_field], row[title_field]) 
-#                 for row in dataset}
-#     else:
-#         return {row[id_field]: row[text_field] 
-#                 for row in dataset}
-
-
-# def get_dict(dataset, id_field, text_field, title_field=None):
-#     # Access columns directly instead of iterating rows
-#     ids = dataset[id_field]
-#     texts = dataset[text_field]
-    
-#     if title_field:
-#         titles = dataset[title_field]
-#         return {id_: (text, title) 
-#                 for id_, text, title in zip(ids, texts, titles)}
-#     else:
-#         return {id_: text for id_, text in zip(ids, texts)}
 
 def process_chunk(args):
     chunk, id_field, text_field, title_field = args
     if title_field:
-        return {row[id_field]: (row[text_field], row[title_field]) 
+        return {row[id_field]: {"text": row[text_field], "title": row[title_field]}
                 for row in chunk}
     else:
-        return {row[id_field]: row[text_field] for row in chunk}
+        return {row[id_field]: {"text": row[text_field]} for row in chunk}
 
 def get_dict(dataset, id_field, text_field, title_field=None):
     #n_workers = os.cpu_count()-2
@@ -192,6 +159,8 @@ def load_data_retrieval(task) -> Dataset:
 
         # Documents use same IDs as positives
         document_ids = positive_ids.copy()
+        corpus_dict = {id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)}
+
 
         # Check if titles exist in dataset
         has_corpus_fields = task.corpus_fields is not None
@@ -210,7 +179,7 @@ def load_data_retrieval(task) -> Dataset:
 
         unique_positive_texts = positive_texts
         unique_positive_ids = positive_ids
-        unique_positve_titles = unique_positive_titles
+        unique_positive_titles = positive_titles
 
 
     # # Create HuggingFace Dataset
@@ -221,7 +190,17 @@ def load_data_retrieval(task) -> Dataset:
     unique_positive_ds = dict_to_dataset(texts = unique_positive_texts, ids = unique_positive_ids, titles= unique_positive_titles)
     
     corpus_ds = dict_to_dataset(texts = document_texts, ids = document_ids, titles= document_titles)
+    
 
+    #corpus_ds = corpus_ds.select(range(5000*10**3, len(corpus_ds)))
+    corpus_ds = corpus_ds.select(range(10**5))
+    if RANK == 0:
+        # Check the length
+        print(f"Length: {len(corpus_ds)}")
+        # Check the remainder mod 4
+        print(f"Remainder mod 4: {len(corpus_ds) % 4}")
+
+    #h  hunique_queries_ds = unique_queries_ds.select(range(10**5))
     hf_dataset = {
         "unique_queries": unique_queries_ds,
         "unique_positives": unique_positive_ds,
@@ -230,25 +209,7 @@ def load_data_retrieval(task) -> Dataset:
         "corpus": corpus_ds,
     }
 
-    # # Create HuggingFace Dataset
-    # hf_dataset = create_hf_dataset(
-    #     unique_queries,
-    #     unique_query_ids,
-    #     unique_positives, 
-    #     unique_positive_ids,
-    #     unique_positive_titles,
-    #     query_texts,
-    #     query_ids,
-    #     positive_texts,
-    #     positive_ids,
-    #     positive_titles,
-    #     document_texts,
-    #     document_ids,
-    #     document_titles,
-    #     has_title,
-    # )
-
-    return hf_dataset
+    return hf_dataset, corpus_dict, has_title
 
 
 def dict_to_dataset(texts, ids, titles = None):
@@ -286,154 +247,6 @@ def dict_to_dataset(texts, ids, titles = None):
     return dataset
 
 
-# def create_hf_dataset(
-#     unique_queries,
-#     unique_ids,
-#     query_texts,
-#     query_ids,
-#     positive_texts,
-#     positive_ids,
-#     positive_titles,
-#     document_texts,
-#     document_ids,
-#     document_titles,
-#     has_title,
-# ):
-
-#     queries_ds = dict_to_dataset(texts = query_texts, ids = query_ids)
-#     unique_queries_ds = dict_to_dataset(texts = unique_query_texts, ids = unique_query_ids)
-
-#     positive_ds = dict_to_dataset(texts = positive_texts, ids = positive_ids, titles= positive_titles)
-#     unique_positive_ds = dict_to_dataset(texts = unique_positive_texts, ids = unique_positive_ids, titles= unique_positive_titles)
-    
-#     corpus_ds = dict_to_dataset(texts = corpus_texts, ids = corpus_ids, titles= corpus_titles)
-    
-#      Dataset.from_dict(
-#         {
-#             "text": query_texts,
-#             "id": query_ids,
-#         },
-#         features=Features(
-#             {
-#                 "text": Value("string"),
-#                 "id": Value("string"),
-#             }
-#         ),
-#     )
-
-#     unique_queries_ds = Dataset.from_dict(
-#         {
-#             "text": unique_queries,
-#             "id": unique_ids,
-#         },
-#         features=Features(
-#             {
-#                 "text": Value("string"),
-#                 "id": Value("string"),
-#             }
-#         ),
-#     )
-
-#     if has_title:
-
-#         positives_ds = Dataset.from_dict(
-#             {
-#                 "text": positive_texts,
-#                 "id": positive_ids,
-#                 "title": positive_titles,
-#             },
-#             features=Features(
-#                 {
-#                     "text": Value("string"),
-#                     "id": Value("string"),
-#                     "title": Value("string"),
-#                 }
-#             ),
-#         )
-
-
-#         unique_positives_ds = Dataset.from_dict(
-#             {
-#                 "text": unique_positive_texts,
-#                 "id": unique_positive_ids,
-#                 "title": unique_positive_titles,
-#             },
-#             features=Features(
-#                 {
-#                     "text": Value("string"),
-#                     "id": Value("string"),
-#                     "title": Value("string"),
-#                 }
-#             ),
-#         )
-
-#         corpus_ds = Dataset.from_dict(
-#             {
-#                 "text": document_texts,
-#                 "id": document_ids,
-#                 "title": document_titles,
-#             },
-#             features=Features(
-#                 {
-#                     "text": Value("string"),
-#                     "id": Value("string"),
-#                     "title": Value("string"),
-#                 }
-#             ),
-#         )
-#     else:
-
-#         positives_ds = Dataset.from_dict(
-#             {
-#                 "text": positive_texts,
-#                 "id": positive_ids,
-#             },
-#             features=Features(
-#                 {
-#                     "text": Value("string"),
-#                     "id": Value("string"),
-#                 }
-#             ),
-#         )
-
-#         unique_positives_ds = Dataset.from_dict(
-#             {
-#                 "text": unique_positive_texts,
-#                 "id": unique_positive_ids,
-#             },
-#             features=Features(
-#                 {
-#                     "text": Value("string"),
-#                     "id": Value("string"),
-#                 }
-#             ),
-#         )
-
-
-
-#         corpus_ds = Dataset.from_dict(
-#             {
-#                 "text": document_texts,
-#                 "id": document_ids,
-#             },
-#             features=Features(
-#                 {
-#                     "text": Value("string"),
-#                     "id": Value("string"),
-#                 }
-#             ),
-#         )
-    
-#     # corpus_ds = corpus_ds.select(range(2*10**6))
-#     # unique_queries_ds = unique_queries_ds.select(range(10**5))
-
-#     return {
-#         "unique_queries": unique_queries_ds,
-#         "unique_positives": unique_positives_ds
-#         "queries": queries_ds,
-#         "positives": positives_ds,
-#         "corpus": corpus_ds,
-#     }
 
 
 def load_data_classification(task, balance_dataset=True):
