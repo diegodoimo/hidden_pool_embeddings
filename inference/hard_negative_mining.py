@@ -6,26 +6,14 @@ from inference.create_datasets import create_dataset
 from functools import partial
 import numpy as np
 import torch.distributed as dist
-import torch.nn.functional as F
 
-from datasets import Dataset, Features, Value, Sequence
+from datasets import Dataset, Features, Value
 from .load_datasets import load_data_retrieval
 from tasks import get_task
 from utils.sorted_sampler import LenghtSortedSampler
 from pathlib import Path
 import time
-from typing import cast
-from copy import copy
-from mteb.types import HFSubset
-from datasets import DatasetDict
-from torch.nn.utils.rnn import pad_sequence
-from .helpers import (
-    encode,
-    search,
-    collate_fn_with_padding,
-    abs_task_preprocessing,
-    last_token_pool,
-)
+from .helpers import encode, search, collate_fn_with_padding
 
 
 def estimate_chunk_size(query_embeddings, max_chunk=5 * 10**4):
@@ -150,7 +138,7 @@ class HardNegativesMiner:
         dist.barrier()
         if self.rank == 0:
             start = time.time()
-            print(f"building query embeddings")
+            print("building query embeddings")
 
         query_embeddings = encode(
             model,
@@ -177,7 +165,7 @@ class HardNegativesMiner:
         chunk_size = estimate_chunk_size(query_embeddings)
         if self.rank == 0:
             print(f"duration: {(time.time()-start)/60}min")
-            print(f"building document embeddings")
+            print("building document embeddings")
             print(f"selected_chunk_size: {chunk_size}")
         start = time.time()
 
@@ -285,15 +273,21 @@ class HardNegativesMiner:
         start = time.time()
 
         hard_negatives = {}
-        discarded = 0
+        less_than_24 = 0
+        empty_entries = 0
         for i, q_id in enumerate(unique_query_ids):
             valid_idx = np.where(valid_mask[i])[0]
 
             # Safety: allow empty negatives
             if valid_idx.size < 24:
-                discarded += 1
+                less_than_24 += 1
                 if valid_idx.size == 0:
-                    hard_negatives[q_id] = {"id": [], "text": []}
+                    empty_entries += 1
+                    # Use the same structure as the normal case, just with empty lists
+                    if has_title:
+                        hard_negatives[q_id] = {"id": [], "text": [], "title": []}
+                    else:
+                        hard_negatives[q_id] = {"id": [], "text": []}
                     continue
 
             # Cap number of negatives
@@ -308,6 +302,7 @@ class HardNegativesMiner:
                     "text": [corpus_dict[id_]["text"] for id_ in corpus_ids],
                     "title": [corpus_dict[id_]["title"] for id_ in corpus_ids],
                 }
+
             else:
                 hard_negatives[q_id] = {
                     "id": corpus_ids,
@@ -325,9 +320,10 @@ class HardNegativesMiner:
             print(f"duration for loop: {(time.time()-start)/60} min")
         start = time.time()
 
-        if discarded and self.rank == 0:
+        if less_than_24 and self.rank == 0:
+            tot_elem = top_scores.shape[0]
             print(
-                f"{discarded} examples have less than 24 hard negatives, {discarded/top_scores.shape[0]*100: .2f}%"
+                f"{less_than_24} examples have less than 24 hard negatives, {less_than_24/tot_elem*100: .2f}%, {empty_entries/tot_elem*100: .2f}% are empty"
             )
 
         return hard_negatives
@@ -373,13 +369,14 @@ class HardNegativesMiner:
                 print(f"saving dataset {name}\n")
 
             dataset = dict_to_dataset(
+                has_title,
                 texts=dataset["queries"]["text"],
                 ids=dataset["queries"]["id"],
                 positive_text=dataset["positives"]["text"],
                 positive_title=positive_titles,
                 positive_id=dataset["positives"]["id"],
                 negative_text=negative_texts,
-                negative_titles=negative_titles,
+                negative_title=negative_titles,
                 negative_ids=negative_indices,
             )
 
@@ -390,6 +387,7 @@ class HardNegativesMiner:
 
 
 def dict_to_dataset(
+    has_title,
     texts,
     ids,
     positive_text,
