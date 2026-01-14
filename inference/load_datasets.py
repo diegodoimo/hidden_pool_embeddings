@@ -1,11 +1,10 @@
 from datasets import load_dataset
 from tasks.retrieval_tasks import *
 from datasets import Dataset, Features, Value
-import time 
+import time
 import os
 from multiprocessing import Pool
 
-RANK = int(os.environ["RANK"])
 # def get_dict(dataset, id_field, text_field, title_field=None):
 
 #     ids = dataset[id_field]
@@ -18,14 +17,13 @@ RANK = int(os.environ["RANK"])
 #         return dict(zip(ids, texts))
 
 
-
 # def get_dict(dataset, id_field, text_field, title_field=None):
 
 #     if title_field:
-#         return {row[id_field]: (row[text_field], row[title_field]) 
+#         return {row[id_field]: (row[text_field], row[title_field])
 #                 for row in dataset}
 #     else:
-#         return {row[id_field]: row[text_field] 
+#         return {row[id_field]: row[text_field]
 #                 for row in dataset}
 
 
@@ -33,41 +31,43 @@ RANK = int(os.environ["RANK"])
 #     # Access columns directly instead of iterating rows
 #     ids = dataset[id_field]
 #     texts = dataset[text_field]
-    
+
 #     if title_field:
 #         titles = dataset[title_field]
-#         return {id_: (text, title) 
+#         return {id_: (text, title)
 #                 for id_, text, title in zip(ids, texts, titles)}
 #     else:
 #         return {id_: text for id_, text in zip(ids, texts)}
 
+
 def process_chunk(args):
     chunk, id_field, text_field, title_field = args
     if title_field:
-        return {row[id_field]: (row[text_field], row[title_field]) 
-                for row in chunk}
+        return {row[id_field]: (row[text_field], row[title_field]) for row in chunk}
     else:
         return {row[id_field]: row[text_field] for row in chunk}
 
+
 def get_dict(dataset, id_field, text_field, title_field=None):
-    #n_workers = os.cpu_count()-2
+    # n_workers = os.cpu_count()-2
     n_workers = 16
     chunk_size = len(dataset) // n_workers
-    
-    chunks = [dataset.select(range(i, min(i + chunk_size, len(dataset)))) 
-              for i in range(0, len(dataset), chunk_size)]
-    
+
+    chunks = [
+        dataset.select(range(i, min(i + chunk_size, len(dataset))))
+        for i in range(0, len(dataset), chunk_size)
+    ]
+
     with Pool(n_workers) as pool:
-        results = pool.map(process_chunk, 
-                          [(chunk, id_field, text_field, title_field) 
-                           for chunk in chunks])
-    
+        results = pool.map(
+            process_chunk, [(chunk, id_field, text_field, title_field) for chunk in chunks]
+        )
+
     # Merge dictionaries
     return {k: v for d in results for k, v in d.items()}
 
 
-
-def load_data_retrieval(task) -> Dataset:
+def load_data_retrieval(task, rank = 0) -> Dataset:
     """
     Load retrieval task data and return as HuggingFace Dataset.
 
@@ -81,19 +81,18 @@ def load_data_retrieval(task) -> Dataset:
     """
 
     if task.has_multiple_datasets:
-        if RANK ==0:
+        if rank == 0:
             print("Loading datasets...")
         qrels = load_dataset(task.hf_name, name=task.qrels_name, split=task.split)
         anchors_ = load_dataset(task.hf_name, name=task.anchor_name, split=task.anchor_name)
         corpus = load_dataset(task.hf_name, name=task.positive_name, split=task.positive_name)
 
-        
-        if RANK ==0:
+        if rank == 0:
             print(f"Mapping {len(anchors_)} queries to dict...")
             start = time.time()
         queries_dict = get_dict(anchors_, task.anchor_fields["id"], task.anchor_fields["text"])
 
-        if RANK ==0: 
+        if rank == 0:
             print(f"{(time.time() - start): .2f} sec for {len(queries_dict)} samples")
             start = time.time()
             print(f"Mapping {len(corpus)} docs to dict...")
@@ -105,10 +104,10 @@ def load_data_retrieval(task) -> Dataset:
         )
 
         has_title = task.corpus_fields.get("title", None) is not None
-        if RANK ==0: 
+        if rank == 0:
             print(f"{(time.time() - start)/60: .2f} min for {len(corpus_dict)} samples")
             print("Extracting positives from qrels...")
-            
+
         query_ids = []
         query_texts = []
         positive_ids = []
@@ -195,8 +194,7 @@ def load_data_retrieval(task) -> Dataset:
 
         # Check if titles exist in dataset
         has_corpus_fields = task.corpus_fields is not None
-        has_title = (has_corpus_fields and task.corpus_fields.get("title", None) is not None
-        )
+        has_title = has_corpus_fields and task.corpus_fields.get("title", None) is not None
         if has_title and task.corpus_fields["title"] in dataset.column_names:
             positive_titles = list(dataset[task.corpus_fields["title"]])
             document_titles = positive_titles.copy()
@@ -204,7 +202,7 @@ def load_data_retrieval(task) -> Dataset:
             has_title = False
             positive_titles = None
             document_titles = None
-        
+
         unique_query_texts = query_texts
         unique_query_ids = query_ids
 
@@ -212,15 +210,16 @@ def load_data_retrieval(task) -> Dataset:
         unique_positive_ids = positive_ids
         unique_positve_titles = unique_positive_titles
 
-
     # # Create HuggingFace Dataset
-    queries_ds = dict_to_dataset(texts = query_texts, ids = query_ids)
-    unique_queries_ds = dict_to_dataset(texts = unique_query_texts, ids = unique_query_ids)
+    queries_ds = dict_to_dataset(texts=query_texts, ids=query_ids)
+    unique_queries_ds = dict_to_dataset(texts=unique_query_texts, ids=unique_query_ids)
 
-    positives_ds = dict_to_dataset(texts = positive_texts, ids = positive_ids, titles= positive_titles)
-    unique_positive_ds = dict_to_dataset(texts = unique_positive_texts, ids = unique_positive_ids, titles= unique_positive_titles)
-    
-    corpus_ds = dict_to_dataset(texts = document_texts, ids = document_ids, titles= document_titles)
+    positives_ds = dict_to_dataset(texts=positive_texts, ids=positive_ids, titles=positive_titles)
+    unique_positive_ds = dict_to_dataset(
+        texts=unique_positive_texts, ids=unique_positive_ids, titles=unique_positive_titles
+    )
+
+    corpus_ds = dict_to_dataset(texts=document_texts, ids=document_ids, titles=document_titles)
 
     hf_dataset = {
         "unique_queries": unique_queries_ds,
@@ -230,12 +229,11 @@ def load_data_retrieval(task) -> Dataset:
         "corpus": corpus_ds,
     }
 
-
     # # Create HuggingFace Dataset
     # hf_dataset = create_hf_dataset(
     #     unique_queries,
     #     unique_query_ids,
-    #     unique_positives, 
+    #     unique_positives,
     #     unique_positive_ids,
     #     unique_positive_titles,
     #     query_texts,
@@ -252,7 +250,7 @@ def load_data_retrieval(task) -> Dataset:
     return hf_dataset
 
 
-def dict_to_dataset(texts, ids, titles = None):
+def dict_to_dataset(texts, ids, titles=None):
 
     if titles is not None:
 
@@ -272,17 +270,17 @@ def dict_to_dataset(texts, ids, titles = None):
         )
     else:
         dataset = Dataset.from_dict(
-        {
-            "text": texts,
-            "id": ids,
-        },
-        features=Features(
             {
-                "text": Value("string"),
-                "id": Value("string"),
-            }
-        ),
-    )
+                "text": texts,
+                "id": ids,
+            },
+            features=Features(
+                {
+                    "text": Value("string"),
+                    "id": Value("string"),
+                }
+            ),
+        )
 
     return dataset
 
@@ -306,9 +304,9 @@ def dict_to_dataset(texts, ids, titles = None):
 
 #     positive_ds = dict_to_dataset(texts = positive_texts, ids = positive_ids, titles= positive_titles)
 #     unique_positive_ds = dict_to_dataset(texts = unique_positive_texts, ids = unique_positive_ids, titles= unique_positive_titles)
-    
+
 #     corpus_ds = dict_to_dataset(texts = corpus_texts, ids = corpus_ids, titles= corpus_titles)
-    
+
 #      Dataset.from_dict(
 #         {
 #             "text": query_texts,
@@ -411,7 +409,6 @@ def dict_to_dataset(texts, ids, titles = None):
 #         )
 
 
-
 #         corpus_ds = Dataset.from_dict(
 #             {
 #                 "text": document_texts,
@@ -424,7 +421,7 @@ def dict_to_dataset(texts, ids, titles = None):
 #                 }
 #             ),
 #         )
-    
+
 #     # corpus_ds = corpus_ds.select(range(2*10**6))
 #     # unique_queries_ds = unique_queries_ds.select(range(10**5))
 
