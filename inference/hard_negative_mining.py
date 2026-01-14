@@ -99,7 +99,6 @@ class HardNegativesMiner:
             print(f"number tokenized anchors: {len(queries_dataset)}")
             print(f"number tokenized docs: {len(corpus_dataset)}")
 
-
         return dataset, corpus_dict, has_title
 
     def mine_one(
@@ -262,15 +261,21 @@ class HardNegativesMiner:
         start = time.time()
         
         hard_negatives = {}
-        discarded = 0
+        less_than_24 = 0
+        empty_entries = 0
         for i, q_id in enumerate(unique_query_ids):
             valid_idx = np.where(valid_mask[i])[0]
 
             # Safety: allow empty negatives
             if valid_idx.size < 24:
-                discarded += 1 
+                less_than_24 += 1 
                 if valid_idx.size == 0:
-                    hard_negatives[q_id] = {"id": [], "text": []}
+                    empty_entries +=1
+                    # Use the same structure as the normal case, just with empty lists
+                    if has_title:
+                        hard_negatives[q_id] = {"id": [], "text": [], "title": []}
+                    else:
+                        hard_negatives[q_id] = {"id": [], "text": []}
                     continue
 
             # Cap number of negatives
@@ -285,6 +290,7 @@ class HardNegativesMiner:
                     "text": [corpus_dict[id_]["text"] for id_ in corpus_ids],
                     "title": [corpus_dict[id_]["title"] for id_ in corpus_ids]
                 }
+
             else:
                 hard_negatives[q_id] = {
                     "id": corpus_ids,
@@ -302,8 +308,11 @@ class HardNegativesMiner:
             print(f"duration for loop: {(time.time()-start)/60} min")
         start = time.time()
 
-        if discarded and self.rank ==0:
-            print(f"{discarded} examples have less than 24 hard negatives, {discarded/top_scores.shape[0]*100: .2f}%")
+    
+
+        if less_than_24 and self.rank ==0:
+            tot_elem = top_scores.shape[0]
+            print(f"{less_than_24} examples have less than 24 hard negatives, {less_than_24/tot_elem*100: .2f}%, {empty_entries/tot_elem*100: .2f}% are empty")
 
         return hard_negatives
 
@@ -346,11 +355,11 @@ class HardNegativesMiner:
             dataset = dict_to_dataset(texts=dataset["queries"]["text"], 
                                         ids=dataset["queries"]["id"], 
                                         positive_text=dataset["positives"]["text"], 
-                                        positive_title=positive_title, 
+                                        positive_title=positive_titles, 
                                         positive_id=dataset["positives"]["id"], 
                                         negative_text=negative_texts, 
-                                        negative_titles=negative_titles, 
-                                        negative_ids=negative_ids)
+                                        negative_title=negative_titles, 
+                                        negative_ids=negative_indices)
 
             dataset = Dataset.from_dict(data, features=features)
 
