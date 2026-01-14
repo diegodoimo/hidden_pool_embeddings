@@ -46,8 +46,6 @@ class LenghtSortedSampler(Sampler[_T_co]):
         self.total_size = self.num_samples * self.num_replicas
         self.seed = seed
 
-        # indices = list(range(len(self.dataset)))  # type: ignore[arg-type]
-        #lengths = [len(instance) for instance in self.dataset["input_ids"]]
         lengths = [len(instance) for instance in self.dataset["prompt"]]
         indices = list(np.argsort(lengths))[::-1]
         # add extra samples to make it evenly divisible
@@ -62,6 +60,9 @@ class LenghtSortedSampler(Sampler[_T_co]):
                 f"Number of indices ({len(indices)}) does not match total_size ({self.total_size})"
             )
 
+        # same seed in all 
+        rng = np.random.RandomState(self.seed) 
+
         # subsample
         self.indices = []
         for i in range(0, self.total_size, self.num_replicas):
@@ -71,7 +72,7 @@ class LenghtSortedSampler(Sampler[_T_co]):
 
             if self.total_size - i > self.num_replicas:
                 #do not shuffle the last batch
-                np.random.shuffle(batch)
+                rng.shuffle(batch)
 
             if self.rank < len(batch):
                 self.indices.append(batch[self.rank])

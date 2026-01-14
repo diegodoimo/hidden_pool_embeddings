@@ -6,7 +6,7 @@ import argparse
 from transformers import AutoModel, AutoTokenizer
 import torch.distributed as dist
 from inference.create_datasets import instruction_template_qwen3
-
+from datetime import timedelta
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -22,7 +22,10 @@ path_to_name = {"Qwen/Qwen3-Embedding-0.6B": "qwen3_600m",
 def main():
     args = parse_args()
 
-    dist.init_process_group("nccl", device_id = LOCAL_RANK)
+    dist.init_process_group("nccl", 
+    device_id = LOCAL_RANK, 
+    timeout=timedelta(seconds=30)  # Reduce from default 600s to 120s
+    )
     torch.cuda.set_device(dist.get_rank())
 
     #enable tensorfloat32
@@ -34,7 +37,7 @@ def main():
 
     miner = HardNegativesMiner(
         path=f"./results/datasets_negatives/{path_to_name[args.model_name_or_path]}",
-        tasks=["nfcorpus", "hotpotqa", "naturalquestions"], #msmarco "nfcorpus"
+        tasks=["hotpotqa", "naturalquestions"], #msmarco "nfcorpus" "nfcorpus", 
         tokenizer=tokenizer,
         instruction_template=instruction_template_qwen3,
         padding_side="right",
@@ -48,7 +51,7 @@ def main():
     model = model.eval()
     
     model = DDP(model, device_ids=[LOCAL_RANK])
-    model = torch.compile(model)
+    #model = torch.compile(model)
     miner.mine_negatives(model, batch_size=32)
     dist.destroy_process_group()
 
