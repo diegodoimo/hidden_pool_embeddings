@@ -14,7 +14,8 @@ from utils.sorted_sampler import LenghtSortedSampler
 from pathlib import Path
 import time
 from .helpers import encode, search, collate_fn_with_padding
-
+from collections import Counter
+from dataclasses import dataclass
 
 def estimate_chunk_size(query_embeddings, max_chunk=5 * 10**4):
     free_mem, _ = torch.cuda.mem_get_info()
@@ -25,10 +26,32 @@ def estimate_chunk_size(query_embeddings, max_chunk=5 * 10**4):
     return max(1000, min(chunk, max_chunk))
 
 
+
+
+@dataclass
+class TripletStats:
+    less_than_24: int = 0
+    less_than_15: int = 0
+    less_than_7: int = 0
+    empty_entries: int = 0
+    total_queries: int = 0
+    
+    def update(self, num_negatives: int, q_id_counts):
+        """Update stats based on number of negatives"""
+        if num_negatives < 24:
+            self.less_than_24 += q_id_counts
+        if num_negatives < 15:
+            self.less_than_15 += q_id_counts
+        if num_negatives < 7:
+            self.less_than_7 += q_id_counts
+        if num_negatives == 0:
+            self.empty_entries += q_id_counts
+
+
 class HardNegativesMiner:
 
     def __init__(
-        self, path, tokenizer, tasks, instruction_template, padding_side="right"
+        self, path, model_name, tokenizer, tasks, instruction_template, padding_side="right"
     ):
 
         self.world_size = dist.get_world_size()
@@ -41,12 +64,15 @@ class HardNegativesMiner:
             Path(path).mkdir(parents=True, exist_ok=True)
         self.instruction_template = instruction_template
         self.path = path
+        self.model_name = model_name
         dist.barrier()
 
     def prepare_dataset(self, task_name):
 
         task = get_task(task_name)
         data_split, corpus_dict, has_title = load_data_retrieval(task)
+
+        
 
         dist.barrier()
         assert len(data_split["queries"]["text"]) > 1
@@ -189,31 +215,8 @@ class HardNegativesMiner:
         top_scores = top_scores.cpu().numpy()
         top_indices = top_indices.cpu().numpy()
 
-        # rng = np.random.default_rng(seed=0)
-
-        # num_queries = len(dataset["unique_positives"]["id"])
-        # query_positive_scores = rng.uniform(0.9, 1, size = num_queries)
-        # top_scores = rng.uniform(0, 0.9, size = (num_queries, 100))
-        # top_indices = rng.integers(0, 4*10**6, size = (num_queries, 100))
-
-        # array_ids = np.array(dataset["corpus"]["id"])
-        # array_texts = np.array(dataset["corpus"]["text"])
-
-        # hard_negatives = {}
-        # unique_query_ids = list(dataset["unique_queries"]["id"])
-        # for row_indices, row_scores, qp_score, q_id in zip(top_indices, top_scores, unique_query_ids, query_positive_scores):
-
-        #     upper_threshold = min(query_positive_score, 0.85)
-        #     selected_row_indices = row_indices[5:100]
-        #     selected_row_scores = row_scores[5:100]
-        #     mask = selected_row_scores < upper_threshold
-        #     selected_row_indices = selected_row_indices[mask][:24]
-
-        #     negative_indices = list(array_ids[selected_row_indices])
-        #     negative_texts = list(array_texts[selected_row_indices])
-        #     hard_negatives[q_id] = {"text": negative_texts, "id": negative_indices}
-
-        hard_negatives = self.get_hard_negatives(
+        q_id_counts = Counter(dataset["queries"]["id"])
+        hard_negatives, stats = self.get_hard_negatives(
             top_scores=top_scores,
             top_indices=top_indices,
             corpus_ids=dataset["corpus"]["id"],
@@ -221,13 +224,15 @@ class HardNegativesMiner:
             query_positive_scores=query_positive_scores,
             has_title=has_title,
             corpus_dict=corpus_dict,
+            q_id_counts=q_id_counts,
         )
+        stats.total_queries = len(dataset["queries"]["id"])
 
         dist.barrier()
         if self.rank == 0:
             print(f"duration: {(time.time()-start)/60} min")
 
-        return hard_negatives
+        return hard_negatives, stats
 
     def get_hard_negatives(
         self,
@@ -238,9 +243,10 @@ class HardNegativesMiner:
         query_positive_scores,
         has_title,
         corpus_dict,
+        q_id_counts,
     ):
 
-        start = time.time()
+
         array_ids = np.asarray(corpus_ids)
         unique_query_ids = np.asarray(unique_query_ids)
 
@@ -254,9 +260,6 @@ class HardNegativesMiner:
             len(query_positive_scores) == top_scores.shape[0]
         ), f"Positive score mismatch {len(query_positive_scores)} {top_scores.shape[0]}"
 
-        if self.rank == 0:
-            print(f"duration conversion: {(time.time()-start)/60} min")
-        start = time.time()
 
         candidate_indices = top_indices[:, 5:100]  # (Q, 95)
         candidate_scores = top_scores[:, 5:100]  # (Q, 95)
@@ -266,29 +269,22 @@ class HardNegativesMiner:
         ]  # (Q, 1)
         valid_mask = candidate_scores < upper_thresholds  # (Q, 95)
 
-        dist.barrier()
-        if self.rank == 0:
-            print(f"duration slicing/thresholding: {(time.time()-start)/60} min")
-            print("has_title", has_title)
-        start = time.time()
-
+        stats = TripletStats()
         hard_negatives = {}
-        less_than_24 = 0
         empty_entries = 0
         for i, q_id in enumerate(unique_query_ids):
             valid_idx = np.where(valid_mask[i])[0]
 
-            # Safety: allow empty negatives
-            if valid_idx.size < 24:
-                less_than_24 += 1
-                if valid_idx.size == 0:
-                    empty_entries += 1
-                    # Use the same structure as the normal case, just with empty lists
-                    if has_title:
-                        hard_negatives[q_id] = {"id": [], "text": [], "title": []}
-                    else:
-                        hard_negatives[q_id] = {"id": [], "text": []}
-                    continue
+            stats.update(valid_idx.size, q_id_counts[q_id])
+                
+            if valid_idx.size == 0:
+                empty_entries += 1
+                # Use the same structure as the normal case, just with empty lists
+                if has_title:
+                    hard_negatives[q_id] = {"id": [], "text": [], "title": []}
+                else:
+                    hard_negatives[q_id] = {"id": [], "text": []}
+                continue
 
             # Cap number of negatives
             selected = valid_idx[:24]
@@ -315,18 +311,13 @@ class HardNegativesMiner:
             #     "text": [corpus_texts[index] for index in corpus_indices],
             # }
 
-        dist.barrier()
-        if self.rank == 0:
-            print(f"duration for loop: {(time.time()-start)/60} min")
-        start = time.time()
-
-        if less_than_24 and self.rank == 0:
+        if stats.less_than_24 and self.rank == 0:
             tot_elem = top_scores.shape[0]
             print(
                 f"{less_than_24} examples have less than 24 hard negatives, {less_than_24/tot_elem*100: .2f}%, {empty_entries/tot_elem*100: .2f}% are empty"
             )
 
-        return hard_negatives
+        return hard_negatives, stats
 
     def mine_negatives(self, model, batch_size=64):
 
@@ -342,7 +333,7 @@ class HardNegativesMiner:
                 print(f"processing dataset {name}\n")
                 print(has_title)
 
-            hard_negatives = self.mine_one(
+            hard_negatives, stats = self.mine_one(
                 dataset=dataset,
                 model=model,
                 batch_size=batch_size,
@@ -350,99 +341,108 @@ class HardNegativesMiner:
                 corpus_dict=corpus_dict,
             )
 
-            negative_texts = [
-                hard_negatives[id_]["text"] for id_ in dataset["queries"]["id"]
-            ]
-            negative_indices = [
-                hard_negatives[id_]["id"] for id_ in dataset["queries"]["id"]
-            ]
-
-            negative_titles = None
-            positive_titles = None
-            if has_title:
-                negative_titles = [
-                    hard_negatives[id_]["title"] for id_ in dataset["queries"]["id"]
-                ]
-                positive_titles = dataset["positives"]["title"]
-
             if self.rank == 0:
                 print(f"saving dataset {name}\n")
+                print(has_title)
 
-            dataset = dict_to_dataset(
-                has_title,
-                texts=dataset["queries"]["text"],
-                ids=dataset["queries"]["id"],
-                positive_text=dataset["positives"]["text"],
-                positive_title=positive_titles,
-                positive_id=dataset["positives"]["id"],
-                negative_text=negative_texts,
-                negative_title=negative_titles,
-                negative_ids=negative_indices,
+            dataset = self.dict_to_dataset(
+                dataset=dataset
+                hard_negatives=hard_negatives,
+                has_title=has_title,
+                stats=stats
             )
-
+            dist.barrier()
             if self.rank == 0:
                 dataset.save_to_disk(f"{self.path}/{name}")
 
             dist.barrier()
 
 
-def dict_to_dataset(
-    has_title,
-    texts,
-    ids,
-    positive_text,
-    positive_title,
-    positive_id,
-    negative_text,
-    negative_title,
-    negative_id,
-):
+    def dict_to_dataset(
+        self, 
+        dataset,
+        hard_negatives,
+        has_title,
+        stats,
+    ):
+        texts=dataset["queries"]["text"],
+        ids=dataset["queries"]["id"],
+        positive_text=dataset["positives"]["text"],
+        positive_id=dataset["positives"]["id"],
 
-    if has_title is not None:
+        negative_texts = [
+            hard_negatives[id_]["text"] for id_ in dataset["queries"]["id"]
+        ]
+        negative_id = [
+            hard_negatives[id_]["id"] for id_ in dataset["queries"]["id"]
+        ]
 
-        dataset = Dataset.from_dict(
-            {
-                "anchor_text": texts,
-                "anchor_id": ids,
-                "positive_text": positive_text,
-                "positive_title": positive_title,
-                "positive_id": positive_id,
-                "negative_text": negative_text,
-                "negative_title": negative_title,
-                "negative_id": negative_id,
-            },
-            features=Features(
+        negative_title = None
+        positive_title = None
+        if has_title:
+            negative_title = [
+                hard_negatives[id_]["title"] for id_ in dataset["queries"]["id"]
+            ]
+            positive_title = dataset["positives"]["title"]
+
+        if has_title:
+            
+            dataset = Dataset.from_dict(
                 {
-                    "anchor_text": Value("string"),
-                    "anchor_id": Value("string"),
-                    "positive_text": Value("string"),
-                    "positive_title": Value("string"),
-                    "positive_id": Value("string"),
-                    "negative_text": Value("string"),
-                    "negative_title": Value("string"),
-                    "negative_id": Value("string"),
-                }
-            ),
-        )
-    else:
-        dataset = Dataset.from_dict(
-            {
-                "anchor_text": texts,
-                "anchor_id": ids,
-                "positive_text": positive_text,
-                "positive_id": positive_id,
-                "negative_text": negative_text,
-                "negative_id": negative_id,
-            },
-            features=Features(
+                    "anchor_text": texts,
+                    "anchor_id": ids,
+                    "positive_text": positive_text,
+                    "positive_title": positive_title,
+                    "positive_id": positive_id,
+                    "negative_text": negative_text,
+                    "negative_title": negative_title,
+                    "negative_id": negative_id,
+                },
+                features=Features(
+                    {
+                        "anchor_text": Value("string"),
+                        "anchor_id": Value("string"),
+                        "positive_text": Value("string"),
+                        "positive_title": Value("string"),
+                        "positive_id": Value("string"),
+                        "negative_text": Value("string"),
+                        "negative_title": Value("string"),
+                        "negative_id": Value("string"),
+                    }
+                ),
+            )
+        else:
+            dataset = Dataset.from_dict(
                 {
-                    "anchor_text": Value("string"),
-                    "anchor_id": Value("string"),
-                    "positive_text": Value("string"),
-                    "positive_id": Value("string"),
-                    "negative_text": Value("string"),
-                    "negative_id": Value("string"),
-                }
-            ),
+                    "anchor_text": texts,
+                    "anchor_id": ids,
+                    "positive_text": positive_text,
+                    "positive_id": positive_id,
+                    "negative_text": negative_text,
+                    "negative_id": negative_id,
+                },
+                features=Features(
+                    {
+                        "anchor_text": Value("string"),
+                        "anchor_id": Value("string"),
+                        "positive_text": Value("string"),
+                        "positive_id": Value("string"),
+                        "negative_text": Value("string"),
+                        "negative_id": Value("string"),
+                    }
+                ),
+            )
+
+
+        dataset.info = DatasetInfo(
+            description="Triplet dataset with hard negatives",
+            metadata={
+                "num_triples": stats.total_queries,
+                "num_empty_negative_entries": stats.empty_entries,
+                "num_with_triplets with_7_hard_negatives": stats.total_queries - stats.less_than_7,
+                "num_with_triplets with_15_hard_negatives": stats.total_queries - stats.less_than_15,
+                "num_with_triplets with_24_hard_negatives": stats.total_queries - stats.less_than_24,
+                "embebber": self.model_name
+            },
         )
-    return dataset
+        return dataset
