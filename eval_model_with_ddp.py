@@ -45,8 +45,8 @@ def main():
 
     model = DDP(model, device_ids=[LOCAL_RANK])
     results = retrieval_evaluator.evaluate(model, batch_size=32)
-    
-    if rank ==0:
+
+    if rank == 0:
         print(results)
 
     dist.destroy_process_group()

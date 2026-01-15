@@ -37,7 +37,8 @@ def main():
 
     miner = HardNegativesMiner(
         path=f"./results/datasets_negatives/{path_to_name[args.model_name_or_path]}",
-        tasks=["hotpotqa", "naturalquestions"], #msmarco "nfcorpus" "nfcorpus", 
+        model_name=path_to_name[args.model_name_or_path],
+        tasks=["naturalquestions"], # msmarco "nfcorpus" "nfcorpus", "hotpotqa",
         tokenizer=tokenizer,
         instruction_template=instruction_template_qwen3,
         padding_side="right",
@@ -47,11 +48,10 @@ def main():
         args.model_name_or_path,
         dtype=torch.bfloat16,
     ).to("cuda")
-    
     model = model.eval()
-    
     model = DDP(model, device_ids=[LOCAL_RANK])
-    #model = torch.compile(model)
+    model = torch.compile(model)
+
     miner.mine_negatives(model, batch_size=32)
     dist.destroy_process_group()
 
