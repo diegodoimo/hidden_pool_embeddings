@@ -377,7 +377,7 @@ class HardNegativesMiner:
                 positive_id=dataset["positives"]["id"],
                 negative_text=negative_texts,
                 negative_title=negative_titles,
-                negative_ids=negative_indices,
+                negative_id=negative_indices,
             )
 
             if self.rank == 0:
