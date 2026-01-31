@@ -17,7 +17,7 @@ from .helpers import encode, search, collate_fn_with_padding
 from collections import Counter
 from dataclasses import dataclass
 from datasets import DatasetInfo
-
+import json
 
 def estimate_chunk_size(query_embeddings, max_chunk=5 * 10**4):
     free_mem, _ = torch.cuda.mem_get_info()
@@ -220,6 +220,7 @@ class HardNegativesMiner:
         top_indices = top_indices.cpu().numpy()
 
         q_id_counts = Counter(dataset["queries"]["id"])
+        
         hard_negatives, stats = self.get_hard_negatives(
             top_scores=top_scores,
             top_indices=top_indices,
@@ -323,15 +324,15 @@ class HardNegativesMiner:
     def mine_negatives(self, model, batch_size=64):
 
         self.batch_size = batch_size
-        for name in self.task_names:
+        for task_name in self.task_names:
 
             if self.rank == 0:
                 print(f"preparing dataset {name}\n")
 
-            dataset, corpus_dict, has_title = self.prepare_dataset(task_name=name)
+            dataset, corpus_dict, has_title = self.prepare_dataset(task_name=task_name)
 
             if self.rank == 0:
-                print(f"processing dataset {name}\n")
+                print(f"processing dataset {task_name}\n")
 
             hard_negatives, stats = self.mine_one(
                 dataset=dataset,
@@ -341,23 +342,20 @@ class HardNegativesMiner:
                 corpus_dict=corpus_dict,
             )
 
+            dist.barrier()
             if self.rank == 0:
-                print(f"saving dataset {name}\n")
-                print(has_title)
+                print(f"saving dataset {task_name}\n")
 
-            dataset = self.dict_to_dataset(
+            self.save_to_disk(
                 dataset=dataset,
                 negatives=hard_negatives,
                 has_title=has_title,
                 stats=stats,
+                task_name=task_name,                
             )
-            dist.barrier()
-            if self.rank == 0:
-                dataset.save_to_disk(f"{self.path}/{name}")
+            
 
-            dist.barrier()
-
-    def dict_to_dataset(self, dataset, negatives, has_title, stats):
+    def save_to_disk(self, dataset, negatives, has_title, stats, task_name):
 
         texts = dataset["queries"]["text"]
         ids = dataset["queries"]["id"]
@@ -418,18 +416,20 @@ class HardNegativesMiner:
                 ),
             )
 
-        dataset.info = DatasetInfo(
-            description="Triplet dataset with hard negatives",
-            metadata={
-                "num_triples": stats.total_queries,
-                "num_empty_negative_entries": stats.empty_entries,
-                "num_with_triplets with_7_hard_negatives": stats.total_queries
-                - stats.less_than_7,
-                "num_with_triplets with_15_hard_negatives": stats.total_queries
-                - stats.less_than_15,
-                "num_with_triplets with_24_hard_negatives": stats.total_queries
-                - stats.less_than_24,
-                "embedder": self.model_name,
-            },
-        )
-        return dataset
+        # Save metadata
+        metadata = {
+            "num_triples": stats.total_queries,
+            "num_empty_negative_entries": stats.empty_entries,
+            "num_with_7_hard_negatives": stats.total_queries - stats.less_than_7,
+            "num_with_15_hard_negatives": stats.total_queries - stats.less_than_15,
+            "num_with_24_hard_negatives": stats.total_queries - stats.less_than_24,
+            "embedder": self.model_name,
+        }
+
+        dist.barrier()
+        if self.rank == 0:
+            dataset.save_to_disk(f"{self.path}/{task_name}")
+
+            with open(f"{self.save_path}/{task_name}/dataset_metadata.json", "w") as f:
+                json.dump(metadata, f, indent=2)
+

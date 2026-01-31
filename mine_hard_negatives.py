@@ -38,7 +38,7 @@ def main():
     miner = HardNegativesMiner(
         path=f"./results/datasets_negatives/{path_to_name[args.model_name_or_path]}",
         model_name=path_to_name[args.model_name_or_path],
-        tasks=["naturalquestions"], # msmarco "nfcorpus" "nfcorpus", "hotpotqa",
+        tasks=["nfcorpus"], #"naturalquestions", "hotpotqa", "msmarco"], # msmarco "nfcorpus"  
         tokenizer=tokenizer,
         instruction_template=instruction_template_qwen3,
         padding_side="right",

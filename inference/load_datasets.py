@@ -213,8 +213,9 @@ def load_data_retrieval(task, rank=0) -> Dataset:
         texts=document_texts, ids=document_ids, titles=document_titles
     )
 
-    # corpus_ds = corpus_ds.select(range(5000*10**3, len(corpus_ds)))
-    corpus_ds = corpus_ds.select(range(10**5))
+    #corpus_ds = corpus_ds.select(range(5000*10**3, len(corpus_ds)))
+    #corpus_ds = corpus_ds.select(range(10**5))
+    
     if rank == 0:
         # Check the length
         print(f"Length: {len(corpus_ds)}")
