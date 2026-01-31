@@ -327,7 +327,7 @@ class HardNegativesMiner:
         for task_name in self.task_names:
 
             if self.rank == 0:
-                print(f"preparing dataset {name}\n")
+                print(f"preparing dataset {task_name}\n")
 
             dataset, corpus_dict, has_title = self.prepare_dataset(task_name=task_name)
 
@@ -430,6 +430,6 @@ class HardNegativesMiner:
         if self.rank == 0:
             dataset.save_to_disk(f"{self.path}/{task_name}")
 
-            with open(f"{self.save_path}/{task_name}/dataset_metadata.json", "w") as f:
+            with open(f"{self.path}/{task_name}/dataset_metadata.json", "w") as f:
                 json.dump(metadata, f, indent=2)
 
