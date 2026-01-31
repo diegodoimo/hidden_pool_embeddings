@@ -7,7 +7,7 @@ import os
 from multiprocessing import Pool
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Set
-from .data_helpers import dict_to_dataset, RetrievalRawData
+from .data_helpers import RetrievalRawData, get_dict
 
 
 def normalize_text(
@@ -26,9 +26,9 @@ def extract_unique_queries(
 ) -> tuple:
     """
     Extract unique queries from lists that may contain repeated queries.
-
+    
     Returns:
-        tuple of (unique_query_texts, unique_query_ids, unique_positive_texts,
+        tuple of (unique_query_texts, unique_query_ids, unique_positive_texts, 
                   unique_positive_ids, unique_positive_titles)
     """
     seen_query_texts = set()
@@ -37,7 +37,7 @@ def extract_unique_queries(
     unique_positive_texts = []
     unique_positive_ids = []
     unique_positive_titles = [] if positive_titles is not None else None
-
+    
     for i, query_text in enumerate(query_texts):
         if query_text not in seen_query_texts:
             seen_query_texts.add(query_text)
@@ -47,7 +47,7 @@ def extract_unique_queries(
             unique_positive_ids.append(positive_ids[i])
             if positive_titles is not None:
                 unique_positive_titles.append(positive_titles[i])
-
+    
     return (
         unique_query_texts,
         unique_query_ids,
@@ -109,138 +109,166 @@ def clear_arguana_overlap(
     return filtered_dataset
 
 
-def process_chunk(args):
-    chunk, id_field, text_field, title_field = args
-    if title_field:
-        return {
-            row[id_field]: {"text": row[text_field], "title": row[title_field]}
-            for row in chunk
-        }
-    else:
-        return {row[id_field]: {"text": row[text_field]} for row in chunk}
+def get_mteb_eval_queries(hf_name: str, eval_split: str = "test") -> Set[str]:
+    """
+    Load MTEB evaluation queries and return a set of normalized query texts.
+    
+    Args:
+        hf_name: HuggingFace dataset name (e.g., 'mteb/nfcorpus')
+        eval_split: The evaluation split to load queries from (default: 'test')
+    
+    Returns:
+        Set of normalized query texts from the evaluation split
+    """
+    queries = load_dataset(hf_name, name="queries", split="queries")
+    qrels = load_dataset(hf_name, name="default", split=eval_split)
+    
+    # Get query IDs that appear in eval split
+    eval_query_ids = {qrel["query-id"] for qrel in qrels}
+    
+    # Build set of normalized query texts for eval queries
+    eval_query_texts = set()
+    for row in queries:
+        if row["_id"] in eval_query_ids:
+            eval_query_texts.add(normalize_text(row["text"]))
+    
+    return eval_query_texts
 
 
-def get_dict(dataset, id_field, text_field, title_field=None):
-    n_workers = 16
-    chunk_size = len(dataset) // n_workers
+def filter_train_queries_against_eval(
+    train_query_ids: List[str],
+    train_query_texts: List[str],
+    eval_query_texts: Set[str],
+) -> Set[str]:
+    """
+    Find train query IDs that overlap with eval query texts.
+    
+    Returns:
+        Set of train query IDs to exclude
+    """
+    exclude_ids = set()
+    for qid, qtext in zip(train_query_ids, train_query_texts):
+        if normalize_text(qtext) in eval_query_texts:
+            exclude_ids.add(qid)
+    return exclude_ids
 
-    chunks = [
-        dataset.select(range(i, min(i + chunk_size, len(dataset))))
-        for i in range(0, len(dataset), chunk_size)
-    ]
 
-    with Pool(n_workers) as pool:
-        results = pool.map(
-            process_chunk,
-            [(chunk, id_field, text_field, title_field) for chunk in chunks],
-        )
-
-    # Merge dictionaries
-    return {k: v for d in results for k, v in d.items()}
-
-
-def load_data_retrieval(task, rank=0) -> Dataset:
-
-    # Check if task has a custom loader
-    custom_loader = getattr(task, "custom_loader", None)
-    if custom_loader:
-        loader_func = {
-            "load_nli_retrieval": load_nli_retrieval,
-            "load_squad_retrieval": load_squad_retrieval,
-            "load_stackexchange_retrieval": load_stackexchange_retrieval,
-            "load_miracl_retrieval": load_miracl_retrieval,
-            "load_pubmedqa_retrieval": load_pubmedqa_retrieval,
-            "load_xsum_retrieval": load_xsum_retrieval,
-            "load_cnndm_retrieval": load_cnndm_retrieval,
-            "load_stackoverflow_dup_retrieval": load_stackoverflow_dup_retrieval,
-            "load_sts_retrieval": load_sts_retrieval,
-            "load_arguana_dedup_retrieval": load_arguana_dedup_retrieval,
-            "from_multiple_hf_datasets_with_dedup": from_multiple_hf_datasets_with_dedup,
-        }.get(custom_loader)
-        if loader_func:
-            # Handle loaders that need rank and eval_split
-            if custom_loader == "from_multiple_hf_datasets_with_dedup":
-                eval_split = getattr(task, "eval_split", "test")
-                data = loader_func(task, rank, eval_split)
-            else:
-                data = loader_func(task)
-        else:
-            raise ValueError(f"Unknown custom loader: {custom_loader}")
-    elif task.has_multiple_datasets:
-        data = from_multiple_hf_datasets(task, rank)
-    else:
-        data = from_one_hf_dataset(task)
-
-    # # Create HuggingFace Dataset
-    queries_ds = dict_to_dataset(texts=data.query_texts, ids=data.query_ids)
-    unique_queries_ds = dict_to_dataset(
-        texts=data.unique_query_texts, ids=data.unique_query_ids
-    )
-
-    positives_ds = dict_to_dataset(
-        texts=data.positive_texts, ids=data.positive_ids, titles=data.positive_titles
-    )
-    unique_positive_ds = dict_to_dataset(
-        texts=data.unique_positive_texts,
-        ids=data.unique_positive_ids,
-        titles=data.unique_positive_titles,
-    )
-
-    corpus_ds = dict_to_dataset(
-        texts=data.document_texts, ids=data.document_ids, titles=data.document_titles
-    )
-
-    # corpus_ds = corpus_ds.select(range(5000*10**3, len(corpus_ds)))
-    # corpus_ds = corpus_ds.select(range(10**5))
+def from_multiple_hf_datasets_with_dedup(task, rank, eval_split: str = "test"):
+    """
+    Load MTEB-style dataset with deduplication against evaluation split.
+    Removes any training queries that appear in the evaluation set.
+    """
     if rank == 0:
-        # Check the length
-        print(f"Length: {len(corpus_ds)}")
-        # Check the remainder mod 4
-        print(f"Remainder mod 4: {len(corpus_ds) % 4}")
+        print("Loading datasets with deduplication...")
+        print(f"Loading eval queries from {task.hf_name} ({eval_split} split)...")
+    
+    # Load eval queries for deduplication
+    eval_query_texts = get_mteb_eval_queries(task.hf_name, eval_split)
+    
+    if rank == 0:
+        print(f"Found {len(eval_query_texts)} eval queries to exclude")
+    
+    # Load training data
+    qrels = load_dataset(task.hf_name, name=task.qrels_name, split=task.split)
+    anchors_ = load_dataset(task.hf_name, name=task.anchor_name, split=task.anchor_name)
+    corpus = load_dataset(
+        task.hf_name, name=task.positive_name, split=task.positive_name
+    )
 
-    # h  hunique_queries_ds = unique_queries_ds.select(range(10**5))
-    hf_dataset = {
-        "unique_queries": unique_queries_ds,
-        "unique_positives": unique_positive_ds,
-        "queries": queries_ds,
-        "positives": positives_ds,
-        "corpus": corpus_ds,
-    }
+    if rank == 0:
+        print(f"Mapping {len(anchors_)} queries to dict...")
+        start = time.time()
+    queries_dict = get_dict(
+        anchors_, task.anchor_fields["id"], task.anchor_fields["text"]
+    )
 
-    return hf_dataset, data.corpus_dict, data.has_title
+    if rank == 0:
+        print(f"{(time.time() - start): .2f} sec for {len(queries_dict)} samples")
+        start = time.time()
+        print(f"Mapping {len(corpus)} docs to dict...")
+    corpus_dict = get_dict(
+        corpus,
+        task.corpus_fields["id"],
+        task.corpus_fields["text"],
+        task.corpus_fields.get("title", None),
+    )
 
+    has_title = task.corpus_fields.get("title", None) is not None
+    if rank == 0:
+        print(f"{(time.time() - start)/60: .2f} min for {len(corpus_dict)} samples")
+        print("Extracting positives from qrels with deduplication...")
 
-def from_one_hf_dataset(task):
-    if task.hf_subset:
-        dataset = load_dataset(task.hf_name, name=task.hf_subset, split=task.split)
+    query_ids = []
+    query_texts = []
+    positive_ids = []
+    positive_texts = []
+    positive_titles = [] if has_title else None
+
+    unique_query_ids = []
+    unique_query_texts = []
+    unique_positive_ids = []
+    unique_positive_texts = []
+    unique_positive_titles = [] if has_title else None
+
+    seen_queries = set()
+    excluded_count = 0
+
+    for qrel in qrels:
+        anchor_id = qrel[task.qrels_fields["anchor_id"]]
+        positive_id = qrel[task.qrels_fields["positive_id"]]
+        score = qrel[task.qrels_fields["score"]]
+
+        # Filter invalid pairs
+        if anchor_id not in queries_dict or positive_id not in corpus_dict or score < 1:
+            continue
+
+        query_text = queries_dict[anchor_id]
+        
+        # Skip if query appears in eval set
+        if normalize_text(query_text) in eval_query_texts:
+            excluded_count += 1
+            continue
+
+        # Extract query
+        query_ids.append(anchor_id)
+        query_texts.append(query_text)
+
+        # Extract positive
+        positive_entry = corpus_dict[positive_id]
+        positive_ids.append(positive_id)
+
+        if has_title:
+            text, title = positive_entry
+            positive_texts.append(text)
+            positive_titles.append(title)
+        else:
+            positive_texts.append(positive_entry)
+
+        # queries can be repeated many times in the search
+        # for negatives we just want unique queries
+        if anchor_id not in seen_queries:
+            seen_queries.add(anchor_id)
+            unique_query_ids.append(anchor_id)
+            unique_query_texts.append(query_text)
+            unique_positive_ids.append(positive_id)
+
+            if has_title:
+                text, title = positive_entry
+                unique_positive_texts.append(text)
+                unique_positive_titles.append(title)
+            else:
+                unique_positive_texts.append(positive_entry)
+
+    if rank == 0:
+        print(f"Excluded {excluded_count} query-doc pairs due to eval overlap")
+
+    # Extract all documents from corpus
+    document_ids = list(corpus_dict.keys())
+    if has_title:
+        document_texts = [text for text, title in corpus_dict.values()]
+        document_titles = [title for text, title in corpus_dict.values()]
     else:
-        dataset = load_dataset(task.hf_name, split=task.split)
-
-    # Assume dataset has matching lengths and indices correspond to pairs
-    query_texts = list(dataset[task.anchor_name])
-    positive_texts = list(dataset[task.positive_name])
-    document_texts = list(dataset[task.positive_name])
-
-    # Generate sequential IDs
-    n_pairs = len(query_texts)
-    query_ids = [f"query_{i}" for i in range(n_pairs)]
-    positive_ids = [f"doc_{i}" for i in range(n_pairs)]
-
-    # Documents use same IDs as positives
-    document_ids = positive_ids.copy()
-    corpus_dict = {
-        id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
-    }
-
-    # Check if titles exist in dataset
-    has_corpus_fields = task.corpus_fields is not None
-    has_title = has_corpus_fields and task.corpus_fields.get("title", None) is not None
-    if has_title and task.corpus_fields["title"] in dataset.column_names:
-        positive_titles = list(dataset[task.corpus_fields["title"]])
-        document_titles = positive_titles.copy()
-    else:
-        has_title = False
-        positive_titles = None
+        document_texts = list(corpus_dict.values())
         document_titles = None
 
     return RetrievalRawData(
@@ -252,11 +280,11 @@ def from_one_hf_dataset(task):
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=document_titles,
-        unique_query_texts=query_texts,
-        unique_query_ids=query_ids,
-        unique_positive_texts=positive_texts,
-        unique_positive_ids=positive_ids,
-        unique_positive_titles=positive_titles,
+        unique_query_texts=unique_query_texts,
+        unique_query_ids=unique_query_ids,
+        unique_positive_texts=unique_positive_texts,
+        unique_positive_ids=unique_positive_ids,
+        unique_positive_titles=unique_positive_titles,
         corpus_dict=corpus_dict,
         has_title=has_title,
     )
@@ -376,169 +404,6 @@ def from_multiple_hf_datasets(task, rank):
     )
 
 
-def get_mteb_eval_queries(hf_name: str, eval_split: str = "test") -> Set[str]:
-    """
-    Load MTEB evaluation queries and return a set of normalized query texts.
-
-    Args:
-        hf_name: HuggingFace dataset name (e.g., 'mteb/nfcorpus')
-        eval_split: The evaluation split to load queries from (default: 'test')
-
-    Returns:
-        Set of normalized query texts from the evaluation split
-    """
-    queries = load_dataset(hf_name, name="queries", split="queries")
-    qrels = load_dataset(hf_name, name="default", split=eval_split)
-
-    # Get query IDs that appear in eval split
-    eval_query_ids = {qrel["query-id"] for qrel in qrels}
-
-    # Build set of normalized query texts for eval queries
-    eval_query_texts = set()
-    for row in queries:
-        if row["_id"] in eval_query_ids:
-            eval_query_texts.add(normalize_text(row["text"]))
-
-    return eval_query_texts
-
-
-def from_multiple_hf_datasets_with_dedup(task, rank, eval_split: str = "test"):
-    """
-    Load MTEB-style dataset with deduplication against evaluation split.
-    Removes any training queries that appear in the evaluation set.
-    """
-    if rank == 0:
-        print("Loading datasets with deduplication...")
-        print(f"Loading eval queries from {task.hf_name} ({eval_split} split)...")
-
-    # Load eval queries for deduplication
-    # eval_query_texts = get_mteb_eval_queries(task.hf_name, eval_split)
-
-    # if rank == 0:
-    #     print(f"Found {len(eval_query_texts)} eval queries to exclude")
-
-    # Load training data
-    qrels = load_dataset(task.hf_name, name=task.qrels_name, split=task.split)
-    anchors_ = load_dataset(task.hf_name, name=task.anchor_name, split=task.anchor_name)
-    corpus = load_dataset(
-        task.hf_name, name=task.positive_name, split=task.positive_name
-    )
-
-    if rank == 0:
-        print(f"Mapping {len(anchors_)} queries to dict...")
-        start = time.time()
-    queries_dict = get_dict(
-        anchors_, task.anchor_fields["id"], task.anchor_fields["text"]
-    )
-
-    if rank == 0:
-        print(f"{(time.time() - start): .2f} sec for {len(queries_dict)} samples")
-        start = time.time()
-        print(f"Mapping {len(corpus)} docs to dict...")
-    corpus_dict = get_dict(
-        corpus,
-        task.corpus_fields["id"],
-        task.corpus_fields["text"],
-        task.corpus_fields.get("title", None),
-    )
-
-    has_title = task.corpus_fields.get("title", None) is not None
-    if rank == 0:
-        print(f"{(time.time() - start)/60: .2f} min for {len(corpus_dict)} samples")
-        print("Extracting positives from qrels with deduplication...")
-
-    query_ids = []
-    query_texts = []
-    positive_ids = []
-    positive_texts = []
-    positive_titles = [] if has_title else None
-
-    unique_query_ids = []
-    unique_query_texts = []
-    unique_positive_ids = []
-    unique_positive_texts = []
-    unique_positive_titles = [] if has_title else None
-
-    seen_queries = set()
-    excluded_count = 0
-
-    for qrel in qrels:
-        anchor_id = qrel[task.qrels_fields["anchor_id"]]
-        positive_id = qrel[task.qrels_fields["positive_id"]]
-        score = qrel[task.qrels_fields["score"]]
-
-        # Filter invalid pairs
-        if anchor_id not in queries_dict or positive_id not in corpus_dict or score < 1:
-            continue
-
-        query_text = queries_dict[anchor_id]
-
-        # Skip if query appears in eval set
-        # if normalize_text(query_text) in eval_query_texts:
-        #     excluded_count += 1
-        #     continue
-
-        # Extract query
-        query_ids.append(anchor_id)
-        query_texts.append(query_text)
-
-        # Extract positive
-        positive_entry = corpus_dict[positive_id]
-        positive_ids.append(positive_id)
-
-        if has_title:
-            text, title = positive_entry
-            positive_texts.append(text)
-            positive_titles.append(title)
-        else:
-            positive_texts.append(positive_entry)
-
-        # queries can be repeated many times in the search
-        # for negatives we just want unique queries
-        if anchor_id not in seen_queries:
-            seen_queries.add(anchor_id)
-            unique_query_ids.append(anchor_id)
-            unique_query_texts.append(query_text)
-            unique_positive_ids.append(positive_id)
-
-            if has_title:
-                text, title = positive_entry
-                unique_positive_texts.append(text)
-                unique_positive_titles.append(title)
-            else:
-                unique_positive_texts.append(positive_entry)
-
-    if rank == 0:
-        print(f"Excluded {excluded_count} query-doc pairs due to eval overlap")
-
-    # Extract all documents from corpus
-    document_ids = list(corpus_dict.keys())
-    if has_title:
-        document_texts = [text for text, title in corpus_dict.values()]
-        document_titles = [title for text, title in corpus_dict.values()]
-    else:
-        document_texts = list(corpus_dict.values())
-        document_titles = None
-
-    return RetrievalRawData(
-        query_texts=query_texts,
-        query_ids=query_ids,
-        positive_texts=positive_texts,
-        positive_ids=positive_ids,
-        positive_titles=positive_titles,
-        document_texts=document_texts,
-        document_ids=document_ids,
-        document_titles=document_titles,
-        unique_query_texts=unique_query_texts,
-        unique_query_ids=unique_query_ids,
-        unique_positive_texts=unique_positive_texts,
-        unique_positive_ids=unique_positive_ids,
-        unique_positive_titles=unique_positive_titles,
-        corpus_dict=corpus_dict,
-        has_title=has_title,
-    )
-
-
 def load_nli_retrieval(task) -> RetrievalRawData:
     """Load NLI datasets (SNLI, MNLI, ANLI) for retrieval.
 
@@ -564,6 +429,17 @@ def load_nli_retrieval(task) -> RetrievalRawData:
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
 
+    # Extract unique queries
+    (
+        unique_query_texts,
+        unique_query_ids,
+        unique_positive_texts,
+        unique_positive_ids,
+        unique_positive_titles,
+    ) = extract_unique_queries(
+        query_texts, query_ids, positive_texts, positive_ids, None
+    )
+
     return RetrievalRawData(
         query_texts=query_texts,
         query_ids=query_ids,
@@ -573,11 +449,11 @@ def load_nli_retrieval(task) -> RetrievalRawData:
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=None,
-        unique_query_texts=query_texts,
-        unique_query_ids=query_ids,
-        unique_positive_texts=positive_texts,
-        unique_positive_ids=positive_ids,
-        unique_positive_titles=None,
+        unique_query_texts=unique_query_texts,
+        unique_query_ids=unique_query_ids,
+        unique_positive_texts=unique_positive_texts,
+        unique_positive_ids=unique_positive_ids,
+        unique_positive_titles=unique_positive_titles,
         corpus_dict=corpus_dict,
         has_title=False,
     )
@@ -627,6 +503,17 @@ def load_arguana_dedup_retrieval(task) -> RetrievalRawData:
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
 
+    # Extract unique queries
+    (
+        unique_query_texts,
+        unique_query_ids,
+        unique_positive_texts,
+        unique_positive_ids,
+        unique_positive_titles,
+    ) = extract_unique_queries(
+        query_texts, query_ids, positive_texts, positive_ids, None
+    )
+
     return RetrievalRawData(
         query_texts=query_texts,
         query_ids=query_ids,
@@ -636,11 +523,11 @@ def load_arguana_dedup_retrieval(task) -> RetrievalRawData:
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=None,
-        unique_query_texts=query_texts,
-        unique_query_ids=query_ids,
-        unique_positive_texts=positive_texts,
-        unique_positive_ids=positive_ids,
-        unique_positive_titles=None,
+        unique_query_texts=unique_query_texts,
+        unique_query_ids=unique_query_ids,
+        unique_positive_texts=unique_positive_texts,
+        unique_positive_ids=unique_positive_ids,
+        unique_positive_titles=unique_positive_titles,
         corpus_dict=corpus_dict,
         has_title=False,
     )
@@ -677,6 +564,17 @@ def load_squad_retrieval(task) -> RetrievalRawData:
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
 
+    # Extract unique queries
+    (
+        unique_query_texts,
+        unique_query_ids,
+        unique_positive_texts,
+        unique_positive_ids,
+        unique_positive_titles,
+    ) = extract_unique_queries(
+        query_texts, query_ids, positive_texts, positive_ids, None
+    )
+
     return RetrievalRawData(
         query_texts=query_texts,
         query_ids=query_ids,
@@ -686,11 +584,11 @@ def load_squad_retrieval(task) -> RetrievalRawData:
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=None,
-        unique_query_texts=query_texts,
-        unique_query_ids=query_ids,
-        unique_positive_texts=positive_texts,
-        unique_positive_ids=positive_ids,
-        unique_positive_titles=None,
+        unique_query_texts=unique_query_texts,
+        unique_query_ids=unique_query_ids,
+        unique_positive_texts=unique_positive_texts,
+        unique_positive_ids=unique_positive_ids,
+        unique_positive_titles=unique_positive_titles,
         corpus_dict=corpus_dict,
         has_title=False,
     )
@@ -721,6 +619,17 @@ def load_stackexchange_retrieval(task) -> RetrievalRawData:
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
 
+    # Extract unique queries
+    (
+        unique_query_texts,
+        unique_query_ids,
+        unique_positive_texts,
+        unique_positive_ids,
+        unique_positive_titles,
+    ) = extract_unique_queries(
+        query_texts, query_ids, positive_texts, positive_ids, None
+    )
+
     return RetrievalRawData(
         query_texts=query_texts,
         query_ids=query_ids,
@@ -730,46 +639,27 @@ def load_stackexchange_retrieval(task) -> RetrievalRawData:
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=None,
-        unique_query_texts=query_texts,
-        unique_query_ids=query_ids,
-        unique_positive_texts=positive_texts,
-        unique_positive_ids=positive_ids,
-        unique_positive_titles=None,
+        unique_query_texts=unique_query_texts,
+        unique_query_ids=unique_query_ids,
+        unique_positive_texts=unique_positive_texts,
+        unique_positive_ids=unique_positive_ids,
+        unique_positive_titles=unique_positive_titles,
         corpus_dict=corpus_dict,
         has_title=False,
     )
 
 
-MIRACL_LANGUAGES = [
-    "ar",
-    "bn",
-    "en",
-    "es",
-    "fa",
-    "fi",
-    "fr",
-    "hi",
-    "id",
-    "ja",
-    "ko",
-    "ru",
-    "sw",
-    "te",
-    "th",
-    "zh",
-    "yo",
-    "de",
-]
+MIRACL_LANGUAGES = ["ar", "bn", "en", "es", "fa", "fi", "fr", "hi", "id", "ja", "ko", "ru", "sw", "te", "th", "zh", "yo", "de",]
 
 
 def load_miracl_retrieval(task) -> RetrievalRawData:
     """Load MIRACL multilingual retrieval dataset.
-
+    
     If hf_subset is None, loads all available languages.
     """
     query_texts = []
     positive_texts = []
-
+    
     if task.hf_subset:
         # Load single language
         languages = [task.hf_subset]
@@ -777,7 +667,7 @@ def load_miracl_retrieval(task) -> RetrievalRawData:
         # Load all languages
         languages = MIRACL_LANGUAGES
         print(f"Loading MIRACL for all {len(languages)} languages...")
-
+    
     for lang in languages:
         try:
             dataset = load_dataset(task.hf_name, name=lang, split=task.split)
@@ -881,6 +771,17 @@ def load_pubmedqa_retrieval(task) -> RetrievalRawData:
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
 
+    # Extract unique queries
+    (
+        unique_query_texts,
+        unique_query_ids,
+        unique_positive_texts,
+        unique_positive_ids,
+        unique_positive_titles,
+    ) = extract_unique_queries(
+        query_texts, query_ids, positive_texts, positive_ids, None
+    )
+
     return RetrievalRawData(
         query_texts=query_texts,
         query_ids=query_ids,
@@ -890,11 +791,11 @@ def load_pubmedqa_retrieval(task) -> RetrievalRawData:
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=None,
-        unique_query_texts=query_texts,
-        unique_query_ids=query_ids,
-        unique_positive_texts=positive_texts,
-        unique_positive_ids=positive_ids,
-        unique_positive_titles=None,
+        unique_query_texts=unique_query_texts,
+        unique_query_ids=unique_query_ids,
+        unique_positive_texts=unique_positive_texts,
+        unique_positive_ids=unique_positive_ids,
+        unique_positive_titles=unique_positive_titles,
         corpus_dict=corpus_dict,
         has_title=False,
     )
@@ -920,6 +821,17 @@ def load_xsum_retrieval(task) -> RetrievalRawData:
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
 
+    # Extract unique queries
+    (
+        unique_query_texts,
+        unique_query_ids,
+        unique_positive_texts,
+        unique_positive_ids,
+        unique_positive_titles,
+    ) = extract_unique_queries(
+        query_texts, query_ids, positive_texts, positive_ids, None
+    )
+
     return RetrievalRawData(
         query_texts=query_texts,
         query_ids=query_ids,
@@ -929,11 +841,11 @@ def load_xsum_retrieval(task) -> RetrievalRawData:
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=None,
-        unique_query_texts=query_texts,
-        unique_query_ids=query_ids,
-        unique_positive_texts=positive_texts,
-        unique_positive_ids=positive_ids,
-        unique_positive_titles=None,
+        unique_query_texts=unique_query_texts,
+        unique_query_ids=unique_query_ids,
+        unique_positive_texts=unique_positive_texts,
+        unique_positive_ids=unique_positive_ids,
+        unique_positive_titles=unique_positive_titles,
         corpus_dict=corpus_dict,
         has_title=False,
     )
@@ -962,6 +874,17 @@ def load_cnndm_retrieval(task) -> RetrievalRawData:
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
 
+    # Extract unique queries
+    (
+        unique_query_texts,
+        unique_query_ids,
+        unique_positive_texts,
+        unique_positive_ids,
+        unique_positive_titles,
+    ) = extract_unique_queries(
+        query_texts, query_ids, positive_texts, positive_ids, None
+    )
+
     return RetrievalRawData(
         query_texts=query_texts,
         query_ids=query_ids,
@@ -971,11 +894,11 @@ def load_cnndm_retrieval(task) -> RetrievalRawData:
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=None,
-        unique_query_texts=query_texts,
-        unique_query_ids=query_ids,
-        unique_positive_texts=positive_texts,
-        unique_positive_ids=positive_ids,
-        unique_positive_titles=None,
+        unique_query_texts=unique_query_texts,
+        unique_query_ids=unique_query_ids,
+        unique_positive_texts=unique_positive_texts,
+        unique_positive_ids=unique_positive_ids,
+        unique_positive_titles=unique_positive_titles,
         corpus_dict=corpus_dict,
         has_title=False,
     )
@@ -1010,6 +933,17 @@ def load_stackoverflow_dup_retrieval(task) -> RetrievalRawData:
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
 
+    # Extract unique queries
+    (
+        unique_query_texts,
+        unique_query_ids,
+        unique_positive_texts,
+        unique_positive_ids,
+        unique_positive_titles,
+    ) = extract_unique_queries(
+        query_texts, query_ids, positive_texts, positive_ids, None
+    )
+
     return RetrievalRawData(
         query_texts=query_texts,
         query_ids=query_ids,
@@ -1019,11 +953,11 @@ def load_stackoverflow_dup_retrieval(task) -> RetrievalRawData:
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=None,
-        unique_query_texts=query_texts,
-        unique_query_ids=query_ids,
-        unique_positive_texts=positive_texts,
-        unique_positive_ids=positive_ids,
-        unique_positive_titles=None,
+        unique_query_texts=unique_query_texts,
+        unique_query_ids=unique_query_ids,
+        unique_positive_texts=unique_positive_texts,
+        unique_positive_ids=unique_positive_ids,
+        unique_positive_titles=unique_positive_titles,
         corpus_dict=corpus_dict,
         has_title=False,
     )
@@ -1063,6 +997,17 @@ def load_sts_retrieval(task) -> RetrievalRawData:
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
 
+    # Extract unique queries
+    (
+        unique_query_texts,
+        unique_query_ids,
+        unique_positive_texts,
+        unique_positive_ids,
+        unique_positive_titles,
+    ) = extract_unique_queries(
+        query_texts, query_ids, positive_texts, positive_ids, None
+    )
+
     return RetrievalRawData(
         query_texts=query_texts,
         query_ids=query_ids,
@@ -1072,24 +1017,11 @@ def load_sts_retrieval(task) -> RetrievalRawData:
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=None,
-        unique_query_texts=query_texts,
-        unique_query_ids=query_ids,
-        unique_positive_texts=positive_texts,
-        unique_positive_ids=positive_ids,
-        unique_positive_titles=None,
+        unique_query_texts=unique_query_texts,
+        unique_query_ids=unique_query_ids,
+        unique_positive_texts=unique_positive_texts,
+        unique_positive_ids=unique_positive_ids,
+        unique_positive_titles=unique_positive_titles,
         corpus_dict=corpus_dict,
         has_title=False,
     )
-
-
-def load_data_classification(
-    task,
-    balance_dataset=True,
-):
-
-    dataset = load_dataset(task.hf_name, name=task.hf_subset, split=task.split)
-
-    anchors = dataset[task.ancor_name]
-    labels = dataset[task.label_name]
-
-    return anchors, labels
