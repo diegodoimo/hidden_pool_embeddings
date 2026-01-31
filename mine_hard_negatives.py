@@ -22,6 +22,10 @@ path_to_name = {"Qwen/Qwen3-Embedding-0.6B": "qwen3_600m",
 def main():
     args = parse_args()
 
+    WORLD_SIZE = int(os.environ["WORLD_SIZE"])
+    LOCAL_RANK = int(os.environ["LOCAL_RANK"])
+    RANK = int(os.environ["RANK"])
+
     dist.init_process_group("nccl", 
     device_id = LOCAL_RANK, 
     timeout=timedelta(seconds=30)  # Reduce from default 600s to 120s
@@ -49,7 +53,7 @@ def main():
         dtype=torch.bfloat16,
     ).to("cuda")
     model = model.eval()
-    model = DDP(model, device_ids=[LOCAL_RANK])
+    model = DDP(model, device_ids=[dist.get_rank()])
     model = torch.compile(model)
 
     miner.mine_negatives(model, batch_size=32)
@@ -57,8 +61,4 @@ def main():
 
 
 if __name__ == "__main__":
-
-    WORLD_SIZE = int(os.environ["WORLD_SIZE"])
-    LOCAL_RANK = int(os.environ["LOCAL_RANK"])
-    RANK = int(os.environ["RANK"])
     main()
