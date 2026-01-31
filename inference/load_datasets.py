@@ -8,6 +8,7 @@ from multiprocessing import Pool
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Set
 from .data_helpers import dict_to_dataset, RetrievalRawData
+import torch.distributed as dist
 
 
 def normalize_text(
@@ -121,8 +122,13 @@ def process_chunk(args):
 
 
 def get_dict(dataset, id_field, text_field, title_field=None):
-    n_workers = 16
-    chunk_size = len(dataset) // n_workers
+    
+    cpu_count = os.cpu_count() or 8
+    if dist.is_initialized():
+        n_workers = max(1, cpu_count // dist.get_world_size())
+    else:
+        n_workers = min(16, cpu_count)
+    chunk_size = max(1, len(dataset) // n_workers)
 
     chunks = [
         dataset.select(range(i, min(i + chunk_size, len(dataset))))
@@ -190,14 +196,9 @@ def load_data_retrieval(task, rank=0) -> Dataset:
         texts=data.document_texts, ids=data.document_ids, titles=data.document_titles
     )
 
-<<<<<<< HEAD
-    # corpus_ds = corpus_ds.select(range(5000*10**3, len(corpus_ds)))
-    # corpus_ds = corpus_ds.select(range(10**5))
-=======
     #corpus_ds = corpus_ds.select(range(5000*10**3, len(corpus_ds)))
     #corpus_ds = corpus_ds.select(range(10**5))
     
->>>>>>> 13bc8c7981da5422354eb10443bc703da1193063
     if rank == 0:
         # Check the length
         print(f"Length: {len(corpus_ds)}")
@@ -326,41 +327,39 @@ def from_multiple_hf_datasets(task, rank):
 
         # Extract query
         query_ids.append(anchor_id)
-        query_texts.append(queries_dict[anchor_id])
+        query_texts.append(queries_dict[anchor_id]["text"])
 
         # Extract positive
         positive_entry = corpus_dict[positive_id]
         positive_ids.append(positive_id)
 
         if has_title:
-            text, title = positive_entry
-            positive_texts.append(text)
-            positive_titles.append(title)
+            positive_texts.append(positive_entry["text"])
+            positive_titles.append(positive_entry["title"])
         else:
-            positive_texts.append(positive_entry)
+            positive_texts.append(positive_entry["text"])
 
         # queries can be repeted many times in the search
         # for negatives we just want unique queries
         if anchor_id not in seen_queries:
             seen_queries.add(anchor_id)
             unique_query_ids.append(anchor_id)
-            unique_query_texts.append(queries_dict[anchor_id])
+            unique_query_texts.append(queries_dict[anchor_id]["text"])
             unique_positive_ids.append(positive_id)
 
             if has_title:
-                text, title = positive_entry
-                unique_positive_texts.append(text)
-                unique_positive_titles.append(title)
+                unique_positive_texts.append(positive_entry["text"])
+                unique_positive_titles.append(positive_entry["title"])
             else:
-                unique_positive_texts.append(positive_entry)
+                unique_positive_texts.append(positive_entry["text"])
 
     # Extract all documents from corpus
     document_ids = list(corpus_dict.keys())
     if has_title:
-        document_texts = [text for text, title in corpus_dict.values()]
-        document_titles = [title for text, title in corpus_dict.values()]
+        document_texts = [entry["text"] for entry in corpus_dict.values()]
+        document_titles = [entry["title"] for entry in corpus_dict.values()]
     else:
-        document_texts = list(corpus_dict.values())
+        document_texts = [entry["text"] for entry in corpus_dict.values()]
         document_titles = None
 
     return RetrievalRawData(
@@ -477,7 +476,7 @@ def from_multiple_hf_datasets_with_dedup(task, rank, eval_split: str = "test"):
         if anchor_id not in queries_dict or positive_id not in corpus_dict or score < 1:
             continue
 
-        query_text = queries_dict[anchor_id]
+        query_text = queries_dict[anchor_id]["text"]
 
         # Skip if query appears in eval set
         # if normalize_text(query_text) in eval_query_texts:
@@ -493,11 +492,10 @@ def from_multiple_hf_datasets_with_dedup(task, rank, eval_split: str = "test"):
         positive_ids.append(positive_id)
 
         if has_title:
-            text, title = positive_entry
-            positive_texts.append(text)
-            positive_titles.append(title)
+            positive_texts.append(positive_entry["text"])
+            positive_titles.append(positive_entry["title"])
         else:
-            positive_texts.append(positive_entry)
+            positive_texts.append(positive_entry["text"])
 
         # queries can be repeated many times in the search
         # for negatives we just want unique queries
@@ -508,11 +506,10 @@ def from_multiple_hf_datasets_with_dedup(task, rank, eval_split: str = "test"):
             unique_positive_ids.append(positive_id)
 
             if has_title:
-                text, title = positive_entry
-                unique_positive_texts.append(text)
-                unique_positive_titles.append(title)
+                unique_positive_texts.append(positive_entry["text"])
+                unique_positive_titles.append(positive_entry["title"])
             else:
-                unique_positive_texts.append(positive_entry)
+                unique_positive_texts.append(positive_entry["text"])
 
     if rank == 0:
         print(f"Excluded {excluded_count} query-doc pairs due to eval overlap")
@@ -520,10 +517,10 @@ def from_multiple_hf_datasets_with_dedup(task, rank, eval_split: str = "test"):
     # Extract all documents from corpus
     document_ids = list(corpus_dict.keys())
     if has_title:
-        document_texts = [text for text, title in corpus_dict.values()]
-        document_titles = [title for text, title in corpus_dict.values()]
+        document_texts = [entry["text"] for entry in corpus_dict.values()]
+        document_titles = [entry["title"] for entry in corpus_dict.values()]
     else:
-        document_texts = list(corpus_dict.values())
+        document_texts = [entry["text"] for entry in corpus_dict.values()]
         document_titles = None
 
     return RetrievalRawData(

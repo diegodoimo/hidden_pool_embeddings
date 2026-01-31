@@ -7,7 +7,7 @@ from functools import partial
 import numpy as np
 import torch.distributed as dist
 
-from datasets import Dataset, Features, Value
+from datasets import Dataset, Features, Value, Sequence
 from .load_datasets import load_data_retrieval
 from tasks import get_task
 from utils.sorted_sampler import LenghtSortedSampler
@@ -99,7 +99,7 @@ class HardNegativesMiner:
             task_metadata=task.metadata,
             instruction_template=self.instruction_template,
             tokenizer=self.tokenizer,
-            prompt_type=PromptType.query,
+            prompt_type=PromptType.document,
         )
 
         dist.barrier()
@@ -388,9 +388,9 @@ class HardNegativesMiner:
                         "positive_text": Value("string"),
                         "positive_title": Value("string"),
                         "positive_id": Value("string"),
-                        "negative_text": Value("string"),
-                        "negative_title": Value("string"),
-                        "negative_id": Value("string"),
+                        "negative_text": Sequence(Value("string")),
+                        "negative_title": Sequence(Value("string")),
+                        "negative_id": Sequence(Value("string")),
                     }
                 ),
             )
@@ -410,8 +410,8 @@ class HardNegativesMiner:
                         "anchor_id": Value("string"),
                         "positive_text": Value("string"),
                         "positive_id": Value("string"),
-                        "negative_text": Value("string"),
-                        "negative_id": Value("string"),
+                        "negative_text": Sequence(Value("string")),
+                        "negative_id": Sequence(Value("string")),
                     }
                 ),
             )

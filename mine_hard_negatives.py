@@ -28,7 +28,7 @@ def main():
 
     dist.init_process_group("nccl", 
     device_id = LOCAL_RANK, 
-    timeout=timedelta(seconds=30)  # Reduce from default 600s to 120s
+    timeout=timedelta(seconds=30)  # Reduce from default 600s to 30s
     )
     torch.cuda.set_device(dist.get_rank())
 
@@ -50,7 +50,7 @@ def main():
 
     model = AutoModel.from_pretrained(
         args.model_name_or_path,
-        dtype=torch.bfloat16,
+        torch_dtype=torch.bfloat16,
     ).to("cuda")
     model = model.eval()
     model = DDP(model, device_ids=[dist.get_rank()])
