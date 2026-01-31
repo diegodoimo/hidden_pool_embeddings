@@ -122,7 +122,6 @@ def process_chunk(args):
 
 
 def get_dict(dataset, id_field, text_field, title_field=None):
-    
     cpu_count = os.cpu_count() or 8
     if dist.is_initialized():
         n_workers = max(1, cpu_count // dist.get_world_size())
@@ -196,9 +195,9 @@ def load_data_retrieval(task, rank=0) -> Dataset:
         texts=data.document_texts, ids=data.document_ids, titles=data.document_titles
     )
 
-    #corpus_ds = corpus_ds.select(range(5000*10**3, len(corpus_ds)))
-    #corpus_ds = corpus_ds.select(range(10**5))
-    
+    # corpus_ds = corpus_ds.select(range(5000*10**3, len(corpus_ds)))
+    # corpus_ds = corpus_ds.select(range(10**5))
+
     if rank == 0:
         # Check the length
         print(f"Length: {len(corpus_ds)}")
@@ -315,6 +314,7 @@ def from_multiple_hf_datasets(task, rank):
     unique_positive_titles = [] if has_title else None
 
     seen_queries = set()
+    seen_positives = set()
 
     for qrel in qrels:
         anchor_id = qrel[task.qrels_fields["anchor_id"]]
@@ -339,12 +339,16 @@ def from_multiple_hf_datasets(task, rank):
         else:
             positive_texts.append(positive_entry["text"])
 
-        # queries can be repeted many times in the search
+        # queries can be repeated many times in the search
         # for negatives we just want unique queries
         if anchor_id not in seen_queries:
             seen_queries.add(anchor_id)
             unique_query_ids.append(anchor_id)
             unique_query_texts.append(queries_dict[anchor_id]["text"])
+
+        # positives can also be repeated, select them independently
+        if positive_id not in seen_positives:
+            seen_positives.add(positive_id)
             unique_positive_ids.append(positive_id)
 
             if has_title:
@@ -465,6 +469,7 @@ def from_multiple_hf_datasets_with_dedup(task, rank, eval_split: str = "test"):
     unique_positive_titles = [] if has_title else None
 
     seen_queries = set()
+    seen_positives = set()
     excluded_count = 0
 
     for qrel in qrels:
@@ -503,6 +508,10 @@ def from_multiple_hf_datasets_with_dedup(task, rank, eval_split: str = "test"):
             seen_queries.add(anchor_id)
             unique_query_ids.append(anchor_id)
             unique_query_texts.append(query_text)
+
+        # positives can also be repeated, select them independently
+        if positive_id not in seen_positives:
+            seen_positives.add(positive_id)
             unique_positive_ids.append(positive_id)
 
             if has_title:
