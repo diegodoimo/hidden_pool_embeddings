@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datasets import DatasetInfo
 import json
 
+
 def estimate_chunk_size(query_embeddings, max_chunk=5 * 10**4):
     free_mem, _ = torch.cuda.mem_get_info()
     bytes_per_number = query_embeddings.element_size()
@@ -46,6 +47,8 @@ class TripletStats:
             self.less_than_7 += q_id_counts
         if num_negatives == 0:
             self.empty_entries += q_id_counts
+            # if self.rank == 0:
+            # print("Found empty entry", q_id_counts)
 
 
 class HardNegativesMiner:
@@ -123,8 +126,12 @@ class HardNegativesMiner:
 
         dist.barrier()
         if self.rank == 0:
-            print(f"number tokenized anchors: {len(queries_dataset)}")
-            print(f"number tokenized docs: {len(corpus_dataset)}")
+            print(f"number unique queries: {len(queries_dataset)}")
+            print(f"number unique positives: {len(positives_dataset)}")
+            print(f"number of documents: {len(corpus_dataset)}")
+
+            print(f"total queries (with repetitions): {len(dataset['queries'])}")
+            print(f"total positives (with repetitions): {len(dataset['positives'])}")
 
         return dataset, corpus_dict, has_title
 
@@ -219,8 +226,8 @@ class HardNegativesMiner:
         top_scores = top_scores.cpu().numpy()
         top_indices = top_indices.cpu().numpy()
 
-        q_id_counts = Counter(dataset["queries"]["id"])
-        
+        # q_id_counts = Counter(dataset["queries"]["id"])
+
         hard_negatives, stats = self.get_hard_negatives(
             top_scores=top_scores,
             top_indices=top_indices,
@@ -253,6 +260,16 @@ class HardNegativesMiner:
 
         array_ids = np.asarray(corpus_ids)
         unique_query_ids = np.asarray(unique_query_ids)
+        total_queries = sum(q_id_counts.values())
+
+        if self.rank == 0:
+            print(
+                "Shapes:",
+                top_scores.shape,
+                top_indices.shape,
+                unique_query_ids.shape,
+                query_positive_scores.shape,
+            )
 
         assert (
             top_scores.shape == top_indices.shape
@@ -264,18 +281,32 @@ class HardNegativesMiner:
             len(query_positive_scores) == top_scores.shape[0]
         ), f"Positive score mismatch {len(query_positive_scores)} {top_scores.shape[0]}"
 
-        candidate_indices = top_indices[:, 5:100]  # (Q, 95)
-        candidate_scores = top_scores[:, 5:100]  # (Q, 95)
+        upper_thresholds_relevent_docs = min(150, int(0.1 * len(corpus_ids)))
+
+        candidate_indices = top_indices[:, 5:upper_thresholds_relevent_docs]  # (Q, 95)
+        candidate_scores = top_scores[:, 5:upper_thresholds_relevent_docs]  # (Q, 95)
         # we want the hard negatives to have a similarity lower than 95% the positive and the arbitrary threshold.
         upper_thresholds = np.minimum(0.95 * query_positive_scores, 0.9)[
             :, None
         ]  # (Q, 1)
+
+        if self.rank == 0:
+            print("upper_thresholds", upper_thresholds[:10])
+            print("candidate_scores", candidate_scores[:10, :10])
         valid_mask = candidate_scores < upper_thresholds  # (Q, 95)
 
         stats = TripletStats()
         hard_negatives = {}
+
         for i, q_id in enumerate(unique_query_ids):
+
             valid_idx = np.where(valid_mask[i])[0]
+            if self.rank == 0:
+                # print("q_id:", q_id)
+                # print("candidate scores:", candidate_scores[i])
+                # print("valid mask:", valid_mask[i])
+                # print("valid idx:", valid_idx)
+                print("num valid negatives:", valid_idx.size)
 
             stats.update(valid_idx.size, q_id_counts[q_id])
 
@@ -313,10 +344,10 @@ class HardNegativesMiner:
             # }
 
         if stats.less_than_24 and self.rank == 0:
-            tot_elem = top_scores.shape[0]
+            print("total elements:", total_queries)
             print(
-                f"{stats.less_than_24} examples have less than 24 hard negatives, {stats.less_than_24/tot_elem*100: .2f}%, \
-                    {stats.empty_entries/tot_elem*100: .2f}% are empty"
+                f"{stats.less_than_24} examples have less than 24 hard negatives, {stats.less_than_24/total_queries*100: .2f}%, \
+                    {stats.empty_entries/total_queries*100: .2f}% are empty"
             )
 
         return hard_negatives, stats
@@ -351,9 +382,8 @@ class HardNegativesMiner:
                 negatives=hard_negatives,
                 has_title=has_title,
                 stats=stats,
-                task_name=task_name,                
+                task_name=task_name,
             )
-            
 
     def save_to_disk(self, dataset, negatives, has_title, stats, task_name):
 
@@ -432,4 +462,3 @@ class HardNegativesMiner:
 
             with open(f"{self.path}/{task_name}/dataset_metadata.json", "w") as f:
                 json.dump(metadata, f, indent=2)
-

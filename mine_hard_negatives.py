@@ -50,7 +50,7 @@ def main():
 
     model = AutoModel.from_pretrained(
         args.model_name_or_path,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
     ).to("cuda")
     model = model.eval()
     model = DDP(model, device_ids=[dist.get_rank()])
