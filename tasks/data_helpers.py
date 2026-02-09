@@ -1,7 +1,4 @@
-from datasets import load_dataset
-
-from tasks.retrieval_tasks import *
-from datasets import Dataset, Features, Value
+from datasets import load_dataset, Dataset, Features, Value
 import time
 import os
 from multiprocessing import Pool
