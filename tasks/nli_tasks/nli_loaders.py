@@ -54,7 +54,19 @@ def load_nli_retrieval(task) -> RetrievalRawData:
         if len(hyps["entailment"]) > 0
     }
     
-    # Build the retrieval data
+    # Build unique query ID mapping first (one-to-one: unique premise -> unique query ID)
+    premise_to_query_id = {}
+    unique_query_ids = []
+    unique_query_texts = []
+    
+    for premise in valid_premises.keys():
+        if premise not in premise_to_query_id:
+            query_id = f"query_{len(unique_query_ids)}"
+            premise_to_query_id[premise] = query_id
+            unique_query_ids.append(query_id)
+            unique_query_texts.append(premise)
+    
+    # Build the retrieval data (query-positive pairs)
     query_texts = []
     query_ids = []
     positive_texts = []
@@ -68,8 +80,8 @@ def load_nli_retrieval(task) -> RetrievalRawData:
         # Sample one entailed hypothesis as positive
         positive_hypothesis = random.choice(hyps["entailment"])
         
-        # Assign IDs
-        query_id = f"query_{len(query_texts)}"
+        # Use the unique query ID for this premise
+        query_id = premise_to_query_id[premise]
         
         # Get or create positive ID
         if positive_hypothesis not in hypothesis_to_id:
@@ -101,17 +113,6 @@ def load_nli_retrieval(task) -> RetrievalRawData:
     corpus_dict = {
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
-    
-    # Get unique queries and positives
-    unique_query_ids = []
-    unique_query_texts = []
-    seen_queries = set()
-    
-    for q_id, q_text in zip(query_ids, query_texts):
-        if q_text not in seen_queries:
-            seen_queries.add(q_text)
-            unique_query_ids.append(q_id)
-            unique_query_texts.append(q_text)
     
     unique_positive_ids = document_ids.copy()
     unique_positive_texts = document_texts.copy()
@@ -147,8 +148,8 @@ def load_all_nli_retrieval(task) -> RetrievalRawData:
     else:
         dataset = load_dataset(task.hf_name, split=task.split)
 
-    query_texts = list(dataset[task.anchor_name])
-    positive_texts = list(dataset[task.positive_name])
+    all_query_texts = list(dataset[task.anchor_name])
+    all_positive_texts = list(dataset[task.positive_name])
     
     # Check if negative field exists
     has_negatives = hasattr(task, "negative_name") and task.negative_name in dataset.column_names
@@ -157,9 +158,17 @@ def load_all_nli_retrieval(task) -> RetrievalRawData:
     else:
         negative_texts = []
 
-    # Generate sequential query IDs
-    n_pairs = len(query_texts)
-    query_ids = [f"query_{i}" for i in range(n_pairs)]
+    # Build unique query mapping (one-to-one: unique query text -> unique query ID)
+    query_text_to_id = {}
+    unique_query_texts = []
+    unique_query_ids = []
+    
+    for query_text in all_query_texts:
+        if query_text not in query_text_to_id:
+            query_id = f"query_{len(unique_query_ids)}"
+            query_text_to_id[query_text] = query_id
+            unique_query_ids.append(query_id)
+            unique_query_texts.append(query_text)
 
     # Build corpus: include both positives and negatives
     # Use a dict to deduplicate
@@ -167,7 +176,7 @@ def load_all_nli_retrieval(task) -> RetrievalRawData:
     doc_counter = 0
     
     # Add positives
-    for pos_text in positive_texts:
+    for pos_text in all_positive_texts:
         if pos_text not in text_to_id:
             text_to_id[pos_text] = f"doc_{doc_counter}"
             doc_counter += 1
@@ -179,8 +188,17 @@ def load_all_nli_retrieval(task) -> RetrievalRawData:
                 text_to_id[neg_text] = f"doc_{doc_counter}"
                 doc_counter += 1
     
-    # Map positive texts to their IDs
-    positive_ids = [text_to_id[pos_text] for pos_text in positive_texts]
+    # Build query-positive pairs using unique query IDs
+    query_texts = []
+    query_ids = []
+    positive_texts = []
+    positive_ids = []
+    
+    for query_text, pos_text in zip(all_query_texts, all_positive_texts):
+        query_texts.append(query_text)
+        query_ids.append(query_text_to_id[query_text])
+        positive_texts.append(pos_text)
+        positive_ids.append(text_to_id[pos_text])
     
     # Build corpus
     document_ids = list(text_to_id.values())
@@ -199,8 +217,8 @@ def load_all_nli_retrieval(task) -> RetrievalRawData:
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=None,
-        unique_query_texts=query_texts,
-        unique_query_ids=query_ids,
+        unique_query_texts=unique_query_texts,
+        unique_query_ids=unique_query_ids,
         unique_positive_texts=document_texts,
         unique_positive_ids=document_ids,
         unique_positive_titles=None,

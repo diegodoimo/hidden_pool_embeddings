@@ -18,6 +18,8 @@ from collections import Counter
 from dataclasses import dataclass
 from datasets import DatasetInfo
 import json
+from utils.helpers import print_memory_consumed
+
 
 
 def estimate_chunk_size(query_embeddings, max_chunk=5 * 10**4):
@@ -223,6 +225,7 @@ class HardNegativesMiner:
             print(f"queries embedding duration: {(time.time()-start)/60} min")
             start = time.time()
             print("building query positive embeddings")
+
         positive_embeddings = encode(
             model,
             positives_loader,
@@ -279,6 +282,9 @@ class HardNegativesMiner:
             batch_size=batch_size,
             chunk_size=chunk_size,
         )
+
+        del query_embeddings
+        torch.cuda.empty_cache()
 
         dist.barrier()
         if self.rank == 0:
@@ -371,13 +377,13 @@ class HardNegativesMiner:
             valid_mask = candidate_scores < upper_threshold
             valid_idx = np.where(valid_mask)[0]
 
-            if self.rank == 0 and qrel_idx < 10:
-                print(
-                    f"qrel {qrel_idx}: q_id={q_id}, p_id={p_id}, "
-                    f"score={query_positive_scores[qrel_idx]:.4f}, "
-                    f"threshold={upper_threshold:.4f}, "
-                    f"num_valid={valid_idx.size}"
-                )
+            # if self.rank == 0 and qrel_idx < 10:
+            #     print(
+            #         f"qrel {qrel_idx}: q_id={q_id}, p_id={p_id}, "
+            #         f"score={query_positive_scores[qrel_idx]:.4f}, "
+            #         f"threshold={upper_threshold:.4f}, "
+            #         f"num_valid={valid_idx.size}"
+            #     )
 
             stats.update(valid_idx.size, 1)
 
@@ -417,7 +423,7 @@ class HardNegativesMiner:
             #     "text": [corpus_texts[index] for index in corpus_indices],
             # }
 
-        if stats.less_than_24 and self.rank == 0:
+        if self.rank == 0:
             print("total elements:", total_queries)
             print(
                 f"{stats.less_than_24} examples have less than 24 hard negatives, {stats.less_than_24/total_queries*100: .2f}%, \
@@ -436,8 +442,11 @@ class HardNegativesMiner:
 
             dataset, corpus_dict, has_title = self.prepare_dataset(task_name=task_name)
 
+
+            dist.barrier()
             if self.rank == 0:
                 print(f"processing dataset {task_name}\n")
+                print_memory_consumed(rank=self.rank)
 
             hard_negatives, stats = self.mine_one(
                 dataset=dataset,
@@ -458,6 +467,11 @@ class HardNegativesMiner:
                 stats=stats,
                 task_name=task_name,
             )
+
+            torch.cuda.empty_cache()
+            print_memory_consumed(rank=self.rank)
+
+
 
     def save_to_disk(self, dataset, negatives, has_title, stats, task_name):
 
