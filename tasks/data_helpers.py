@@ -7,6 +7,7 @@ import os
 from multiprocessing import Pool
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Set
+import torch.distributed as dist
 
 
 def process_chunk(args):
@@ -21,8 +22,12 @@ def process_chunk(args):
 
 
 def get_dict(dataset, id_field, text_field, title_field=None):
-    n_workers = 16
-    chunk_size = len(dataset) // n_workers
+    cpu_count = os.cpu_count() or 8
+    if dist.is_initialized():
+        n_workers = max(1, cpu_count // dist.get_world_size())
+    else:
+        n_workers = min(16, cpu_count)
+    chunk_size = max(1, len(dataset) // n_workers)
 
     chunks = [
         dataset.select(range(i, min(i + chunk_size, len(dataset))))
@@ -76,6 +81,7 @@ def dict_to_dataset(texts, ids, titles=None):
 
 @dataclass
 class RetrievalRawData:
+    """Raw data structure for retrieval tasks (includes STS tasks treated as retrieval)."""
     query_texts: List[str]
     query_ids: List[str]
 
@@ -96,3 +102,11 @@ class RetrievalRawData:
 
     corpus_dict: Dict[str, Dict[str, str]]
     has_title: bool
+
+
+@dataclass
+class ClassificationRawData:
+    """Raw data structure for classification and clustering tasks."""
+    texts: List[str]
+    labels: List[int]
+    ids: Optional[List[str]] = None

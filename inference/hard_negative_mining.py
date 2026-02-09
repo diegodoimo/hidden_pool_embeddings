@@ -8,7 +8,7 @@ import numpy as np
 import torch.distributed as dist
 
 from datasets import Dataset, Features, Value, Sequence
-from .load_datasets import load_data_retrieval
+from tasks.load_datasets import load_task_data
 from tasks import get_task
 from utils.sorted_sampler import LenghtSortedSampler
 from pathlib import Path
@@ -79,7 +79,7 @@ class HardNegativesMiner:
     def prepare_dataset(self, task_name):
 
         task = get_task(task_name)
-        data_split, corpus_dict, has_title = load_data_retrieval(task)
+        data_split, corpus_dict, has_title = load_task_data(task)
 
         dist.barrier()
         assert len(data_split["queries"]["text"]) > 1

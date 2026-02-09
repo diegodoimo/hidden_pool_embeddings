@@ -1,4 +1,6 @@
 from .classification_tasks import *
+from .clustering_tasks import *
+from .nli_tasks import *
 from .retrieval_tasks import *
 from .sts_tasks import *
 
