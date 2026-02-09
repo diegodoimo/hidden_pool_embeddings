@@ -11,6 +11,7 @@
     "MTOPIntentClassification": "Classify the intent of the given utterance in task-oriented conversation",
     "ToxicConversationsClassification": "Classify the given comments as either toxic or not toxic",
     "TweetSentimentExtractionClassification": "Classify the sentiment of a given tweet as either positive, negative, or neutral",
+    "ColaClassification": "Classify whether the given sentence is grammatically acceptable or not",
     "TNews": "Classify the fine-grained category of the given news title",
     "IFlyTek": "Given an App description text, find the appropriate fine-grained category",
     "MultilingualSentiment": "Classify sentiment of the customer review into positive, neutral, or negative",

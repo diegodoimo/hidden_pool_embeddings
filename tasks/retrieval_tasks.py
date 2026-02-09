@@ -583,4 +583,20 @@ class StackOverflowDupQuestions(AbsTask):
     )
 
 
+class AmazonQA(AbsTask):
+    """Amazon QA dataset for retrieval - question as query, answer as positive."""
+
+    hf_name = "sentence-transformers/amazon-qa"
+    split = "train"
+    has_multiple_datasets = False
+    anchor_name = "query"
+    positive_name = "answer"
+    metadata = TaskMetadata(
+        type="Retrieval",
+        prompt={
+            "query": "Given a product question, retrieve relevant answers from Amazon product pages"
+        },
+    )
+
+
 
