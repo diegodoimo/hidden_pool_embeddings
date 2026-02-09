@@ -35,6 +35,7 @@ def parse_args():
         default=None,
         help="Select task types to mine hard negatives for. Can specify multiple types. Ignored if --task_names is provided.",
     )
+    parser.add_argument("--max_length", type=int, default=4096)
     args = parser.parse_args()
     return args
 
@@ -154,6 +155,13 @@ def main():
         args.model_name_or_path, use_fast=False, trust_remote_code=True
     )
 
+    model = AutoModel.from_pretrained(
+        args.model_name_or_path,
+        dtype=torch.bfloat16,
+    ).to("cuda")
+
+    max_length = min(args.max_length, model.config.max_position_embeddings)
+
     miner = HardNegativesMiner(
         path=f"./results/datasets_negatives/{path_to_name[args.model_name_or_path]}",
         model_name=path_to_name[args.model_name_or_path],
@@ -161,15 +169,21 @@ def main():
         tokenizer=tokenizer,
         instruction_template=instruction_template_qwen3,
         padding_side="right",
+        max_length=max_length,
     )
 
-    model = AutoModel.from_pretrained(
-        args.model_name_or_path,
-        dtype=torch.bfloat16,
-    ).to("cuda")
+    if RANK == 0:
+        print("model loaded")
+    dist.barrier()
+    
+
+
+
+    
     model = model.eval()
     model = DDP(model, device_ids=[dist.get_rank()])
     model = torch.compile(model)
+
 
     miner.mine_negatives(model, batch_size=32)
     dist.destroy_process_group()
