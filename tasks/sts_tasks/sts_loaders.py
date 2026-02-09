@@ -12,11 +12,11 @@ from tasks.data_helpers import RetrievalRawData
 def load_sts_retrieval(task) -> RetrievalRawData:
     """
     Load STS datasets for retrieval following Lee et al. (2025a).
-    
-    For textual similarity (STS) datasets, we construct a query-positive pair from any 
-    sentence pair whose similarity score is at least 4 and another pair with the query 
+
+    For textual similarity (STS) datasets, we construct a query-positive pair from any
+    sentence pair whose similarity score is at least 4 and another pair with the query
     and positive switched. Hard negatives are mined from the corpus.
-    
+
     Used by: STS12, STS22, STSBenchmark
     """
     if task.hf_subset:
@@ -35,46 +35,49 @@ def load_sts_retrieval(task) -> RetrievalRawData:
         if score >= score_threshold:
             sentence1 = row[task.anchor_name]
             sentence2 = row[task.positive_name]
-            
+
             # Create original pair: sentence1 as query, sentence2 as positive
             query_texts.append(sentence1)
             positive_texts.append(sentence2)
-            
-            # Create switched pair: sentence2 as query, sentence1 as positive
-            query_texts.append(sentence2)
-            positive_texts.append(sentence1)
+
+            # Only create switched pair if sentences are different
+            # to avoid duplicate pairs when sentence1 == sentence2
+            if sentence1 != sentence2:
+                # Create switched pair: sentence2 as query, sentence1 as positive
+                query_texts.append(sentence2)
+                positive_texts.append(sentence1)
 
     # Build corpus from all unique sentences (for hard negative mining)
     # Use a dict to deduplicate while preserving order
     text_to_id = {}
     doc_counter = 0
-    
+
     # Add all texts (both queries and positives) to corpus for hard negative mining
     for text in query_texts + positive_texts:
         if text not in text_to_id:
             text_to_id[text] = f"doc_{doc_counter}"
             doc_counter += 1
-    
+
     # Map positive texts to their corpus IDs
     positive_ids = [text_to_id[pos_text] for pos_text in positive_texts]
-    
+
     # Generate query IDs
     n_pairs = len(query_texts)
     query_ids = [f"query_{i}" for i in range(n_pairs)]
-    
+
     # Build corpus
     document_texts = list(text_to_id.keys())
     document_ids = list(text_to_id.values())
-    
+
     corpus_dict = {
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
-    
+
     # Get unique queries and positives
     unique_query_ids = []
     unique_query_texts = []
     seen_queries = set()
-    
+
     for q_id, q_text in zip(query_ids, query_texts):
         if q_text not in seen_queries:
             seen_queries.add(q_text)
