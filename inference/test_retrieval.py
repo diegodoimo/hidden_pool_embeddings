@@ -106,8 +106,10 @@ class evaluate_retrieval:
 
             data_split, hf_subset = abs_task_preprocessing(task, eval_split)
 
-            data_split["relevant_docs"], data_split["queries"] = _filter_queries_without_positives(
-                data_split["relevant_docs"], data_split["queries"]
+            data_split["relevant_docs"], data_split["queries"] = (
+                _filter_queries_without_positives(
+                    data_split["relevant_docs"], data_split["queries"]
+                )
             )
 
             queries_dataset = create_dataset(
@@ -116,6 +118,7 @@ class evaluate_retrieval:
                 instruction_template=instruction_template,
                 tokenizer=self.tokenizer,
                 prompt_type=PromptType.query,
+                max_length=8192,
             )
 
             corpus_dataset = create_dataset(
@@ -124,6 +127,7 @@ class evaluate_retrieval:
                 instruction_template=instruction_template,
                 tokenizer=self.tokenizer,
                 prompt_type=PromptType.document,
+                max_length=8192,
             )
 
             datasets[task_name] = {

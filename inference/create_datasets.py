@@ -56,6 +56,36 @@ def _is_valid_query_row(row: dict[str, str]) -> bool:
     return True
 
 
+def _remove_long_sequences(rows, tokenizer, max_length):
+    """Remove rows where the tokenized prompt exceeds max_length.
+
+    Returns a list of booleans indicating which rows to keep.
+    """
+    keep_mask = []
+    removed_ids = []
+
+    for i, prompt in enumerate(rows["prompt"]):
+        # Fast path: if char length is very short, definitely keep
+        if len(prompt) <= max_length:
+            keep_mask.append(True)
+        else:
+            # Must tokenize to check actual token length
+            token_length = len(tokenizer.encode(prompt, add_special_tokens=False))
+            if token_length > max_length:
+                keep_mask.append(False)
+                removed_ids.append(rows["id"][i])
+            else:
+                keep_mask.append(True)
+
+    # Log removed IDs if any
+    if removed_ids:
+        print(f"Removed {len(removed_ids)} sequences exceeding max_length={max_length}")
+        if len(removed_ids) <= 10:
+            print(f"Removed IDs: {removed_ids}")
+
+    return keep_mask
+
+
 def _build_prompt(
     rows,
     tokenizer,
@@ -69,7 +99,9 @@ def _build_prompt(
     num_rows = len(rows["text"])
     row_dicts = [{key: rows[key][i] for key in rows.keys()} for i in range(num_rows)]
 
-    text_prompts = [instruction_template(prompt_type, task_metadata, row=row) for row in row_dicts]
+    text_prompts = [
+        instruction_template(prompt_type, task_metadata, row=row) for row in row_dicts
+    ]
     # we use the dafault add_special_tokens = True, tokenizer.encode do not add the special token
     tokens = [tokenizer.encode(prompt) + [eot_id] for prompt in text_prompts]
 
@@ -104,7 +136,8 @@ def _build_prompt(
         ]
     else:
         text_prompts = [
-            instruction_template(prompt_type, task_metadata, text) for text in rows["text"]
+            instruction_template(prompt_type, task_metadata, text)
+            for text in rows["text"]
         ]
     # we use the dafault add_special_tokens = True, tokenizer.encode do not add the special token
     # tokens = [tokenizer.encode(prompt) + [eot_id] for prompt in text_prompts]
@@ -118,20 +151,16 @@ def _build_prompt(
     # tokens = [tok + [eot_id] for tok in tokens]
 
     new_rows = {
-        "id": rows["id"], 
+        "id": rows["id"],
         "prompt": text_prompts,
         "text": rows["text"],
     }
-    #"input_ids": tokens,
+    # "input_ids": tokens,
     return new_rows
 
 
 def create_dataset(
-    dataset,
-    task_metadata,
-    instruction_template,
-    tokenizer,
-    prompt_type,
+    dataset, task_metadata, instruction_template, tokenizer, prompt_type, max_length
 ):
     """Create dataset.
 
@@ -142,6 +171,9 @@ def create_dataset(
         dataset: The dataset to create a dataloader from.
         task_metadata: The metadata of the task.
         prompt_type: The type of prompt to create a dataloader for. If None, it will be inferred from the task metadata.
+        tokenizer: The tokenizer to use.
+        instruction_template: The instruction template function.
+        max_length: Maximum sequence length in tokens.
         input_column: The column to use as input. If None, it will use the first column that matches the modality.
         batch_size: The batch size for the dataloader.
         **kwargs: Additional arguments to pass to the dataloader creation functions.
@@ -177,12 +209,21 @@ def create_dataset(
         input_to_dict,
         batched=True,
         batch_size=10000,
-        #num_proc=1,
+        # num_proc=1,
+    )
+
+    remove_long_seqences = partial(
+        _remove_long_sequences, tokenizer=tokenizer, max_length=max_length
+    )
+
+    new_ds = new_ds.filter(
+        remove_long_seqences,
+        batched=True,
+        batch_size=10000,
+        # num_proc=1,
     )
 
     return new_ds
-
-    # raise ValueError(f"Can't handle queries type {input_type}")
 
 
 def instruction_template_embeddinggemma(prompt_type, task_metadata, row):

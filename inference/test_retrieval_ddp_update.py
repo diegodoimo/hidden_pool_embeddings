@@ -26,10 +26,16 @@ from .helpers import (
 )
 import time
 
+
 class evaluate_retrieval:
 
     def __init__(
-        self, tokenizer, tasks, instruction_template, padding_side="right", new_inference_mode=False
+        self,
+        tokenizer,
+        tasks,
+        instruction_template,
+        padding_side="right",
+        new_inference_mode=False,
     ):
 
         self.world_size = dist.get_world_size()
@@ -54,8 +60,10 @@ class evaluate_retrieval:
 
             data_split, hf_subset = abs_task_preprocessing(task, eval_split)
 
-            data_split["relevant_docs"], data_split["queries"] = _filter_queries_without_positives(
-                data_split["relevant_docs"], data_split["queries"]
+            data_split["relevant_docs"], data_split["queries"] = (
+                _filter_queries_without_positives(
+                    data_split["relevant_docs"], data_split["queries"]
+                )
             )
 
             queries_dataset = create_dataset(
@@ -64,6 +72,7 @@ class evaluate_retrieval:
                 instruction_template=instruction_template,
                 tokenizer=self.tokenizer,
                 prompt_type=PromptType.query,
+                max_length=8192,
             )
 
             corpus_dataset = create_dataset(
@@ -72,6 +81,7 @@ class evaluate_retrieval:
                 instruction_template=instruction_template,
                 tokenizer=self.tokenizer,
                 prompt_type=PromptType.document,
+                max_length=8192,
             )
 
             datasets[task_name] = {
@@ -112,7 +122,9 @@ class evaluate_retrieval:
                 batch_embeddings = F.normalize(out_embeddings, p=2, dim=1)
 
             if self.world_size > 1:
-                gathered = [torch.zeros_like(out_embeddings) for _ in range(self.world_size)]
+                gathered = [
+                    torch.zeros_like(out_embeddings) for _ in range(self.world_size)
+                ]
                 dist.all_gather(gathered, out_embeddings)
 
                 # Concatenate across ranks for this batch
@@ -144,7 +156,6 @@ class evaluate_retrieval:
         query_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["queries"]["id"])}
         doc_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["corpus"]["id"])}
 
-
         print(f"rank {self.rank}: query_idx_to_id: {len(query_idx_to_id)}")
         print(f"rank {self.rank}: doc_idx_to_id: {len(query_idx_to_id)}")
 
@@ -167,10 +178,9 @@ class evaluate_retrieval:
         if self.new_inference_mode:
             sampler_queries = LenghtSortedSampler(dataset["queries"])
 
-        if self.rank ==0:
+        if self.rank == 0:
             print("num queries", len(dataset["queries"]))
             print("num documents", len(dataset["queries"]))
-
 
         queries_loader = DataLoader(
             dataset["queries"],
@@ -184,12 +194,17 @@ class evaluate_retrieval:
         if self.new_inference_mode:
             dist.barrier()
             start = time.time()
-            query_embeddings = encode(model, queries_loader, prompt_type= PromptType.query, world_size=self.world_size)
+            query_embeddings = encode(
+                model,
+                queries_loader,
+                prompt_type=PromptType.query,
+                world_size=self.world_size,
+            )
             dist.barrier()
             if self.rank == 0:
                 print(f"time to encode queries: {time.time()-start}")
             time.time()
-            
+
             top_scores, top_indices = search(
                 model=model,
                 query_embeddings=query_embeddings,
@@ -197,7 +212,7 @@ class evaluate_retrieval:
                 collate_fn=collate_fn,
                 top_k=top_k,
                 batch_size=batch_size,
-                chunk_size=2*10**3,
+                chunk_size=2 * 10**3,
             )
 
             dist.barrier()
@@ -225,7 +240,9 @@ class evaluate_retrieval:
             scores = torch.matmul(query_embeddings, corpus_embeddings.T)
             top_scores, top_indices = torch.topk(
                 scores,
-                k=min(top_k + 1, len(scores[1]) if len(scores) > 1 else len(scores[-1])),
+                k=min(
+                    top_k + 1, len(scores[1]) if len(scores) > 1 else len(scores[-1])
+                ),
                 dim=1,
                 largest=True,
             )

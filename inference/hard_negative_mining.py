@@ -95,6 +95,7 @@ class HardNegativesMiner:
             instruction_template=self.instruction_template,
             tokenizer=self.tokenizer,
             prompt_type=PromptType.query,
+            max_length=8192,
         )
 
         positives_dataset = create_dataset(
@@ -103,22 +104,55 @@ class HardNegativesMiner:
             instruction_template=self.instruction_template,
             tokenizer=self.tokenizer,
             prompt_type=PromptType.document,
+            max_length=8192,
         )
 
         dist.barrier()
         if self.rank == 0:
             print("tokenizing dataset num docs", len(data_split["corpus"]))
+
         corpus_dataset = create_dataset(
             dataset=data_split["corpus"],
             task_metadata=task.metadata,
             instruction_template=self.instruction_template,
             tokenizer=self.tokenizer,
             prompt_type=PromptType.document,
+            max_length=8192,
         )
 
+        # Create sets of valid IDs after filtering
+        valid_query_ids = set(queries_dataset["id"])
+        valid_positive_ids = set(positives_dataset["id"])
+
+        # Filter the queries and positives to only include valid IDs
+        # This is critical: if an ID was removed during length filtering,
+        # it won't be in the embeddings and will cause KeyError later
+        valid_indices = [
+            i
+            for i, (qid, pid) in enumerate(
+                zip(data_split["queries"]["id"], data_split["positives"]["id"])
+            )
+            if qid in valid_query_ids and pid in valid_positive_ids
+        ]
+
+        filtered_queries = {
+            key: [data_split["queries"][key][i] for i in valid_indices]
+            for key in data_split["queries"].keys()
+        }
+        filtered_positives = {
+            key: [data_split["positives"][key][i] for i in valid_indices]
+            for key in data_split["positives"].keys()
+        }
+
+        num_removed = len(data_split["queries"]["id"]) - len(valid_indices)
+        if num_removed > 0 and self.rank == 0:
+            print(
+                f"WARNING: Removed {num_removed} query-positive pairs due to length filtering"
+            )
+
         dataset = {
-            "queries": data_split["queries"],
-            "positives": data_split["positives"],
+            "queries": filtered_queries,
+            "positives": filtered_positives,
             "unique_queries": queries_dataset,
             "unique_positives": positives_dataset,
             "corpus": corpus_dataset,
