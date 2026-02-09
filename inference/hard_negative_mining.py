@@ -184,13 +184,22 @@ class HardNegativesMiner:
             world_size=self.world_size,
         )
 
+
+
         dist.barrier()
+        if self.rank == 0:
+            print(f"queries embedding duration: {(time.time()-start)/60} min")
+            start = time.time()
+            print("building query positive embeddings")      
         positive_embeddings = encode(
             model,
             positives_loader,
             prompt_type=PromptType.document,
             world_size=self.world_size,
         )
+
+        if self.rank == 0:
+            print(f"positive embedding duration: {(time.time()-start)/60} min")
 
         # Create mappings from IDs to embedding indices
         unique_query_id_to_idx = {
@@ -222,12 +231,11 @@ class HardNegativesMiner:
         dist.barrier()
         chunk_size = estimate_chunk_size(query_embeddings)
         if self.rank == 0:
-            print(f"duration: {(time.time()-start)/60}min")
+            print(f"query positive scopre duration: {(time.time()-start)/60}min")
             print("building document embeddings")
             print(f"selected_chunk_size: {chunk_size}")
 
         start = time.time()
-
         top_scores, top_indices = search(
             model=model,
             query_embeddings=query_embeddings,
