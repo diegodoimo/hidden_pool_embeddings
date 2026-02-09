@@ -7,7 +7,12 @@ import os
 from multiprocessing import Pool
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Set, Union, Tuple
-from tasks.data_helpers import dict_to_dataset, RetrievalRawData, ClassificationRawData, get_dict
+from tasks.data_helpers import (
+    dict_to_dataset,
+    RetrievalRawData,
+    ClassificationRawData,
+    get_dict,
+)
 import torch.distributed as dist
 
 
@@ -16,11 +21,6 @@ def normalize_text(
 ) -> str:
     """Normalize text for comparison by lowercasing and stripping whitespace."""
     return text.lower().strip()
-
-
-# ============================================================================
-# UNIFIED DATA LOADING INTERFACE
-# ============================================================================
 
 
 def load_task_data(

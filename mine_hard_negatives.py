@@ -7,16 +7,120 @@ from transformers import AutoModel, AutoTokenizer
 import torch.distributed as dist
 from inference.create_datasets import instruction_template_qwen3
 from datetime import timedelta
+from tasks import (
+    NAME_TO_TASK,
+    CLASSIFICATION_TASKS,
+    NLI_TASKS,
+    STS_TASKS,
+    CLUSTERING_TASKS,
+    get_task,
+)
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name_or_path", type=str)
+    parser.add_argument(
+        "--task_names",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Specific task names to mine hard negatives for (e.g., 'msmarco' 'hotpotqa'). Takes precedence over --task_types.",
+    )
+    parser.add_argument(
+        "--task_types",
+        type=str,
+        nargs="+",
+        choices=["retrieval", "sts", "nli", "classification", "clustering", "all"],
+        default=None,
+        help="Select task types to mine hard negatives for. Can specify multiple types. Ignored if --task_names is provided.",
+    )
     args = parser.parse_args()
     return args
 
 
-path_to_name = {"Qwen/Qwen3-Embedding-0.6B": "qwen3_600m", 
-            "Qwen/Qwen3-Embedding-8B": "qwen3_8b"}
+path_to_name = {
+    "Qwen/Qwen3-Embedding-0.6B": "qwen3_600m",
+    "Qwen/Qwen3-Embedding-8B": "qwen3_8b",
+}
+
+
+# All other retrieval tasks (everything not in the above categories)
+def get_retrieval_tasks():
+    """Get all retrieval tasks (excluding STS and NLI)."""
+    all_tasks = set(NAME_TO_TASK.keys())
+    exclude = set(NLI_TASKS + STS_TASKS + CLASSIFICATION_TASKS + CLUSTERING_TASKS)
+    return list(all_tasks - exclude)
+
+
+def filter_tasks_by_type(task_types):
+    """
+    Filter available tasks based on requested task types.
+
+    Args:
+        task_types: List of task type strings ("retrieval", "sts", "nli", "classification", "clustering", "all")
+
+    Returns:
+        List of task names matching the requested types
+    """
+    if "all" in task_types:
+        return list(NAME_TO_TASK.keys())
+
+    selected_tasks = []
+
+    if "retrieval" in task_types:
+        selected_tasks.extend(get_retrieval_tasks())
+
+    if "sts" in task_types:
+        selected_tasks.extend(STS_TASKS)
+
+    if "nli" in task_types:
+        selected_tasks.extend(NLI_TASKS)
+
+    if "classification" in task_types:
+        selected_tasks.extend(CLASSIFICATION_TASKS)
+
+    if "clustering" in task_types:
+        selected_tasks.extend(CLUSTERING_TASKS)
+
+    # Remove duplicates while preserving order
+    seen = set()
+    result = []
+    for task in selected_tasks:
+        if task not in seen and task in NAME_TO_TASK:
+            seen.add(task)
+            result.append(task)
+
+    return result
+
+
+def validate_and_select_tasks(task_names, task_types):
+    """
+    Validate and select tasks based on task_names or task_types.
+
+    Args:
+        task_names: List of specific task names or None
+        task_types: List of task type strings
+
+    Returns:
+        List of validated task names
+
+    Raises:
+        ValueError: If any task name is invalid
+    """
+    if task_names is not None:
+        # Use specific task names if provided
+        invalid_tasks = [task for task in task_names if task not in NAME_TO_TASK]
+        if invalid_tasks:
+            available_tasks = sorted(NAME_TO_TASK.keys())
+            raise ValueError(
+                f"Invalid task name(s): {invalid_tasks}\n"
+                f"Available tasks: {available_tasks}"
+            )
+        return task_names
+    else:
+        # Fall back to task types
+        return filter_tasks_by_type(task_types)
 
 
 def main():
@@ -26,15 +130,26 @@ def main():
     LOCAL_RANK = int(os.environ["LOCAL_RANK"])
     RANK = int(os.environ["RANK"])
 
-    dist.init_process_group("nccl", 
-    device_id = LOCAL_RANK, 
-    timeout=timedelta(seconds=30)  # Reduce from default 600s to 30s
+    dist.init_process_group(
+        "nccl",
+        device_id=LOCAL_RANK,
+        timeout=timedelta(seconds=30),  # Reduce from default 600s to 30s
     )
     torch.cuda.set_device(dist.get_rank())
 
-    #enable tensorfloat32
-    torch.set_float32_matmul_precision('high')
-    
+    # enable tensorfloat32
+    torch.set_float32_matmul_precision("high")
+
+    # Select tasks based on task_names (if provided) or task_types
+    selected_tasks = validate_and_select_tasks(args.task_names, args.task_types)
+
+    if RANK == 0:
+        if args.task_names is not None:
+            print(f"Selected specific tasks: {args.task_names}")
+        else:
+            print(f"Selected task types: {args.task_types}")
+        print(f"Tasks to process: {selected_tasks}")
+
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name_or_path, use_fast=False, trust_remote_code=True
     )
@@ -42,7 +157,7 @@ def main():
     miner = HardNegativesMiner(
         path=f"./results/datasets_negatives/{path_to_name[args.model_name_or_path]}",
         model_name=path_to_name[args.model_name_or_path],
-        tasks=["nfcorpus"], #"naturalquestions", "hotpotqa", "msmarco"], # msmarco "nfcorpus"  
+        tasks=selected_tasks,
         tokenizer=tokenizer,
         instruction_template=instruction_template_qwen3,
         padding_side="right",

@@ -184,13 +184,11 @@ class HardNegativesMiner:
             world_size=self.world_size,
         )
 
-
-
         dist.barrier()
         if self.rank == 0:
             print(f"queries embedding duration: {(time.time()-start)/60} min")
             start = time.time()
-            print("building query positive embeddings")      
+            print("building query positive embeddings")
         positive_embeddings = encode(
             model,
             positives_loader,
@@ -208,7 +206,7 @@ class HardNegativesMiner:
         unique_positive_id_to_idx = {
             pid: idx for idx, pid in enumerate(dataset["unique_positives"]["id"])
         }
-        
+
         # Map each (query, positive) pair in qrels to their corresponding embeddings
         query_indices = [
             unique_query_id_to_idx[qid] for qid in dataset["queries"]["id"]
@@ -216,13 +214,15 @@ class HardNegativesMiner:
         positive_indices = [
             unique_positive_id_to_idx[pid] for pid in dataset["positives"]["id"]
         ]
-        
+
         # Expand embeddings to match qrels order
         expanded_query_embeddings = query_embeddings[query_indices]
         expanded_positive_embeddings = positive_embeddings[positive_indices]
-        
+
         # Compute scores for each (query, positive) pair in qrels
-        query_positive_scores = (expanded_query_embeddings * expanded_positive_embeddings).sum(dim=1)
+        query_positive_scores = (
+            expanded_query_embeddings * expanded_positive_embeddings
+        ).sum(dim=1)
         query_positive_scores = query_positive_scores.cpu().numpy()
 
         del positive_embeddings
@@ -321,29 +321,35 @@ class HardNegativesMiner:
         for qrel_idx, (q_id, p_id) in enumerate(zip(query_ids, positive_ids)):
             # Get the unique query index for this qrel entry
             unique_q_idx = unique_query_id_to_idx[q_id]
-            
+
             # Get candidate documents for this query
-            candidate_indices = top_indices[unique_q_idx, 5:upper_thresholds_relevent_docs]
-            candidate_scores = top_scores[unique_q_idx, 5:upper_thresholds_relevent_docs]
-            
+            candidate_indices = top_indices[
+                unique_q_idx, 5:upper_thresholds_relevent_docs
+            ]
+            candidate_scores = top_scores[
+                unique_q_idx, 5:upper_thresholds_relevent_docs
+            ]
+
             # Threshold based on this specific (query, positive) pair's score
             upper_threshold = min(0.95 * query_positive_scores[qrel_idx], 0.9)
-            
+
             # Find valid hard negatives
             valid_mask = candidate_scores < upper_threshold
             valid_idx = np.where(valid_mask)[0]
-            
+
             if self.rank == 0 and qrel_idx < 10:
-                print(f"qrel {qrel_idx}: q_id={q_id}, p_id={p_id}, "
-                      f"score={query_positive_scores[qrel_idx]:.4f}, "
-                      f"threshold={upper_threshold:.4f}, "
-                      f"num_valid={valid_idx.size}")
+                print(
+                    f"qrel {qrel_idx}: q_id={q_id}, p_id={p_id}, "
+                    f"score={query_positive_scores[qrel_idx]:.4f}, "
+                    f"threshold={upper_threshold:.4f}, "
+                    f"num_valid={valid_idx.size}"
+                )
 
             stats.update(valid_idx.size, 1)
 
             # Use composite key (query_id, positive_id) to store negatives per qrels entry
             key = (q_id, p_id)
-            
+
             if valid_idx.size == 0:
                 # Use the same structure as the normal case, just with empty lists
                 if has_title:
@@ -425,21 +431,23 @@ class HardNegativesMiner:
         ids = dataset["queries"]["id"]
         positive_text = dataset["positives"]["text"]
         positive_id = dataset["positives"]["id"]
-        
+
         # Use (query_id, positive_id) tuples to get negatives for each qrels entry
         negative_text = [
-            negatives[(q_id, p_id)]["text"] 
+            negatives[(q_id, p_id)]["text"]
             for q_id, p_id in zip(dataset["queries"]["id"], dataset["positives"]["id"])
         ]
         negative_id = [
-            negatives[(q_id, p_id)]["id"] 
+            negatives[(q_id, p_id)]["id"]
             for q_id, p_id in zip(dataset["queries"]["id"], dataset["positives"]["id"])
         ]
 
         if has_title:
             negative_title = [
-                negatives[(q_id, p_id)]["title"] 
-                for q_id, p_id in zip(dataset["queries"]["id"], dataset["positives"]["id"])
+                negatives[(q_id, p_id)]["title"]
+                for q_id, p_id in zip(
+                    dataset["queries"]["id"], dataset["positives"]["id"]
+                )
             ]
             positive_title = dataset["positives"]["title"]
 

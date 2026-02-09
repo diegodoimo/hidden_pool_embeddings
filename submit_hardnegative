@@ -38,5 +38,10 @@ torchrun \
     mine_hard_negatives.py  \
     --model_name_or_path "Qwen/Qwen3-Embedding-8B" \
 
-    #"Qwen/Qwen3-Embedding-0.6B"
-    #"Qwen/Qwen3-Embedding-8B"
+
+
+
+
+
+#"Qwen/Qwen3-Embedding-0.6B"
+#"Qwen/Qwen3-Embedding-8B"

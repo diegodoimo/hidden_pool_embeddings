@@ -80,9 +80,52 @@ NAME_TO_TASK = {
 }
 
 
+# Define task categorization based on their characteristics
+# NLI tasks are those with "nli" in the name or specific datasets like arguana
+NLI_TASKS = ["all_nli", "arguana", "snli", "mnli", "anli"]
+
+# STS tasks are semantic textual similarity tasks
+STS_TASKS = ["sts12", "sts22", "stsbenchmark"]
+
+# Classification tasks
+CLASSIFICATION_TASKS = [
+    "dbpedia",
+    "toxic_conversations",
+    "banking77",
+    "amazon_counterfactual",
+    "amazon_polarity",
+    "imdb",
+    "cola",
+]
+
+# Clustering tasks
+CLUSTERING_TASKS = [
+    "amazon_reviews",
+    "emotion",
+    "mtop_intent",
+    "mtop_domain",
+    "massive_scenario",
+    "massive_intent",
+    "tweet_sentiment",
+    "arxiv_clustering_p2p",
+    "arxiv_clustering_s2s",
+    "biorxiv_clustering_p2p",
+    "biorxiv_clustering_s2s",
+    "medrxiv_clustering_p2p",
+    "medrxiv_clustering_s2s",
+    "reddit_clustering_p2p",
+    "reddit_clustering_s2s",
+    "stackexchange_clustering_p2p",
+    "stackexchange_clustering_s2s",
+    "twentynewsgroups",
+]
+
+
 def get_task(name: str):
     if name not in NAME_TO_TASK:
-        raise ValueError(f"Unknown task '{name}'. Available tasks: {list(NAME_TO_TASK)}")
+        raise ValueError(
+            f"Unknown task '{name}'. Available tasks: {list(NAME_TO_TASK)}"
+        )
 
     task = NAME_TO_TASK[name]
 
