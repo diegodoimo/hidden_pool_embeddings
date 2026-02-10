@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from mteb.types import PromptType
-from inference.create_datasets import create_dataset
+from inference.create_datasets import create_dataset, filter_paired_datasets_by_length
 
 from functools import partial
 import numpy as np
@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from datasets import DatasetInfo
 import json
 from utils.helpers import print_memory_consumed
-
 
 
 def estimate_chunk_size(query_embeddings, max_chunk=5 * 10**4):
@@ -63,6 +62,7 @@ class HardNegativesMiner:
         tasks,
         instruction_template,
         padding_side="right",
+        max_length=512,
     ):
 
         self.world_size = dist.get_world_size()
@@ -71,6 +71,8 @@ class HardNegativesMiner:
         self.tokenizer = tokenizer
         self.task_names = tasks
         self.padding_side = padding_side
+        self.max_length = max_length
+
         if self.rank == 0:
             Path(path).mkdir(parents=True, exist_ok=True)
         self.instruction_template = instruction_template
@@ -91,22 +93,47 @@ class HardNegativesMiner:
         if self.rank == 0:
             print("tokenizing dataset: num anchors", len(data_split["queries"]))
 
-        queries_dataset = create_dataset(
+        # Filter queries and positives by length while maintaining pair correspondence
+        # (
+        #     unique_queries_filtered,
+        #     unique_positives_filtered,
+        #     filtered_queries,
+        #     filtered_positives,
+        # ) = filter_paired_datasets_by_length(
+        #     unique_queries_dataset=data_split["unique_queries"],
+        #     unique_positives_dataset=data_split["unique_positives"],
+        #     queries_with_reps=data_split["queries"],
+        #     positives_with_reps=data_split["positives"],
+        #     tokenizer=self.tokenizer,
+        #     instruction_template=self.instruction_template,
+        #     task_metadata=task.metadata,
+        #     max_length=self.max_length,
+        #     rank=self.rank,
+        # )
+
+        unique_queries_dataset = create_dataset(
             dataset=data_split["unique_queries"],
             task_metadata=task.metadata,
             instruction_template=self.instruction_template,
             tokenizer=self.tokenizer,
             prompt_type=PromptType.query,
-            max_length=8192,
+            max_length=self.max_length,
         )
 
-        positives_dataset = create_dataset(
+        unique_positives_dataset = create_dataset(
             dataset=data_split["unique_positives"],
             task_metadata=task.metadata,
             instruction_template=self.instruction_template,
             tokenizer=self.tokenizer,
             prompt_type=PromptType.document,
-            max_length=8192,
+            max_length=self.max_length,
+        )
+
+        filtered_positives, filtered_queries = filter_paired_datasets_by_length(
+            unique_queries_dataset.removed_ids,
+            unique_positives_dataset.removed_ids,
+            data_split["queries"],
+            data_split["positives"],
         )
 
         dist.barrier()
@@ -119,55 +146,27 @@ class HardNegativesMiner:
             instruction_template=self.instruction_template,
             tokenizer=self.tokenizer,
             prompt_type=PromptType.document,
-            max_length=8192,
+            max_length=self.max_length,
         )
-
-        # Create sets of valid IDs after filtering
-        valid_query_ids = set(queries_dataset["id"])
-        valid_positive_ids = set(positives_dataset["id"])
-
-        # Filter the queries and positives to only include valid IDs
-        # This is critical: if an ID was removed during length filtering,
-        # it won't be in the embeddings and will cause KeyError later
-        valid_indices = [
-            i
-            for i, (qid, pid) in enumerate(
-                zip(data_split["queries"]["id"], data_split["positives"]["id"])
-            )
-            if qid in valid_query_ids and pid in valid_positive_ids
-        ]
-
-        filtered_queries = {
-            key: [data_split["queries"][key][i] for i in valid_indices]
-            for key in data_split["queries"].keys()
-        }
-        filtered_positives = {
-            key: [data_split["positives"][key][i] for i in valid_indices]
-            for key in data_split["positives"].keys()
-        }
-
-        num_removed = len(data_split["queries"]["id"]) - len(valid_indices)
-        if num_removed > 0 and self.rank == 0:
-            print(
-                f"WARNING: Removed {num_removed} query-positive pairs due to length filtering"
-            )
 
         dataset = {
             "queries": filtered_queries,
             "positives": filtered_positives,
-            "unique_queries": queries_dataset,
-            "unique_positives": positives_dataset,
+            "unique_queries": unique_queries_dataset,
+            "unique_positives": unique_positives_dataset,
             "corpus": corpus_dataset,
         }
 
         dist.barrier()
         if self.rank == 0:
-            print(f"number unique queries: {len(queries_dataset)}")
-            print(f"number unique positives: {len(positives_dataset)}")
+            print(f"number unique queries: {len(unique_queries_dataset)}")
+            print(f"number unique positives: {len(unique_positives_dataset)}")
             print(f"number of documents: {len(corpus_dataset)}")
 
-            print(f"total queries (with repetitions): {len(dataset['queries'])}")
-            print(f"total positives (with repetitions): {len(dataset['positives'])}")
+            print(f"total queries (with repetitions): {len(dataset['queries']['id'])}")
+            print(
+                f"total positives (with repetitions): {len(dataset['positives']['id'])}"
+            )
 
         return dataset, corpus_dict, has_title
 
@@ -442,7 +441,6 @@ class HardNegativesMiner:
 
             dataset, corpus_dict, has_title = self.prepare_dataset(task_name=task_name)
 
-
             dist.barrier()
             if self.rank == 0:
                 print(f"processing dataset {task_name}\n")
@@ -470,8 +468,6 @@ class HardNegativesMiner:
 
             torch.cuda.empty_cache()
             print_memory_consumed(rank=self.rank)
-
-
 
     def save_to_disk(self, dataset, negatives, has_title, stats, task_name):
 

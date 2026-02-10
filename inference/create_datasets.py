@@ -1,5 +1,6 @@
 from mteb.types import PromptType
 from functools import partial
+from datasets import Dataset
 
 
 # EMBEDDINGGEMMA
@@ -59,7 +60,10 @@ def _is_valid_query_row(row: dict[str, str]) -> bool:
 def _remove_long_sequences(rows, tokenizer, max_length):
     """Remove rows where the tokenized prompt exceeds max_length.
 
-    Returns a list of booleans indicating which rows to keep.
+    Returns:
+        tuple: (keep_mask, removed_ids)
+            - keep_mask: list of booleans indicating which rows to keep
+            - removed_ids: list of IDs that were removed
     """
     keep_mask = []
     removed_ids = []
@@ -83,7 +87,7 @@ def _remove_long_sequences(rows, tokenizer, max_length):
         if len(removed_ids) <= 10:
             print(f"Removed IDs: {removed_ids}")
 
-    return keep_mask
+    return keep_mask, removed_ids
 
 
 def _build_prompt(
@@ -209,21 +213,77 @@ def create_dataset(
         input_to_dict,
         batched=True,
         batch_size=10000,
-        # num_proc=1,
     )
 
-    remove_long_seqences = partial(
-        _remove_long_sequences, tokenizer=tokenizer, max_length=max_length
-    )
+    # Track removed IDs across all batches
+    all_removed_ids = []
+
+    def filter_wrapper(rows):
+        keep_mask, removed_ids = _remove_long_sequences(rows, tokenizer, max_length)
+        all_removed_ids.extend(removed_ids)
+        return keep_mask
 
     new_ds = new_ds.filter(
-        remove_long_seqences,
+        filter_wrapper,
         batched=True,
         batch_size=10000,
-        # num_proc=1,
     )
 
+    # Store removed IDs as an attribute on the dataset
+    new_ds.removed_ids = all_removed_ids
+
     return new_ds
+
+
+def filter_paired_datasets_by_length(
+    removed_query_ids,
+    removed_positive_ids,
+    queries_with_reps,
+    positives_with_reps,
+):
+    """Filter query-positive pairs by length, maintaining 1-to-1 correspondence.
+    Args:
+        removed_query_ids: List of IDs of queries to remove
+        removed_positive_ids: List of IDs of positives to remove
+        queries_with_reps: Dictionary with query data including repetitions (must have "id" key)
+        positives_with_reps: Dictionary with positive data including repetitions (must have "id" key)
+        tokenizer: Tokenizer for measuring sequence length
+        instruction_template: Function to build prompts
+        task_metadata: Task metadata for prompt building
+        max_length: Maximum sequence length in tokens
+        rank: Process rank for logging (default: 0)
+
+    Returns:
+        Tuple of (filtered_unique_queries, filtered_unique_positives, filtered_queries, filtered_positives)
+    """
+
+    # Filter pairs: queries_with_reps[i] and positives_with_reps[i] are ALWAYS paired
+    # Keep only if BOTH query AND positive are within max_length
+    pair_valid_indices = []
+
+    for i, (qid, pid) in enumerate(
+        zip(queries_with_reps["id"], positives_with_reps["id"])
+    ):
+
+        if qid in removed_query_ids or pid in removed_positive_ids:
+            continue
+        else:
+            pair_valid_indices.append(i)
+
+    # Filter the paired data
+    filtered_queries = {
+        key: [queries_with_reps[key][i] for i in pair_valid_indices]
+        for key in queries_with_reps.keys()
+    }
+    filtered_positives = {
+        key: [positives_with_reps[key][i] for i in pair_valid_indices]
+        for key in positives_with_reps.keys()
+    }
+
+    return (
+        filtered_queries,
+        filtered_positives,
+    )
 
 
 def instruction_template_embeddinggemma(prompt_type, task_metadata, row):
