@@ -3,6 +3,11 @@ from functools import partial
 from datasets import Dataset
 
 
+from datasets import disable_progress_bars
+
+disable_progress_bars()
+
+
 # EMBEDDINGGEMMA
 TASK_PROMPTS = {
     "document": "title: {title} | text: ",
@@ -67,7 +72,6 @@ def _remove_long_sequences(rows, tokenizer, max_length):
     """
     keep_mask = []
     removed_ids = []
-
     for i, prompt in enumerate(rows["prompt"]):
         # Fast path: if char length is very short, definitely keep
         if len(prompt) <= max_length:
@@ -80,13 +84,6 @@ def _remove_long_sequences(rows, tokenizer, max_length):
                 removed_ids.append(rows["id"][i])
             else:
                 keep_mask.append(True)
-
-    # Log removed IDs if any
-    if removed_ids:
-        print(f"Removed {len(removed_ids)} sequences exceeding max_length={max_length}")
-        if len(removed_ids) <= 10:
-            print(f"Removed IDs: {removed_ids}")
-
     return keep_mask, removed_ids
 
 
@@ -191,10 +188,10 @@ def create_dataset(
     # if input_type == ["text"]:  # text only
 
     if prompt_type == PromptType.document:
-        filtered_ds = dataset.filter(_is_valid_corpus_row)
+        filtered_ds = dataset.filter(_is_valid_corpus_row, desc=None)
     elif prompt_type == PromptType.query:
         if not isinstance(dataset["text"][0], list):
-            filtered_ds = dataset.filter(_is_valid_query_row)
+            filtered_ds = dataset.filter(_is_valid_query_row, desc=None)
         else:
             raise ValueError(f"Can't handle queries type queries for conversation")
     else:
@@ -213,11 +210,11 @@ def create_dataset(
         input_to_dict,
         batched=True,
         batch_size=10000,
+        desc=None,
     )
 
     # Track removed IDs across all batches
     all_removed_ids = []
-
     def filter_wrapper(rows):
         keep_mask, removed_ids = _remove_long_sequences(rows, tokenizer, max_length)
         all_removed_ids.extend(removed_ids)
@@ -227,8 +224,8 @@ def create_dataset(
         filter_wrapper,
         batched=True,
         batch_size=10000,
+        desc=None,
     )
-
     # Store removed IDs as an attribute on the dataset
     new_ds.removed_ids = all_removed_ids
 

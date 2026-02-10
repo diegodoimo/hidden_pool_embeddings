@@ -1,3 +1,4 @@
+from .binary_classification_tasks import *
 from .classification_tasks import *
 from .clustering_tasks import *
 from .nli_tasks import *
@@ -30,8 +31,9 @@ NAME_TO_TASK = {
     "stackexchange_dup_s2s": StackExchangeDupQuestionsS2S,
     "stackexchange_dup_p2p": StackExchangeDupQuestionsP2P,
     "qqp": QQP,
-    # NLI tasks
+    # Argument retrieval tasks
     "arguana": Arguana,
+    # NLI tasks
     "snli": SNLI,
     "mnli": MNLI,
     "anli": ANLI,
@@ -50,14 +52,15 @@ NAME_TO_TASK = {
     "sts12": STS12,
     "sts22": STS22,
     "stsbenchmark": STSBenchmark,
-    # Classification tasks
-    "dbpedia": DBPediaClassification,
+    # Binary Classification tasks
     "toxic_conversations": ToxicConversations50k,
-    "banking77": Banking77Classification,
     "amazon_counterfactual": AmazonCounterfactualClassification,
     "amazon_polarity": AmazonPolarityClassification,
     "imdb": ImdbClassification,
     "cola": ColaClassification,
+    # Multi-way Classification tasks
+    "dbpedia": DBPediaClassification,
+    "banking77": Banking77Classification,
     # Clustering tasks
     "amazon_reviews": AmazonReviewsClustering,
     "emotion": EmotionClustering,
@@ -81,21 +84,25 @@ NAME_TO_TASK = {
 
 
 # Define task categorization based on their characteristics
-# NLI tasks are those with "nli" in the name or specific datasets like arguana
-NLI_TASKS = ["all_nli", "arguana", "snli", "mnli", "anli"]
+# NLI tasks are those with "nli" in the name
+NLI_TASKS = ["all_nli", "snli", "mnli", "anli"]
 
 # STS tasks are semantic textual similarity tasks
 STS_TASKS = ["sts12", "sts22", "stsbenchmark"]
 
-# Classification tasks
-CLASSIFICATION_TASKS = [
-    "dbpedia",
+# Binary Classification tasks
+BINARY_CLASSIFICATION_TASKS = [
     "toxic_conversations",
-    "banking77",
     "amazon_counterfactual",
     "amazon_polarity",
     "imdb",
     "cola",
+]
+
+# Multi-way Classification tasks
+CLASSIFICATION_TASKS = [
+    "dbpedia",
+    "banking77",
 ]
 
 # Clustering tasks

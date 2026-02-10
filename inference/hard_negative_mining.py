@@ -91,7 +91,7 @@ class HardNegativesMiner:
             data_split["positives"]["text"]
         )
         if self.rank == 0:
-            print("tokenizing dataset: num anchors", len(data_split["queries"]))
+            print("tokenizing dataset: num queries", len(data_split["queries"]))
 
         unique_queries_dataset = create_dataset(
             dataset=data_split["unique_queries"],
@@ -111,8 +111,15 @@ class HardNegativesMiner:
             max_length=self.max_length,
         )
 
+        if self.rank ==0:
+            if len(unique_queries_dataset.removed_ids) > 0:
+                print(f"removed {len(unique_queries_dataset.removed_ids)} queries exceeding max_length")
+            if len(unique_positives_dataset.removed_ids) > 0:
+                print(f"removed {len(unique_positives_dataset.removed_ids)} positives exceeding max_length")
+        
+
         # removed the ids of the queries and positives that exceed max_length
-        filtered_positives, filtered_queries = filter_paired_datasets_by_length(
+        filtered_queries, filtered_positives = filter_paired_datasets_by_length(
             unique_queries_dataset.removed_ids,
             unique_positives_dataset.removed_ids,
             data_split["queries"],
@@ -142,7 +149,7 @@ class HardNegativesMiner:
 
         dist.barrier()
         if self.rank == 0:
-            print(f"number unique queries: {len(unique_queries_dataset)}")
+            print(f"\nnumber unique queries: {len(unique_queries_dataset)}")
             print(f"number unique positives: {len(unique_positives_dataset)}")
             print(f"number of documents: {len(corpus_dataset)}")
 
@@ -193,7 +200,7 @@ class HardNegativesMiner:
         dist.barrier()
         if self.rank == 0:
             start = time.time()
-            print("building query embeddings")
+            print("\nbuilding query embeddings")
 
         query_embeddings = encode(
             model,
@@ -206,7 +213,7 @@ class HardNegativesMiner:
         if self.rank == 0:
             print(f"queries embedding duration: {(time.time()-start)/60} min")
             start = time.time()
-            print("building query positive embeddings")
+            print("\nbuilding positive embeddings")
 
         positive_embeddings = encode(
             model,
@@ -250,8 +257,7 @@ class HardNegativesMiner:
         dist.barrier()
         chunk_size = estimate_chunk_size(query_embeddings)
         if self.rank == 0:
-            print(f"query positive scopre duration: {(time.time()-start)/60}min")
-            print("building document embeddings")
+            print("\nbuilding document embeddings")
             print(f"selected_chunk_size: {chunk_size}")
 
         start = time.time()
@@ -271,7 +277,7 @@ class HardNegativesMiner:
         dist.barrier()
         if self.rank == 0:
             print(f"duration: {(time.time()-start)/60} min")
-            print("building negative lists")
+            print("\nbuilding negative lists")
 
         start = time.time()
         top_scores = top_scores.cpu().numpy()
@@ -315,14 +321,14 @@ class HardNegativesMiner:
         unique_query_ids = np.asarray(unique_query_ids)
         total_queries = len(query_ids)
 
-        if self.rank == 0:
-            print(
-                "Shapes:",
-                top_scores.shape,
-                top_indices.shape,
-                unique_query_ids.shape,
-                query_positive_scores.shape,
-            )
+        # if self.rank == 0:
+        #     print(
+        #         "Shapes:",
+        #         top_scores.shape,
+        #         top_indices.shape,
+        #         unique_query_ids.shape,
+        #         query_positive_scores.shape,
+        #     )
 
         assert (
             top_scores.shape == top_indices.shape
@@ -358,14 +364,6 @@ class HardNegativesMiner:
             # Find valid hard negatives
             valid_mask = candidate_scores < upper_threshold
             valid_idx = np.where(valid_mask)[0]
-
-            # if self.rank == 0 and qrel_idx < 10:
-            #     print(
-            #         f"qrel {qrel_idx}: q_id={q_id}, p_id={p_id}, "
-            #         f"score={query_positive_scores[qrel_idx]:.4f}, "
-            #         f"threshold={upper_threshold:.4f}, "
-            #         f"num_valid={valid_idx.size}"
-            #     )
 
             stats.update(valid_idx.size, 1)
 
@@ -406,7 +404,7 @@ class HardNegativesMiner:
             # }
 
         if self.rank == 0:
-            print("total elements:", total_queries)
+            print("total queries:", total_queries)
             print(
                 f"{stats.less_than_24} examples have less than 24 hard negatives, {stats.less_than_24/total_queries*100: .2f}%, \
                     {stats.empty_entries/total_queries*100: .2f}% are empty"
@@ -420,13 +418,13 @@ class HardNegativesMiner:
         for task_name in self.task_names:
 
             if self.rank == 0:
-                print(f"preparing dataset {task_name}\n")
+                print(f"\n\npreparing dataset {task_name}\n")
 
             dataset, corpus_dict, has_title = self.prepare_dataset(task_name=task_name)
 
             dist.barrier()
             if self.rank == 0:
-                print(f"processing dataset {task_name}\n")
+                print(f"\n\nprocessing dataset {task_name}")
                 print_memory_consumed(rank=self.rank)
 
             hard_negatives, stats = self.mine_one(
@@ -439,7 +437,7 @@ class HardNegativesMiner:
 
             dist.barrier()
             if self.rank == 0:
-                print(f"saving dataset {task_name}\n")
+                print(f"\n\nsaving dataset {task_name}")
 
             self.save_to_disk(
                 dataset=dataset,

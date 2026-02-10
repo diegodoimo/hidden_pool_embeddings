@@ -37,12 +37,12 @@ torchrun \
     --rdzv-endpoint=$head_node:0 \
     mine_hard_negatives.py  \
     --model_name_or_path "Qwen/Qwen3-Embedding-8B" \
-    --task_names "sts22" \
-    #--task_types "sts"
+    --task_types "nli"
+    #--task_names "sts22" \
 
 
 
-
+#--task_types "sts"
 
 
 #"Qwen/Qwen3-Embedding-0.6B"

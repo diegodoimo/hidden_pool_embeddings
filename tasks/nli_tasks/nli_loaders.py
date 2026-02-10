@@ -114,8 +114,16 @@ def load_nli_retrieval(task) -> RetrievalRawData:
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
     
-    unique_positive_ids = document_ids.copy()
-    unique_positive_texts = document_texts.copy()
+    # Build unique positives (only from actual positives used in pairs, not all corpus)
+    unique_positive_texts = []
+    unique_positive_ids = []
+    seen_positive_texts = set()
+    
+    for pos_text in positive_texts:
+        if pos_text not in seen_positive_texts:
+            seen_positive_texts.add(pos_text)
+            unique_positive_texts.append(pos_text)
+            unique_positive_ids.append(hypothesis_to_id[pos_text])
     
     return RetrievalRawData(
         query_texts=query_texts,
@@ -207,6 +215,17 @@ def load_all_nli_retrieval(task) -> RetrievalRawData:
     corpus_dict = {
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
+    
+    # Build unique positives (only from actual positives, not negatives)
+    unique_positive_texts = []
+    unique_positive_ids = []
+    seen_positive_texts = set()
+    
+    for pos_text in all_positive_texts:
+        if pos_text not in seen_positive_texts:
+            seen_positive_texts.add(pos_text)
+            unique_positive_texts.append(pos_text)
+            unique_positive_ids.append(text_to_id[pos_text])
 
     return RetrievalRawData(
         query_texts=query_texts,
@@ -219,8 +238,8 @@ def load_all_nli_retrieval(task) -> RetrievalRawData:
         document_titles=None,
         unique_query_texts=unique_query_texts,
         unique_query_ids=unique_query_ids,
-        unique_positive_texts=document_texts,
-        unique_positive_ids=document_ids,
+        unique_positive_texts=unique_positive_texts,
+        unique_positive_ids=unique_positive_ids,
         unique_positive_titles=None,
         corpus_dict=corpus_dict,
         has_title=False,

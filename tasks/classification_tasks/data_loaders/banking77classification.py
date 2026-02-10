@@ -1,6 +1,9 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
-from tasks.classification_tasks.classification_loaders import load_classification_standard
+from tasks.classification_tasks.classification_loaders import (
+    load_multiway_classification_sampling,
+    load_multiway_classification_hard_negatives
+)
 
 
 class Banking77Classification(AbsTask):
@@ -11,4 +14,25 @@ class Banking77Classification(AbsTask):
     metadata = TaskMetadata(
         type="Classification", prompt={"query": TASK_PROMPTS["Banking77Classification"]}
     )
-    loader = load_classification_standard
+    
+    # Use sampling strategy by default
+    # Set use_hard_negative_mining = True to use hard negative mining
+    use_hard_negative_mining = False
+    
+    @property
+    def loader(self):
+        if self.use_hard_negative_mining:
+            return load_multiway_classification_hard_negatives
+        else:
+            return load_multiway_classification_sampling
+    
+    @classmethod
+    def validate_config(cls) -> None:
+        """Validate task configuration."""
+        pass
+
+    @classmethod
+    def validate_config(cls) -> None:
+        """Validate task configuration."""
+        pass
+

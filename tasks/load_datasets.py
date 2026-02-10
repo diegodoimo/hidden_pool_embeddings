@@ -24,8 +24,7 @@ def normalize_text(
 
 
 def load_task_data(
-    task, rank=0
-) -> Union[Tuple[Dataset, Dict, bool], ClassificationRawData]:
+    task) -> Union[Tuple[Dataset, Dict, bool], ClassificationRawData]:
     """
     Unified data loading function for all task types (retrieval, STS, classification, clustering).
 
@@ -39,6 +38,7 @@ def load_task_data(
         For classification/clustering tasks: ClassificationRawData with texts, labels, and ids
     """
     task_type = task.metadata.type
+    rank = dist.get_rank()
 
     if task_type == "Retrieval":
         # Handle all retrieval and STS tasks (STS is treated as retrieval)
@@ -83,10 +83,6 @@ def _load_retrieval_data(task, rank=0) -> Tuple[Dataset, Dict, bool]:
         titles=raw_data.document_titles,
     )
 
-    if rank == 0:
-        print(f"Loaded corpus: {len(corpus_ds)} documents")
-        print(f"Corpus length mod 4: {len(corpus_ds) % 4}")
-
     hf_dataset = {
         "unique_queries": unique_queries_ds,
         "unique_positives": unique_positive_ds,
@@ -98,7 +94,7 @@ def _load_retrieval_data(task, rank=0) -> Tuple[Dataset, Dict, bool]:
     return hf_dataset, raw_data.corpus_dict, raw_data.has_title
 
 
-def _get_retrieval_raw_data(task, rank=0) -> RetrievalRawData:
+def _get_retrieval_raw_data(task, rank) -> RetrievalRawData:
     """
     Get raw retrieval data using the loader function defined in the task.
     Each task now has a 'loader' attribute that is the function to call.
@@ -128,7 +124,7 @@ def _get_retrieval_raw_data(task, rank=0) -> RetrievalRawData:
         return loader_func(task)
 
 
-def _load_classification_data(task, rank=0) -> ClassificationRawData:
+def _load_classification_data(task, rank) -> ClassificationRawData:
     """
     Load data for classification and clustering tasks.
 

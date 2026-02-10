@@ -175,15 +175,13 @@ def main():
     if RANK == 0:
         print("model loaded")
     dist.barrier()
-    
-
-
-
-    
     model = model.eval()
     model = DDP(model, device_ids=[dist.get_rank()])
     model = torch.compile(model)
-
+    
+    if RANK == 0:
+        print("model wrapped in DDP and compile")
+    dist.barrier()
 
     miner.mine_negatives(model, batch_size=32)
     dist.destroy_process_group()
