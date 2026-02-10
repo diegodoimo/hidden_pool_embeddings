@@ -20,9 +20,12 @@ def load_nli_retrieval(task) -> RetrievalRawData:
     If the query is also paired with neutral or contradictory hypotheses, we add them to the 
     corpus so they can be mined as hard negatives.
     
-    Used by: SNLI, MNLI, ANLI
+    Used by: SNLI, MNLI, ANLI, XNLI
     """
-    dataset = load_dataset(task.hf_name, split=task.split)
+    if hasattr(task, "hf_subset") and task.hf_subset:
+        dataset = load_dataset(task.hf_name, name=task.hf_subset, split=task.split)
+    else:
+        dataset = load_dataset(task.hf_name, split=task.split)
     
     # Get label configuration
     entailment_label = getattr(task, "entailment_label", 0)

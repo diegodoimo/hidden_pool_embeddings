@@ -5,6 +5,9 @@ from .nli_tasks import *
 from .retrieval_tasks import *
 from .sts_tasks import *
 
+# My custom tasks
+from .my_tasks.nli_tasks import *
+
 
 NAME_TO_TASK = {
     # MTEB-style retrieval tasks
@@ -35,6 +38,21 @@ NAME_TO_TASK = {
     "snli": SNLI,
     "mnli": MNLI,
     "anli": ANLI,
+    # XNLI tasks (multilingual NLI)
+    "xnli_ar": XNLIAr,
+    "xnli_bg": XNLIBg,
+    "xnli_de": XNLIDe,
+    "xnli_el": XNLIEl,
+    "xnli_es": XNLIEs,
+    "xnli_fr": XNLIFr,
+    "xnli_hi": XNLIHi,
+    "xnli_ru": XNLIRu,
+    "xnli_sw": XNLISw,
+    "xnli_th": XNLITh,
+    "xnli_tr": XNLITr,
+    "xnli_ur": XNLIUr,
+    "xnli_vi": XNLIVi,
+    "xnli_zh": XNLIZh,
     # QA tasks with custom loaders
     "squad": SQuAD,
     "stackexchange": StackExchangeRetrieval,
@@ -82,7 +100,26 @@ NAME_TO_TASK = {
 
 # Define task categorization based on their characteristics
 # NLI tasks are those with "nli" in the name
-NLI_TASKS = ["snli", "mnli", "anli"]
+NLI_TASKS = [
+    "snli",
+    "mnli",
+    "anli",
+    # XNLI multilingual tasks
+    "xnli_ar",
+    "xnli_bg",
+    "xnli_de",
+    "xnli_el",
+    "xnli_es",
+    "xnli_fr",
+    "xnli_hi",
+    "xnli_ru",
+    "xnli_sw",
+    "xnli_th",
+    "xnli_tr",
+    "xnli_ur",
+    "xnli_vi",
+    "xnli_zh",
+]
 
 # STS tasks are semantic textual similarity tasks
 STS_TASKS = ["sts12", "sts22", "stsbenchmark"]

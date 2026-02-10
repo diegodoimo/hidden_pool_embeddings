@@ -7,7 +7,7 @@ class XNLIAr(AbsTask):
     """XNLI Arabic natural language inference dataset."""
 
     language = "ar"
-    hf_name = "sentence-transformers/xnli"
+    hf_name = "mteb/xnli"
     hf_subset = "ar"
     split = "train"
     has_multiple_datasets = False
@@ -28,7 +28,7 @@ class XNLIBg(AbsTask):
     """XNLI Bulgarian natural language inference dataset."""
 
     language = "bg"
-    hf_name = "sentence-transformers/xnli"
+    hf_name = "mteb/xnli"
     hf_subset = "bg"
     split = "train"
     has_multiple_datasets = False
@@ -49,7 +49,7 @@ class XNLIDe(AbsTask):
     """XNLI German natural language inference dataset."""
 
     language = "de"
-    hf_name = "sentence-transformers/xnli"
+    hf_name = "mteb/xnli"
     hf_subset = "de"
     split = "train"
     has_multiple_datasets = False
@@ -70,7 +70,7 @@ class XNLIEl(AbsTask):
     """XNLI Greek natural language inference dataset."""
 
     language = "el"
-    hf_name = "sentence-transformers/xnli"
+    hf_name = "mteb/xnli"
     hf_subset = "el"
     split = "train"
     has_multiple_datasets = False
@@ -91,7 +91,7 @@ class XNLIEs(AbsTask):
     """XNLI Spanish natural language inference dataset."""
 
     language = "es"
-    hf_name = "sentence-transformers/xnli"
+    hf_name = "mteb/xnli"
     hf_subset = "es"
     split = "train"
     has_multiple_datasets = False
@@ -112,7 +112,7 @@ class XNLIFr(AbsTask):
     """XNLI French natural language inference dataset."""
 
     language = "fr"
-    hf_name = "sentence-transformers/xnli"
+    hf_name = "mteb/xnli"
     hf_subset = "fr"
     split = "train"
     has_multiple_datasets = False
@@ -133,7 +133,7 @@ class XNLIHi(AbsTask):
     """XNLI Hindi natural language inference dataset."""
 
     language = "hi"
-    hf_name = "sentence-transformers/xnli"
+    hf_name = "mteb/xnli"
     hf_subset = "hi"
     split = "train"
     has_multiple_datasets = False
@@ -154,7 +154,7 @@ class XNLIRu(AbsTask):
     """XNLI Russian natural language inference dataset."""
 
     language = "ru"
-    hf_name = "sentence-transformers/xnli"
+    hf_name = "mteb/xnli"
     hf_subset = "ru"
     split = "train"
     has_multiple_datasets = False
@@ -175,7 +175,7 @@ class XNLISw(AbsTask):
     """XNLI Swahili natural language inference dataset."""
 
     language = "sw"
-    hf_name = "sentence-transformers/xnli"
+    hf_name = "mteb/xnli"
     hf_subset = "sw"
     split = "train"
     has_multiple_datasets = False
@@ -196,7 +196,7 @@ class XNLITh(AbsTask):
     """XNLI Thai natural language inference dataset."""
 
     language = "th"
-    hf_name = "sentence-transformers/xnli"
+    hf_name = "mteb/xnli"
     hf_subset = "th"
     split = "train"
     has_multiple_datasets = False
@@ -217,7 +217,7 @@ class XNLITr(AbsTask):
     """XNLI Turkish natural language inference dataset."""
 
     language = "tr"
-    hf_name = "sentence-transformers/xnli"
+    hf_name = "mteb/xnli"
     hf_subset = "tr"
     split = "train"
     has_multiple_datasets = False
@@ -238,7 +238,7 @@ class XNLIUr(AbsTask):
     """XNLI Urdu natural language inference dataset."""
 
     language = "ur"
-    hf_name = "sentence-transformers/xnli"
+    hf_name = "mteb/xnli"
     hf_subset = "ur"
     split = "train"
     has_multiple_datasets = False
@@ -259,7 +259,7 @@ class XNLIVi(AbsTask):
     """XNLI Vietnamese natural language inference dataset."""
 
     language = "vi"
-    hf_name = "sentence-transformers/xnli"
+    hf_name = "mteb/xnli"
     hf_subset = "vi"
     split = "train"
     has_multiple_datasets = False
@@ -280,7 +280,7 @@ class XNLIZh(AbsTask):
     """XNLI Chinese natural language inference dataset."""
 
     language = "zh"
-    hf_name = "sentence-transformers/xnli"
+    hf_name = "mteb/xnli"
     hf_subset = "zh"
     split = "train"
     has_multiple_datasets = False

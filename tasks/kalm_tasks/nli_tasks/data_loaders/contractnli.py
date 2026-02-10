@@ -7,7 +7,6 @@ class ContractNLI(AbsTask):
     """ContractNLI dataset for contract-based natural language inference."""
 
     language = "en"
-
     hf_name = "sentence-transformers/contractnli"
     split = "train"
     has_multiple_datasets = False
