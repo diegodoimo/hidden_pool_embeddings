@@ -260,7 +260,6 @@ def filter_paired_datasets_by_length(
     # Filter pairs: queries_with_reps[i] and positives_with_reps[i] are ALWAYS paired
     # Keep only if BOTH query AND positive are within max_length
     pair_valid_indices = []
-
     for i, (qid, pid) in enumerate(
         zip(queries_with_reps["id"], positives_with_reps["id"])
     ):
@@ -270,20 +269,11 @@ def filter_paired_datasets_by_length(
         else:
             pair_valid_indices.append(i)
 
-    # Filter the paired data
-    filtered_queries = {
-        key: [queries_with_reps[key][i] for i in pair_valid_indices]
-        for key in queries_with_reps.keys()
-    }
-    filtered_positives = {
-        key: [positives_with_reps[key][i] for i in pair_valid_indices]
-        for key in positives_with_reps.keys()
-    }
+    # Filter the paired datasets based on the valid indices
+    filtered_queries = queries_with_reps.select(pair_valid_indices)
+    filtered_positives = positives_with_reps.select(pair_valid_indices)
 
-    return (
-        filtered_queries,
-        filtered_positives,
-    )
+    return filtered_queries, filtered_positives
 
 
 def instruction_template_embeddinggemma(prompt_type, task_metadata, row):

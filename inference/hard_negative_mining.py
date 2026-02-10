@@ -93,24 +93,6 @@ class HardNegativesMiner:
         if self.rank == 0:
             print("tokenizing dataset: num anchors", len(data_split["queries"]))
 
-        # Filter queries and positives by length while maintaining pair correspondence
-        # (
-        #     unique_queries_filtered,
-        #     unique_positives_filtered,
-        #     filtered_queries,
-        #     filtered_positives,
-        # ) = filter_paired_datasets_by_length(
-        #     unique_queries_dataset=data_split["unique_queries"],
-        #     unique_positives_dataset=data_split["unique_positives"],
-        #     queries_with_reps=data_split["queries"],
-        #     positives_with_reps=data_split["positives"],
-        #     tokenizer=self.tokenizer,
-        #     instruction_template=self.instruction_template,
-        #     task_metadata=task.metadata,
-        #     max_length=self.max_length,
-        #     rank=self.rank,
-        # )
-
         unique_queries_dataset = create_dataset(
             dataset=data_split["unique_queries"],
             task_metadata=task.metadata,
@@ -129,6 +111,7 @@ class HardNegativesMiner:
             max_length=self.max_length,
         )
 
+        # removed the ids of the queries and positives that exceed max_length
         filtered_positives, filtered_queries = filter_paired_datasets_by_length(
             unique_queries_dataset.removed_ids,
             unique_positives_dataset.removed_ids,
