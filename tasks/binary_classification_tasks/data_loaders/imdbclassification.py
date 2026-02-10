@@ -7,6 +7,7 @@ from tasks.binary_classification_tasks.binary_classification_loaders import (
 
 
 class ImdbClassification(AbsTask):
+    language = "en"
     hf_name = "mteb/imdb"
     split = "train"
     anchor_name = "text"

@@ -4,6 +4,7 @@ from tasks.nli_tasks.nli_loaders import load_all_nli_retrieval
 
 
 class ALL_NLI(AbsTask):
+    language = "en"
     hf_name = "sentence-transformers/all-nli"
     hf_subset = "triplet"
     split = "train"

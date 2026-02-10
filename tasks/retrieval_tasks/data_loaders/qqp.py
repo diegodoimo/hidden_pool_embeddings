@@ -6,6 +6,8 @@ from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 class QQP(AbsTask):
     """Quora Question Pairs dataset for retrieval."""
 
+    language = "en"
+
     hf_name = "sentence-transformers/quora-duplicates"
     hf_subset = "pair"
     split = "train"

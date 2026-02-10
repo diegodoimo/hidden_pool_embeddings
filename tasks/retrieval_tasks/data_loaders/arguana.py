@@ -117,6 +117,8 @@ def load_arguana_dedup_retrieval(task) -> RetrievalRawData:
 class Arguana(AbsTask):
     """BeIR Arguana dataset with deduplication against mteb/arguana eval set."""
 
+    language = "en"
+
     hf_name = "BeIR/arguana-generated-queries"
     split = "train"
     has_multiple_datasets = False

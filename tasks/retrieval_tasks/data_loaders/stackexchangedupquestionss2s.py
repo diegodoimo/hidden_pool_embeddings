@@ -6,6 +6,8 @@ from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 class StackExchangeDupQuestionsS2S(AbsTask):
     """StackExchange duplicate questions (title to title)."""
 
+    language = "en"
+
     hf_name = "sentence-transformers/stackexchange-duplicates"
     hf_subset = "title-title-pair"
     split = "train"

@@ -125,6 +125,8 @@ class MIRACL(AbsTask):
     or None to load all languages (requires custom loader modification).
     """
 
+    language = "multilingual"
+
     hf_name = "miracl/miracl"
     hf_subset = None  # Load all available languages
     split = "train"

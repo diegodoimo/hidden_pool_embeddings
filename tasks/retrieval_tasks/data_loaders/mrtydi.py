@@ -6,6 +6,8 @@ from tasks.retrieval_tasks.retrieval_loaders import from_multiple_hf_datasets_wi
 class MrTyDi(AbsTask):
     """Mr.TyDi multilingual retrieval with deduplication against MTEB test split."""
 
+    language = "multilingual"
+
     hf_name = "mteb/mrtydi"
     split = "train"
     has_multiple_datasets = True

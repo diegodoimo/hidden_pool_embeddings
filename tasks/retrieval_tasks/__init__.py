@@ -15,7 +15,6 @@ from .data_loaders.hotpotqa import HotpotQA
 from .data_loaders.miracl import MIRACL
 from .data_loaders.mrtydi import MrTyDi
 from .data_loaders.msmarco import MSMARCO
-from .data_loaders.msmarcov2 import MSMARCOv2
 from .data_loaders.naturalquestions import NaturalQuestions
 from .data_loaders.nfcorpus import NFCorpus
 from .data_loaders.paq import PAQ
@@ -48,7 +47,6 @@ __all__ = [
     "MIRACL",
     "MrTyDi",
     "MSMARCO",
-    "MSMARCOv2",
     "NaturalQuestions",
     "NFCorpus",
     "PAQ",

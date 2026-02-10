@@ -7,6 +7,7 @@ from tasks.binary_classification_tasks.binary_classification_loaders import (
 
 
 class ColaClassification(AbsTask):
+    language = "en"
     hf_name = "glue"
     hf_subset = "cola"
     split = "train"

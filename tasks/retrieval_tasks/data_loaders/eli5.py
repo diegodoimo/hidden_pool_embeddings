@@ -6,6 +6,8 @@ from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 class ELI5(AbsTask):
     """ELI5 (Explain Like I'm 5) dataset for retrieval."""
 
+    language = "en"
+
     hf_name = "sentence-transformers/eli5"
     hf_subset = "pair"
     split = "train"

@@ -6,6 +6,8 @@ from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 class SentenceCompression(AbsTask):
     """Sentence Compression dataset for retrieval."""
 
+    language = "en"
+
     hf_name = "sentence-transformers/sentence-compression"
     split = "train"
     has_multiple_datasets = False

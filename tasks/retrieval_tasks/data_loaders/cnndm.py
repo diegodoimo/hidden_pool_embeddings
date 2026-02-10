@@ -48,6 +48,8 @@ def load_cnndm_retrieval(task) -> RetrievalRawData:
 class CNNDM(AbsTask):
     """CNN/DailyMail summarization dataset for retrieval (highlights -> article)."""
 
+    language = "en"
+
     hf_name = "abisee/cnn_dailymail"
     hf_subset = "3.0.0"
     split = "train"

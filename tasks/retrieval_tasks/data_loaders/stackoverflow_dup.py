@@ -55,6 +55,8 @@ def load_stackoverflow_dup_retrieval(task) -> RetrievalRawData:
 class StackOverflowDupQuestions(AbsTask):
     """StackOverflow duplicate questions reranking dataset."""
 
+    language = "en"
+
     hf_name = "mteb/stackoverflowdupquestions-reranking"
     split = "train"
     has_multiple_datasets = False

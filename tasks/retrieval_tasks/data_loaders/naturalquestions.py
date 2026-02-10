@@ -4,6 +4,7 @@ from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 
 
 class NaturalQuestions(AbsTask):
+    language = "en"
     hf_name = "sentence-transformers/natural-questions"
     split = "train"
     has_multiple_datasets = False

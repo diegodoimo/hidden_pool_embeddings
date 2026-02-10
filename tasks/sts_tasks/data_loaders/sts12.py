@@ -9,6 +9,8 @@ class STS12(AbsTask):
     Uses train split to avoid contamination with MTEB evaluation (which uses test).
     """
 
+    language = "en"
+
     hf_name = "mteb/sts12-sts"
     split = "train"  # Use train to avoid MTEB test contamination
     has_multiple_datasets = False

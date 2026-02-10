@@ -70,6 +70,8 @@ def load_pubmedqa_retrieval(task) -> RetrievalRawData:
 class PubMedQA(AbsTask):
     """PubMedQA biomedical QA dataset for retrieval."""
 
+    language = "en"
+
     hf_name = "qiaojin/PubMedQA"
     hf_subset = "pqa_labeled"
     split = "train"

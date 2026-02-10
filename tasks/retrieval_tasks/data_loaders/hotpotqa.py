@@ -5,6 +5,8 @@ from tasks.retrieval_tasks.retrieval_loaders import from_multiple_hf_datasets_wi
 
 class HotpotQA(AbsTask):
     """HotpotQA with deduplication against MTEB dev split."""
+
+    language = "en"
     hf_name = "mteb/hotpotqa"
     split = "train"
     has_multiple_datasets = True

@@ -6,6 +6,8 @@ from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 class AmazonQA(AbsTask):
     """Amazon QA dataset for retrieval - question as query, answer as positive."""
 
+    language = "en"
+
     hf_name = "sentence-transformers/amazon-qa"
     split = "train"
     has_multiple_datasets = False

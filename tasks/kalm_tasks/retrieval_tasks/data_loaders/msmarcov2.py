@@ -4,6 +4,7 @@ from tasks.retrieval_tasks.retrieval_loaders import from_multiple_hf_datasets
 
 
 class MSMARCOv2(AbsTask):
+    language = "en"
     hf_name = "mteb/msmarco-v2"
     split = "train"
     has_multiple_datasets = True

@@ -7,6 +7,7 @@ from tasks.binary_classification_tasks.binary_classification_loaders import (
 
 
 class AmazonCounterfactualClassification(AbsTask):
+    language = "en"
     hf_name = "mteb/amazon_counterfactual"
     hf_subset = "en"
     split = "train"

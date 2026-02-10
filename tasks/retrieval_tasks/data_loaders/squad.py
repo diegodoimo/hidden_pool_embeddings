@@ -57,6 +57,8 @@ def load_squad_retrieval(task) -> RetrievalRawData:
 class SQuAD(AbsTask):
     """SQuAD dataset for retrieval - question as query, context as positive."""
 
+    language = "en"
+
     hf_name = "rajpurkar/squad"
     split = "train"
     has_multiple_datasets = False

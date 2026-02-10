@@ -9,6 +9,8 @@ class STSBenchmark(AbsTask):
     Uses train split to avoid contamination with MTEB evaluation (which uses test).
     """
 
+    language = "en"
+
     hf_name = "mteb/stsbenchmark-sts"
     split = "train"  # Use train to avoid MTEB test contamination
     has_multiple_datasets = False

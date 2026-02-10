@@ -6,6 +6,8 @@ from tasks.retrieval_tasks.retrieval_loaders import from_multiple_hf_datasets_wi
 class FiQA2018(AbsTask):
     """FiQA 2018 financial QA dataset with deduplication against MTEB test split."""
 
+    language = "en"
+
     hf_name = "mteb/fiqa"
     split = "train"
     has_multiple_datasets = True

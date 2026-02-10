@@ -9,6 +9,8 @@ class STS22(AbsTask):
     Uses train split to avoid contamination with MTEB evaluation (which uses test).
     """
 
+    language = "en"
+
     hf_name = "mteb/sts22-crosslingual-sts"
     hf_subset = None  # Use all languages (default config)
     split = "train"  # Use train to avoid MTEB test contamination

@@ -45,6 +45,8 @@ def load_xsum_retrieval(task) -> RetrievalRawData:
 class XSum(AbsTask):
     """XSum summarization dataset for retrieval (summary -> document)."""
 
+    language = "en"
+
     hf_name = "EdinburghNLP/xsum"
     split = "train"
     has_multiple_datasets = False

@@ -5,6 +5,8 @@ from tasks.retrieval_tasks.retrieval_loaders import from_multiple_hf_datasets_wi
 
 class MSMARCO(AbsTask):
     """MSMARCO with deduplication against MTEB dev split."""
+
+    language = "en"
     hf_name = "mteb/msmarco"
     split = "train"
     has_multiple_datasets = True

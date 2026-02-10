@@ -6,6 +6,8 @@ from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 class SPECTER(AbsTask):
     """SPECTER scientific paper similarity dataset."""
 
+    language = "en"
+
     hf_name = "sentence-transformers/specter"
     split = "train"
     has_multiple_datasets = False

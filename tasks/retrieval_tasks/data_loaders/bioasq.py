@@ -6,6 +6,8 @@ from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 class BioASQ(AbsTask):
     """BioASQ biomedical QA dataset for retrieval."""
 
+    language = "en"
+
     hf_name = "BeIR/bioasq-generated-queries"
     split = "train"
     has_multiple_datasets = False

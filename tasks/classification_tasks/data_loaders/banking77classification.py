@@ -31,8 +31,3 @@ class Banking77Classification(AbsTask):
         """Validate task configuration."""
         pass
 
-    @classmethod
-    def validate_config(cls) -> None:
-        """Validate task configuration."""
-        pass
-

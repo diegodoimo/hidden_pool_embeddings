@@ -5,6 +5,8 @@ from tasks.retrieval_tasks.retrieval_loaders import from_multiple_hf_datasets_wi
 
 class FEVER(AbsTask):
     """FEVER with deduplication against MTEB test split."""
+
+    language = "en"
     hf_name = "mteb/fever"
     split = "train"
     has_multiple_datasets = True

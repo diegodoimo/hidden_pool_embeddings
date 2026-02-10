@@ -50,6 +50,8 @@ def load_stackexchange_retrieval(task) -> RetrievalRawData:
 class StackExchangeRetrieval(AbsTask):
     """StackExchange dataset for retrieval - title+body as query, answer as positive."""
 
+    language = "en"
+
     hf_name = "flax-sentence-embeddings/stackexchange_titlebody_best_voted_answer_jsonl"
     hf_subset = "apple"  # Default subset, can be changed
     split = "train"

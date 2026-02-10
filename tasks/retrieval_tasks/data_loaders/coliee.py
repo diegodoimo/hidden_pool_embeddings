@@ -6,6 +6,8 @@ from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 class COLIEE(AbsTask):
     """COLIEE legal case retrieval dataset."""
 
+    language = "en"
+
     hf_name = "sentence-transformers/coliee"
     split = "train"
     has_multiple_datasets = False

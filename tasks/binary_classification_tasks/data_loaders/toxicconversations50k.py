@@ -7,6 +7,7 @@ from tasks.binary_classification_tasks.binary_classification_loaders import (
 
 
 class ToxicConversations50k(AbsTask):
+    language = "en"
     hf_name = "mteb/toxic_conversations_50k"
     split = "train"
     anchor_name = "text"

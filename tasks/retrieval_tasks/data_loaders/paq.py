@@ -6,6 +6,8 @@ from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 class PAQ(AbsTask):
     """PAQ (Probably Asked Questions) dataset for retrieval."""
 
+    language = "en"
+
     hf_name = "sentence-transformers/paq"
     split = "train"
     has_multiple_datasets = False

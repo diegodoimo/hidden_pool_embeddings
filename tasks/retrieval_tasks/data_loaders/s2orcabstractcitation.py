@@ -6,6 +6,8 @@ from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 class S2ORCAbstractCitation(AbsTask):
     """S2ORC Abstract-Citation retrieval dataset."""
 
+    language = "en"
+
     hf_name = "sentence-transformers/s2orc"
     hf_subset = "abstract-citation-prediction-triplet"
     split = "train"

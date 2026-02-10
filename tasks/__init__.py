@@ -9,7 +9,6 @@ from .sts_tasks import *
 NAME_TO_TASK = {
     # MTEB-style retrieval tasks
     "msmarco": MSMARCO,
-    "msmarco-v2": MSMARCOv2,
     "hotpotqa": HotpotQA,
     "fever": FEVER,
     "nfcorpus": NFCorpus,
@@ -18,7 +17,6 @@ NAME_TO_TASK = {
     "scifact": SciFact,
     # Sentence-transformers style retrieval tasks
     "naturalquestions": NaturalQuestions,
-    "all_nli": ALL_NLI,
     "paq": PAQ,
     "eli5": ELI5,
     "triviaqa": TriviaQA,
@@ -59,7 +57,6 @@ NAME_TO_TASK = {
     "imdb": ImdbClassification,
     "cola": ColaClassification,
     # Multi-way Classification tasks
-    "dbpedia": DBPediaClassification,
     "banking77": Banking77Classification,
     # Clustering tasks
     "amazon_reviews": AmazonReviewsClustering,
@@ -85,7 +82,7 @@ NAME_TO_TASK = {
 
 # Define task categorization based on their characteristics
 # NLI tasks are those with "nli" in the name
-NLI_TASKS = ["all_nli", "snli", "mnli", "anli"]
+NLI_TASKS = ["snli", "mnli", "anli"]
 
 # STS tasks are semantic textual similarity tasks
 STS_TASKS = ["sts12", "sts22", "stsbenchmark"]
@@ -101,7 +98,6 @@ BINARY_CLASSIFICATION_TASKS = [
 
 # Multi-way Classification tasks
 CLASSIFICATION_TASKS = [
-    "dbpedia",
     "banking77",
 ]
 

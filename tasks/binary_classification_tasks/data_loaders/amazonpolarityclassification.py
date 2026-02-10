@@ -7,6 +7,7 @@ from tasks.binary_classification_tasks.binary_classification_loaders import (
 
 
 class AmazonPolarityClassification(AbsTask):
+    language = "en"
     hf_name = "mteb/amazon_polarity"
     split = "train"
     anchor_name = "text"

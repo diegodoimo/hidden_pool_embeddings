@@ -6,6 +6,8 @@ from tasks.nli_tasks.nli_loaders import load_nli_retrieval
 class SNLI(AbsTask):
     """SNLI dataset for retrieval - premise as query, entailed hypothesis as positive."""
 
+    language = "en"
+
     hf_name = "stanfordnlp/snli"
     split = "train"
     has_multiple_datasets = False
