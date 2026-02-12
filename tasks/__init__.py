@@ -59,6 +59,7 @@ NAME_TO_TASK = {
     "bioasq": BioASQ,
     "miracl": MIRACL,
     "pubmedqa": PubMedQA,
+    "amazonqa": AmazonQA,
     # Summarization tasks
     "xsum": XSum,
     "cnndm": CNNDM,

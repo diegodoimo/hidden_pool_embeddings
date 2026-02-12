@@ -47,17 +47,15 @@ def instruction_template_qwen3(prompt_type, task_metadata, text, title="") -> st
 
     return prompt
 
+# def _is_valid_row(row: dict[str, str]) -> bool:
+#     """Check if a dataset row has non-empty text content."""
+#     if "text" not in row or not row["text"] or not row["text"].strip():
+#         return False
+#     return True
 
-def _is_valid_corpus_row(row: dict[str, str]) -> bool:
-    """Check if a corpus row has non-empty text content."""
-    if "text" not in row or not row["text"] or not row["text"].strip():
-        return False
-    return True
-
-
-def _is_valid_query_row(row: dict[str, str]) -> bool:
-    """Check if a query row has non-empty text content."""
-    if "text" not in row or not row["text"] or not row["text"].strip():
+def _is_valid_row(text: str) -> bool:
+    """Check if a dataset row has non-empty text content."""
+    if not text or not text.strip():
         return False
     return True
 
@@ -66,13 +64,23 @@ def _remove_long_sequences(rows, tokenizer, max_length):
     """Remove rows where the tokenized prompt exceeds max_length.
 
     Returns:
-        tuple: (keep_mask, removed_ids)
+        tuple: (keep_mask, removed_long_ids, removed_empty_ids)
             - keep_mask: list of booleans indicating which rows to keep
-            - removed_ids: list of IDs that were removed
+            - removed_long_ids: list of IDs that were removed due to length
+            - removed_empty_ids: list of IDs that were removed due to being empty
     """
     keep_mask = []
-    removed_ids = []
-    for i, prompt in enumerate(rows["prompt"]):
+    removed_long_ids = []
+    removed_empty_ids = []
+    
+    # rows is a batched dictionary: {"id": [...], "text": [...], "prompt": [...]}
+    for i, (prompt, text) in enumerate(zip(rows["prompt"], rows["text"])):
+
+        if not _is_valid_row(text):
+            keep_mask.append(False)
+            removed_empty_ids.append(rows["id"][i])
+            continue
+    
         # Fast path: if char length is very short, definitely keep
         if len(prompt) <= max_length:
             keep_mask.append(True)
@@ -81,10 +89,11 @@ def _remove_long_sequences(rows, tokenizer, max_length):
             token_length = len(tokenizer.encode(prompt, add_special_tokens=False))
             if token_length > max_length:
                 keep_mask.append(False)
-                removed_ids.append(rows["id"][i])
+                removed_long_ids.append(rows["id"][i])
             else:
                 keep_mask.append(True)
-    return keep_mask, removed_ids
+
+    return keep_mask, removed_long_ids, removed_empty_ids
 
 
 def _build_prompt(
@@ -183,19 +192,11 @@ def create_dataset(
         A tokenized dataset.
     """
 
-    # input_type = task_metadata.get_modalities(prompt_type)
-
-    # if input_type == ["text"]:  # text only
-
-    if prompt_type == PromptType.document:
-        filtered_ds = dataset.filter(_is_valid_corpus_row, desc=None)
-    elif prompt_type == PromptType.query:
-        if not isinstance(dataset["text"][0], list):
-            filtered_ds = dataset.filter(_is_valid_query_row, desc=None)
-        else:
-            raise ValueError(f"Can't handle queries type queries for conversation")
-    else:
-        raise ValueError(f"Can't handle prompt type different from query or document")
+    if "text" not in dataset.column_names:
+        raise ValueError(f"Column 'text' not found in dataset")
+    
+    if isinstance(dataset["text"][0], list):
+        raise ValueError(f"Can't handle queries type queries for conversation")
 
     input_to_dict = partial(
         _build_prompt,
@@ -206,28 +207,33 @@ def create_dataset(
         eot_id=tokenizer.pad_token_id,
     )
 
-    new_ds = filtered_ds.map(
+    new_ds = dataset.map(
         input_to_dict,
         batched=True,
-        batch_size=10000,
-        desc=None,
+        batch_size=10000
     )
 
     # Track removed IDs across all batches
-    all_removed_ids = []
+    all_removed_long_ids = []
+    all_removed_empty_ids = []
     def filter_wrapper(rows):
-        keep_mask, removed_ids = _remove_long_sequences(rows, tokenizer, max_length)
-        all_removed_ids.extend(removed_ids)
+        keep_mask, removed_long, removed_empty = _remove_long_sequences(rows, tokenizer, max_length)
+        all_removed_long_ids.extend(removed_long)
+        all_removed_empty_ids.extend(removed_empty)
         return keep_mask
 
     new_ds = new_ds.filter(
         filter_wrapper,
         batched=True,
-        batch_size=10000,
-        desc=None,
     )
+    
     # Store removed IDs as an attribute on the dataset
-    new_ds.removed_ids = all_removed_ids
+    new_ds.removed_long = all_removed_long_ids
+    new_ds.removed_empty = all_removed_empty_ids
+
+    new_ds.removed_ids = all_removed_long_ids + all_removed_empty_ids
+    
+    assert len(new_ds.removed_ids) == len(all_removed_long_ids) + len(all_removed_empty_ids)
 
     return new_ds
 
@@ -265,10 +271,23 @@ def filter_paired_datasets_by_length(
             continue
         else:
             pair_valid_indices.append(i)
+    
+    # print(f"\nlen pair_valid_indices {len(pair_valid_indices)}")
+    # print(f"len queries_with_reps_ids before filtering  {len(queries_with_reps)}")
+    # print(f"len queries_without_reps before filtering  {len(set(queries_with_reps["id"]))}")
+
+    # print(f"len positives_with_reps before filtering {len(positives_with_reps)}")
+    # print(f"len positives_without_reps before filtering {len(set(positives_with_reps["id"]))}")
 
     # Filter the paired datasets based on the valid indices
     filtered_queries = queries_with_reps.select(pair_valid_indices)
     filtered_positives = positives_with_reps.select(pair_valid_indices)
+
+    # print(f"len queries_with_reps after filtering  {len(filtered_queries["id"])}")
+    # print(f"len queries_without_reps after filtering  {len(set(filtered_queries["id"]))}")
+
+    # print(f"len positives_with_reps after filtering {len(set(filtered_positives["id"]))}")
+    # print(f"len positives_without_reps after filtering {len(set(filtered_positives["id"]))}")
 
     return filtered_queries, filtered_positives
 

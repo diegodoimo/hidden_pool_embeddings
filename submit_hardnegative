@@ -1,22 +1,23 @@
 #!/bin/bash
-#SBATCH --partition=H100
+#SBATCH --partition=DGX
 ##SBATCH --nodelist=dgx004
 #SBATCH --account=lade
 #SBATCH --nodes=1
-#SBATCH --time=24:00:00            
+#SBATCH --time=1:00:00            
 #SBATCH --ntasks-per-node=1       
 #SBATCH --cpus-per-task=28
-#SBATCH --mem=80G       
+#SBATCH --mem=150G       
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:2
+##SBATCH --gres=gpu:H100:2
+#SBATCH --gres=gpu:A100:2
 
 
 env_path=\/orfeo/cephfs/scratch/area/ddoimo/open/hidden_pool_embeddings
 
-#source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_a100
+source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_a100
 
-module load cuda/12.8
-source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_h100
+# module load cuda/12.8
+# source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_h100
 
 
 nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
@@ -37,8 +38,17 @@ torchrun \
     --rdzv-endpoint=$head_node:0 \
     mine_hard_negatives.py  \
     --model_name_or_path "Qwen/Qwen3-Embedding-0.6B" \
-    --task_types "nli"
-    #--task_names "sts22" \
+    --task_names "paq" \
+    #--task_names 'eli5' 'squad' 'hotpotqa' 'bioasq' 'pubmedqa' \
+
+
+    #--task_names 'eli5' 'squad' 'hotpotqa' 'bioasq' 'pubmedqa' \
+
+
+
+#'eli5', 'squad', 'hotpotqa', 'bioasq', 'pubmedqa', 'fiqa2018', 'amazonqa', 'coliee', 'msmarco', 'nfcorpus', 'stackexchange', 'miracl', 'mrtydi', 'arguana', 'fever', 'scifact', 'qqp', 'stackexchange_dup_p2p', 'stackexchange_dup_s2s', 'stackoverflow_dup', 's2orc_abstract_citation', 's2orc_title_abstract', 's2orc_title_citation', 'specter', 'cnndm', 'xsum', 'sentence_compression'
+# --task_names "sts22" \
+# --task_types "nli" \
 
 
 

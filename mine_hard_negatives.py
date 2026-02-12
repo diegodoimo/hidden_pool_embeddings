@@ -9,11 +9,21 @@ from inference.create_datasets import instruction_template_qwen3
 from datetime import timedelta
 from tasks import (
     NAME_TO_TASK,
+    BINARY_CLASSIFICATION_TASKS,
     CLASSIFICATION_TASKS,
     NLI_TASKS,
     STS_TASKS,
     CLUSTERING_TASKS,
     get_task,
+)
+from tasks.task_categories import (
+    OPEN_DOMAIN_QA,
+    DOMAIN_SPECIFIC_QA,
+    GENERAL_RETRIEVAL,
+    FACT_VERIFICATION,
+    PARAPHRASE_DETECTION,
+    SCIENTIFIC_DOC_RETRIEVAL,
+    SUMMARIZATION,
 )
 
 
@@ -48,10 +58,36 @@ path_to_name = {
 
 # All other retrieval tasks (everything not in the above categories)
 def get_retrieval_tasks():
-    """Get all retrieval tasks (excluding STS and NLI)."""
-    all_tasks = set(NAME_TO_TASK.keys())
-    exclude = set(NLI_TASKS + STS_TASKS + CLASSIFICATION_TASKS + CLUSTERING_TASKS)
-    return list(all_tasks - exclude)
+    """
+    Get all retrieval tasks (excluding STS, NLI, classification, and clustering tasks),
+    sorted by their category group in a consistent order.
+    
+    Returns tasks in this order:
+    1. Open Domain QA
+    2. Domain-Specific QA
+    3. General Retrieval
+    4. Fact Verification
+    5. Paraphrase Detection
+    6. Scientific Document Retrieval
+    7. Summarization
+    """
+    # Define the order of retrieval task categories
+    retrieval_categories = [
+        OPEN_DOMAIN_QA,
+        DOMAIN_SPECIFIC_QA,
+        GENERAL_RETRIEVAL,
+        FACT_VERIFICATION,
+        PARAPHRASE_DETECTION,
+        SCIENTIFIC_DOC_RETRIEVAL,
+        SUMMARIZATION,
+    ]
+    
+    # Build sorted list of retrieval tasks by category
+    sorted_tasks = []
+    for category in retrieval_categories:
+        sorted_tasks.extend(category)
+    
+    return sorted_tasks
 
 
 def filter_tasks_by_type(task_types):
@@ -79,6 +115,7 @@ def filter_tasks_by_type(task_types):
         selected_tasks.extend(NLI_TASKS)
 
     if "classification" in task_types:
+        selected_tasks.extend(BINARY_CLASSIFICATION_TASKS)
         selected_tasks.extend(CLASSIFICATION_TASKS)
 
     if "clustering" in task_types:
@@ -134,7 +171,7 @@ def main():
     dist.init_process_group(
         "nccl",
         device_id=LOCAL_RANK,
-        timeout=timedelta(seconds=30),  # Reduce from default 600s to 30s
+        timeout=timedelta(seconds=30),  # Reduce from default 600s to 60s
     )
     torch.cuda.set_device(dist.get_rank())
 

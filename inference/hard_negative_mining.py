@@ -10,6 +10,7 @@ import torch.distributed as dist
 from datasets import Dataset, Features, Value, Sequence
 from tasks.load_datasets import load_task_data
 from tasks import get_task
+from tasks.task_categories import get_category_path
 from utils.sorted_sampler import LenghtSortedSampler
 from pathlib import Path
 import time
@@ -91,7 +92,8 @@ class HardNegativesMiner:
             data_split["positives"]["text"]
         )
         if self.rank == 0:
-            print("tokenizing dataset: num queries", len(data_split["queries"]))
+            print("tokenizing dataset: num total queries (with repretitions)", len(data_split["queries"]))
+            print("tokenizing dataset: num total positives (with repretitions)", len(data_split["positives"]))
 
         unique_queries_dataset = create_dataset(
             dataset=data_split["unique_queries"],
@@ -111,11 +113,19 @@ class HardNegativesMiner:
             max_length=self.max_length,
         )
 
+        if self.rank == 0:
+            print("num unique queries", len(unique_queries_dataset))
+            print("num unique positives", len(unique_positives_dataset))
+
         if self.rank ==0:
-            if len(unique_queries_dataset.removed_ids) > 0:
-                print(f"removed {len(unique_queries_dataset.removed_ids)} queries exceeding max_length")
-            if len(unique_positives_dataset.removed_ids) > 0:
-                print(f"removed {len(unique_positives_dataset.removed_ids)} positives exceeding max_length")
+            if len(unique_queries_dataset.removed_long) > 0:
+                print(f"removed {len(unique_queries_dataset.removed_long)} queries exceeding max_length")
+            if len(unique_positives_dataset.removed_long) > 0:
+                print(f"removed {len(unique_positives_dataset.removed_long)} positives exceeding max_length")
+            if len(unique_queries_dataset.removed_empty) > 0:
+                print(f"removed {len(unique_queries_dataset.removed_empty)} empty queries")
+            if len(unique_positives_dataset.removed_empty) > 0:
+                print(f"removed {len(unique_positives_dataset.removed_empty)} empty positives")
         
 
         # removed the ids of the queries and positives that exceed max_length
@@ -126,6 +136,20 @@ class HardNegativesMiner:
             data_split["positives"],
         )
 
+        # Check that filtered pairs only contain valid IDs (subset relationship)
+        # Note: Some valid queries might not appear if all their positives were removed
+        # and vice versa - some valid positives might not appear if all their queries were removed
+        assert set(filtered_positives["id"]).issubset(set(unique_positives_dataset["id"])), f"filtered positives contain IDs not in unique positives"
+        assert set(filtered_queries["id"]).issubset(set(unique_queries_dataset["id"])), f"filtered queries contain IDs not in unique queries"
+        
+        if self.rank == 0:
+            num_queries_lost = len(set(unique_queries_dataset["id"])) - len(set(filtered_queries["id"]))
+            num_positives_lost = len(set(unique_positives_dataset["id"])) - len(set(filtered_positives["id"]))
+            if num_queries_lost > 0:
+                print(f"Note: {num_queries_lost} valid queries were excluded because all their paired positives were removed")
+            if num_positives_lost > 0:
+                print(f"Note: {num_positives_lost} valid positives were excluded because all their paired queries were removed")
+        
         dist.barrier()
         if self.rank == 0:
             print("tokenizing dataset num docs", len(data_split["corpus"]))
@@ -251,13 +275,45 @@ class HardNegativesMiner:
         ).sum(dim=1)
         query_positive_scores = query_positive_scores.cpu().numpy()
 
-        del positive_embeddings
-        torch.cuda.empty_cache()
+        # Check if corpus is identical to positives (for optimization)
+        corpus_ids = dataset["corpus"]["id"]
+        unique_positive_ids = dataset["unique_positives"]["id"]
+        
+        # Check both length and content equality (must match exactly in same order)
+        corpus_equals_positives = (
+            len(corpus_ids) == len(unique_positive_ids) and 
+            all(c_id == p_id for c_id, p_id in zip(corpus_ids, unique_positive_ids))
+        )
+        
+        dist.barrier()
 
+        if corpus_equals_positives:
+            if self.rank == 0:
+                print("\n*** OPTIMIZATION: Corpus matches positives, reusing embeddings ***")
+                print(f"Skipping corpus encoding for {len(corpus_ids)} documents")
+                print("NOTE: precomputed embeddings are replicated across all GPUs (all_gather was performed)")
+                print(f"This means chunk_size needs to be reduced by ~{self.world_size}x compared to distributed encoding")
+            # Keep positive_embeddings to reuse them
+            precomputed_embeddings = positive_embeddings
+            print_memory_consumed(self.rank)
+        else:
+            if self.rank == 0:
+                print("\nCorpus differs from positives, will encode separately")
+            # No optimization possible
+            del positive_embeddings
+            torch.cuda.empty_cache()
+            precomputed_embeddings = None
+            print_memory_consumed(self.rank)
+
+        
         dist.barrier()
         chunk_size = estimate_chunk_size(query_embeddings)
         if self.rank == 0:
-            print("\nbuilding document embeddings")
+            
+            if precomputed_embeddings is None:
+                print("\nBuilding document embeddings")
+            else:
+                print("\nSearching through pre-computed document embeddings")
             print(f"selected_chunk_size: {chunk_size}")
 
         start = time.time()
@@ -269,7 +325,13 @@ class HardNegativesMiner:
             top_k=top_k,
             batch_size=batch_size,
             chunk_size=chunk_size,
+            precomputed_doc_embeddings=precomputed_embeddings,
         )
+        
+        # Clean up embeddings after search
+        if precomputed_embeddings is not None:
+            del precomputed_embeddings
+            torch.cuda.empty_cache()
 
         del query_embeddings
         torch.cuda.empty_cache()
@@ -320,15 +382,6 @@ class HardNegativesMiner:
         array_ids = np.asarray(corpus_ids)
         unique_query_ids = np.asarray(unique_query_ids)
         total_queries = len(query_ids)
-
-        # if self.rank == 0:
-        #     print(
-        #         "Shapes:",
-        #         top_scores.shape,
-        #         top_indices.shape,
-        #         unique_query_ids.shape,
-        #         query_positive_scores.shape,
-        #     )
 
         assert (
             top_scores.shape == top_indices.shape
@@ -414,11 +467,12 @@ class HardNegativesMiner:
 
     def mine_negatives(self, model, batch_size=64):
 
-        self.batch_size = batch_size
+        self.batch_size = batch_size       
         for task_name in self.task_names:
 
+            save_path, category = get_category_path(task_name, self.path)
             if self.rank == 0:
-                print(f"\n\npreparing dataset {task_name}\n")
+                print(f"\n\nPREPARING DATASET {category}: {task_name}\n")
 
             dataset, corpus_dict, has_title = self.prepare_dataset(task_name=task_name)
 
@@ -445,12 +499,13 @@ class HardNegativesMiner:
                 has_title=has_title,
                 stats=stats,
                 task_name=task_name,
+                save_path=save_path
             )
 
             torch.cuda.empty_cache()
             print_memory_consumed(rank=self.rank)
 
-    def save_to_disk(self, dataset, negatives, has_title, stats, task_name):
+    def save_to_disk(self, dataset, negatives, has_title, stats, task_name, save_path):
 
         texts = dataset["queries"]["text"]
         ids = dataset["queries"]["id"]
@@ -532,9 +587,14 @@ class HardNegativesMiner:
             "embedder": self.model_name,
         }
 
+        # Get the categorized path for this task
+        #save_path = get_category_path(task_name, self.path)
+
         dist.barrier()
         if self.rank == 0:
-            dataset.save_to_disk(f"{self.path}/{task_name}")
+            # Create parent directories if they don't exist
+            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+            dataset.save_to_disk(save_path)
 
-            with open(f"{self.path}/{task_name}/dataset_metadata.json", "w") as f:
+            with open(f"{save_path}/dataset_metadata.json", "w") as f:
                 json.dump(metadata, f, indent=2)

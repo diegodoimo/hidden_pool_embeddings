@@ -108,15 +108,9 @@ def _get_retrieval_raw_data(task, rank) -> RetrievalRawData:
             "Please define a loader for this task."
         )
 
-    # Check if loader needs eval_split parameter (for dedup loaders)
+    # Check if loader needs rank parameter
     loader_name = loader_func.__name__
-    if "with_dedup" in loader_name and hasattr(task, "eval_split"):
-        # Pass rank and eval_split
-        return loader_func(task, rank, task.eval_split)
-    elif loader_name in [
-        "from_multiple_hf_datasets",
-        "from_multiple_hf_datasets_with_dedup",
-    ]:
+    if loader_name == "from_multiple_hf_datasets":
         # Pass rank parameter
         return loader_func(task, rank)
     else:

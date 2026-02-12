@@ -1,13 +1,14 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
-from tasks.retrieval_tasks.retrieval_loaders import from_multiple_hf_datasets_with_dedup
+from tasks.retrieval_tasks.retrieval_loaders import from_multiple_hf_datasets
 
 
-class NFCorpus(AbsTask):
-    """NFCorpus with deduplication against MTEB test split."""
+class SciFact(AbsTask):
+    """SciFact scientific claim verification with deduplication against MTEB test split."""
 
     language = "en"
-    hf_name = "mteb/nfcorpus"
+
+    hf_name = "mteb/scifact"
     split = "train"
     has_multiple_datasets = True
     eval_split = "test"  # MTEB evaluates on test split
@@ -21,7 +22,5 @@ class NFCorpus(AbsTask):
     }
     anchor_fields = {"id": "_id", "text": "text"}
     corpus_fields = {"id": "_id", "text": "text", "title": "title"}
-    metadata = TaskMetadata(
-        type="Retrieval", prompt={"query": TASK_PROMPTS["NFCorpus"]}
-    )
-    loader = from_multiple_hf_datasets_with_dedup
+    metadata = TaskMetadata(type="Retrieval", prompt={"query": TASK_PROMPTS["SciFact"]})
+    loader = from_multiple_hf_datasets

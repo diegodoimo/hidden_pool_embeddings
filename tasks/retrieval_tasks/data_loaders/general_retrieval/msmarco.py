@@ -1,6 +1,6 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
-from tasks.retrieval_tasks.retrieval_loaders import from_multiple_hf_datasets_with_dedup
+from tasks.retrieval_tasks.retrieval_loaders import from_multiple_hf_datasets
 
 
 class MSMARCO(AbsTask):
@@ -22,4 +22,4 @@ class MSMARCO(AbsTask):
     anchor_fields = {"id": "_id", "text": "text"}
     corpus_fields = {"id": "_id", "text": "text", "title": "title"}
     metadata = TaskMetadata(type="Retrieval", prompt={"query": TASK_PROMPTS["MSMARCO"]})
-    loader = from_multiple_hf_datasets_with_dedup
+    loader = from_multiple_hf_datasets

@@ -1,68 +1,103 @@
 """
 Retrieval tasks module.
 Each task is defined in its own file with its associated loader.
+Tasks are organized into categories for better organization.
 """
 
-from .data_loaders.amazonqa import AmazonQA
-from .data_loaders.arguana import Arguana
-from .data_loaders.bioasq import BioASQ
-from .data_loaders.cnndm import CNNDM
-from .data_loaders.coliee import COLIEE
-from .data_loaders.eli5 import ELI5
-from .data_loaders.fever import FEVER
-from .data_loaders.fiqa2018 import FiQA2018
-from .data_loaders.hotpotqa import HotpotQA
-from .data_loaders.miracl import MIRACL
-from .data_loaders.mrtydi import MrTyDi
-from .data_loaders.msmarco import MSMARCO
-from .data_loaders.naturalquestions import NaturalQuestions
-from .data_loaders.nfcorpus import NFCorpus
-from .data_loaders.paq import PAQ
-from .data_loaders.pubmedqa import PubMedQA
-from .data_loaders.qqp import QQP
-from .data_loaders.s2orcabstractcitation import S2ORCAbstractCitation
-from .data_loaders.s2orctitleabstract import S2ORCTitleAbstract
-from .data_loaders.s2orctitlecitation import S2ORCTitleCitation
-from .data_loaders.scifact import SciFact
-from .data_loaders.sentencecompression import SentenceCompression
-from .data_loaders.specter import SPECTER
-from .data_loaders.squad import SQuAD
-from .data_loaders.stackexchange import StackExchangeRetrieval
-from .data_loaders.stackexchangedupquestionsp2p import StackExchangeDupQuestionsP2P
-from .data_loaders.stackexchangedupquestionss2s import StackExchangeDupQuestionsS2S
-from .data_loaders.stackoverflow_dup import StackOverflowDupQuestions
-from .data_loaders.triviaqa import TriviaQA
-from .data_loaders.xsum import XSum
+# Open Domain QA
+from .data_loaders.open_domain_qa import (
+    NaturalQuestions,
+    TriviaQA,
+    PAQ,
+    ELI5,
+    SQuAD,
+    HotpotQA,
+)
+
+# Domain-Specific QA
+from .data_loaders.domain_specific_qa import (
+    BioASQ,
+    PubMedQA,
+    FiQA2018,
+    AmazonQA,
+    COLIEE,
+)
+
+# General Retrieval
+from .data_loaders.general_retrieval import (
+    MSMARCO,
+    NFCorpus,
+    StackExchangeRetrieval,
+    MIRACL,
+    MrTyDi,
+    Arguana,
+)
+
+# Fact Verification
+from .data_loaders.fact_verification import (
+    FEVER,
+    SciFact,
+)
+
+# Paraphrase Detection
+from .data_loaders.paraphrase_detection import (
+    QQP,
+    StackExchangeDupQuestionsP2P,
+    StackExchangeDupQuestionsS2S,
+    StackOverflowDupQuestions,
+)
+
+# Scientific Document Retrieval
+from .data_loaders.scientific_doc_retrieval import (
+    S2ORCAbstractCitation,
+    S2ORCTitleAbstract,
+    S2ORCTitleCitation,
+    SPECTER,
+)
+
+# Summarization
+from .data_loaders.summarization import (
+    CNNDM,
+    XSum,
+    SentenceCompression,
+)
 
 __all__ = [
-    "AmazonQA",
-    "Arguana",
-    "BioASQ",
-    "CNNDM",
-    "COLIEE",
+    # Open Domain QA
+    "NaturalQuestions",
+    "TriviaQA",
+    "PAQ",
     "ELI5",
-    "FEVER",
-    "FiQA2018",
+    "SQuAD",
     "HotpotQA",
+    # Domain-Specific QA
+    "BioASQ",
+    "PubMedQA",
+    "FiQA2018",
+    "AmazonQA",
+    "COLIEE",
+    # General Retrieval
+    "MSMARCO",
+    "NFCorpus",
+    "StackExchangeRetrieval",
     "MIRACL",
     "MrTyDi",
-    "MSMARCO",
-    "NaturalQuestions",
-    "NFCorpus",
-    "PAQ",
-    "PubMedQA",
-    "QQP",
-    "S2ORCAbstractCitation",
-    "S2ORCTitleAbstract",
-    "S2ORCTitleCitation",
+    "Arguana",
+    # Fact Verification
+    "FEVER",
     "SciFact",
-    "SentenceCompression",
-    "SPECTER",
-    "SQuAD",
-    "StackExchangeRetrieval",
+    # Paraphrase Detection
+    "QQP",
     "StackExchangeDupQuestionsP2P",
     "StackExchangeDupQuestionsS2S",
     "StackOverflowDupQuestions",
-    "TriviaQA",
+    # Scientific Document Retrieval
+    "S2ORCAbstractCitation",
+    "S2ORCTitleAbstract",
+    "S2ORCTitleCitation",
+    "SPECTER",
+    # Summarization
+    "CNNDM",
     "XSum",
+    "SentenceCompression",
 ]
