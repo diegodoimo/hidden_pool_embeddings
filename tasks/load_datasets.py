@@ -71,6 +71,7 @@ def _load_retrieval_data(task, rank=0) -> Tuple[Dataset, Dict, bool]:
         ids=raw_data.positive_ids,
         titles=raw_data.positive_titles,
     )
+    
     unique_positive_ds = dict_to_dataset(
         texts=raw_data.unique_positive_texts,
         ids=raw_data.unique_positive_ids,

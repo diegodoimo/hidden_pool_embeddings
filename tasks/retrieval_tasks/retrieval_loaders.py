@@ -75,13 +75,19 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
     if rank == 0:
         print(f"preprocessing done in {(time.time()-start)/60}min")
         start = time.time()
-        print(f"finding unique items...")
+        print(f"finding unique queries items...")
 
     # Fast deduplication via pandas C-optimized hash tables.
     unique_query_mask = ~query_texts.duplicated(keep="first")
     unique_query_idx = unique_query_mask[unique_query_mask].index
     unique_query_texts = query_texts.iloc[unique_query_idx].reset_index(drop=True)
     unique_query_ids = [f"query_{i}" for i in unique_query_idx]
+
+
+    if rank == 0:
+        print(f"queries done in {(time.time()-start)/60}min")
+        start = time.time()
+        print(f"finding unique positives items...")
 
     unique_positive_mask = ~positive_texts.duplicated(keep="first")
     unique_positive_idx = unique_positive_mask[unique_positive_mask].index
@@ -100,8 +106,8 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
     del unique_query_mask, unique_positive_mask
 
     if rank == 0:
-        print(f"Found {len(unique_query_texts)} unique queries out of {n_pairs}")
-        print(f"Found {len(unique_positive_texts)} unique positives out of {n_pairs}")
+        print(f"Found {len(unique_query_texts)//10**3}k unique queries out of {n_pairs}")
+        print(f"Found {len(unique_positive_texts)//10**3}k unique positives out of {n_pairs}")
         print(f"unique items found in {(time.time()-start)/60}min")
         start = time.time()
         print(f"generating corpus dict...")
