@@ -37,6 +37,7 @@ def clear_arguana_overlap(
     Filter BeIR/arguana-generated-queries dataset to remove examples
     that overlap with mteb/arguana evaluation set.
     """
+
     def is_not_overlapping(example):
         query_norm = normalize_text(example[anchor_field])
         positive_norm = normalize_text(example[positive_field])
@@ -96,9 +97,7 @@ def load_arguana_dedup_retrieval(task) -> RetrievalRawData:
     }
 
     return RetrievalRawData(
-        query_texts=query_texts,
         query_ids=query_ids,
-        positive_texts=positive_texts,
         positive_ids=positive_ids,
         positive_titles=None,
         document_texts=document_texts,
@@ -111,6 +110,7 @@ def load_arguana_dedup_retrieval(task) -> RetrievalRawData:
         unique_positive_titles=None,
         corpus_dict=corpus_dict,
         has_title=False,
+        documents_are_positives=True,
     )
 
 
@@ -125,7 +125,5 @@ class Arguana(AbsTask):
     anchor_name = "query"
     positive_name = "text"
     negative_name = "negative"
-    metadata = TaskMetadata(
-        type="Retrieval", prompt={"query": TASK_PROMPTS["ArguAna"]}
-    )
+    metadata = TaskMetadata(type="Retrieval", prompt={"query": TASK_PROMPTS["ArguAna"]})
     loader = load_arguana_dedup_retrieval

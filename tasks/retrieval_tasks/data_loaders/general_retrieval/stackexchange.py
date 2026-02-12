@@ -29,9 +29,7 @@ def load_stackexchange_retrieval(task) -> RetrievalRawData:
     }
 
     return RetrievalRawData(
-        query_texts=query_texts,
         query_ids=query_ids,
-        positive_texts=positive_texts,
         positive_ids=positive_ids,
         positive_titles=None,
         document_texts=document_texts,
@@ -44,6 +42,7 @@ def load_stackexchange_retrieval(task) -> RetrievalRawData:
         unique_positive_titles=None,
         corpus_dict=corpus_dict,
         has_title=False,
+        documents_are_positives=True,
     )
 
 

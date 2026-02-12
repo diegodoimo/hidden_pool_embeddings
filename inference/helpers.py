@@ -11,13 +11,15 @@ from mteb.types import PromptType
 import torch.distributed as dist
 import torch.nn.functional as F
 from utils.sorted_sampler import LenghtSortedSampler
-import time 
+import time
 from utils.helpers import print_memory_consumed
 
 # ***********************************************************************************************
 
 
-def collate_fn_with_padding(batch, pad_token_id=0, padding_side="right", tokenizer = None, eot_id =None):
+def collate_fn_with_padding(
+    batch, pad_token_id=0, padding_side="right", tokenizer=None, eot_id=None
+):
 
     input_text = [item["prompt"] for item in batch]
     tokens = tokenizer(
@@ -27,7 +29,7 @@ def collate_fn_with_padding(batch, pad_token_id=0, padding_side="right", tokeniz
     )["input_ids"]
     query_token_ids = [torch.tensor(tok + [eot_id]) for tok in tokens]
 
-    #query_token_ids = [torch.tensor(item["input_ids"]) for item in batch]
+    # query_token_ids = [torch.tensor(item["input_ids"]) for item in batch]
     query_attention_mask = [torch.ones_like(input_ids) for input_ids in query_token_ids]
 
     # Pad queries and create attention masks
@@ -91,85 +93,81 @@ def search(
     query_embeddings,
     corpus_dataset,
     collate_fn,
+    num_positives,
     top_k=100,
     batch_size=64,
     chunk_size=10**4,
-    print_every = 10**5,
-    precomputed_doc_embeddings=None,
+    print_every=10**5,
 ):
     world_size = dist.get_world_size()
     rank = dist.get_rank()
-    N_queries = query_embeddings.shape[0]
-    N_corpus = len(corpus_dataset)
 
+    N_queries = query_embeddings.shape[0]
     # IMPORTANT: When using precomputed_doc_embeddings, they are fully replicated across all GPUs
     # (all_gather was performed during their creation). This means the similarity computation
     # will use world_size times more memory than distributed encoding.
     # Adjust chunk_size to compensate.
-    if precomputed_doc_embeddings is not None:
-        adjusted_chunk_size = max(1000, chunk_size // world_size)
-        if rank == 0:
-            print(f"Adjusting chunk_size for precomputed embeddings: {chunk_size} -> {adjusted_chunk_size} (divided by world_size={world_size})")
-        chunk_size = adjusted_chunk_size
+    N_corpus = len(corpus_dataset)
 
-    top_scores = torch.full((N_queries, top_k), -float("inf"), device=query_embeddings.device)
+    top_scores = torch.full(
+        (N_queries, top_k), -float("inf"), device=query_embeddings.device
+    )
     top_indices = torch.full(
         (N_queries, top_k), -1, dtype=torch.long, device=query_embeddings.device
     )
-    interval = print_every // chunk_size + 1 
+    interval = print_every // chunk_size + 1
     dist.barrier()
     start = time.time()
-    if rank ==0:
+    if rank == 0:
         print(f"Using chunk_size: {chunk_size}")
     for i, chunk_idx in enumerate(range(0, N_corpus, chunk_size)):
-        
+
         dist.barrier()
         torch.cuda.empty_cache()
 
-        if (i+1) % interval == 0 and rank == 0:
-            print(f"processed {chunk_idx//10**3}k/{N_corpus//10**3}k samples in {(time.time()-start)/60} mins")
-
-        if precomputed_doc_embeddings is not None:
-            # Use pre-computed embeddings (skip encoding step)
-            chunk_end = min(chunk_idx + chunk_size, N_corpus)
-            local_corpus_chunk = precomputed_doc_embeddings[chunk_idx:chunk_end]
-            local_indicies = torch.arange(chunk_end - chunk_idx, device=local_corpus_chunk.device)
-
-            if rank ==0:
-                print(f"iter {i}")
-                print_memory_consumed(rank = rank)
-
-
-        else:
-            # Compute embeddings on-the-fly (original behavior)
-            # IN THE DISTRIBUTERD SETUP WE ARE NOT HANDLING WELL THE LAST REPEATED SAMPLES. 
-            subcorpus = corpus_dataset.select(range(chunk_idx, min(chunk_idx + chunk_size, N_corpus)))
-
-            sampler_corpus = LenghtSortedSampler(subcorpus)
-            corpus_loader = DataLoader(
-                subcorpus,
-                sampler=sampler_corpus,
-                batch_size=batch_size,
-                num_workers=16,
-                pin_memory=True,
-                collate_fn=collate_fn,
+        if (i + 1) % interval == 0 and rank == 0:
+            print(
+                f"processed {chunk_idx//10**3}k/{N_corpus//10**3}k samples in {(time.time()-start)/60} mins"
             )
 
-            local_corpus_chunk, local_indicies = encode(
-                model,
-                corpus_loader,
-                prompt_type=PromptType.document,
-                world_size=world_size,
-                divided_by_chunks=True,
-            )
+        # Compute embeddings on-the-fly (original behavior)
+        # IN THE DISTRIBUTERD SETUP WE ARE NOT HANDLING WELL THE LAST REPEATED SAMPLES.
+        subcorpus = corpus_dataset.select(
+            range(chunk_idx, min(chunk_idx + chunk_size, N_corpus))
+        )
+
+        sampler_corpus = LenghtSortedSampler(subcorpus)
+        corpus_loader = DataLoader(
+            subcorpus,
+            sampler=sampler_corpus,
+            batch_size=batch_size,
+            num_workers=16,
+            pin_memory=True,
+            collate_fn=collate_fn,
+        )
+
+        local_corpus_chunk, local_indicies = encode(
+            model,
+            corpus_loader,
+            prompt_type=PromptType.document,
+            world_size=world_size,
+            divided_by_chunks=True,
+        )
+
+
+
+        global_indicies = local_indicies + chunk_idx
+        positive_mask = global_indicies < num_positives
+        positive_emebddings.extend(local_corpus_chunk[])
 
         scores = torch.matmul(query_embeddings, local_corpus_chunk.T)
+
         chunk_top_scores, chunk_top_indices = torch.topk(
             scores,
             k=min(top_k, scores.shape[1]),  # Use min(top_k, chunk_size)
             dim=1,
             largest=True,
-        ) 
+        )
 
         # print(chunk_top_indices, chunk_top_indices.shape, local_indicies)
         chunk_absolute_indices = local_indicies[chunk_top_indices] + chunk_idx
@@ -245,7 +243,7 @@ def encode(model, loader, world_size, prompt_type, divided_by_chunks=False):
     indices = torch.tensor(indices, device=embeddings.device)
 
     if prompt_type == PromptType.document and divided_by_chunks:
-        # if we are processing documents divided in chunks, we postpone the allgather 
+        # if we are processing documents divided in chunks, we postpone the allgather
         # (in the distributed setup) and return the (local) indices
         return embeddings, indices
 
@@ -267,5 +265,3 @@ def encode(model, loader, world_size, prompt_type, divided_by_chunks=False):
     sorted_positions = torch.argsort(indices)
     embeddings = embeddings[sorted_positions]
     return embeddings
-
-

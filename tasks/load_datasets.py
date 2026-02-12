@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict, Set, Union, Tuple
 from tasks.data_helpers import (
     dict_to_dataset,
+    create_qrels_dataset,
     RetrievalRawData,
     ClassificationRawData,
     get_dict,
@@ -23,8 +24,7 @@ def normalize_text(
     return text.lower().strip()
 
 
-def load_task_data(
-    task) -> Union[Tuple[Dataset, Dict, bool], ClassificationRawData]:
+def load_task_data(task) -> Union[Tuple[Dataset, Dict, bool], ClassificationRawData]:
     """
     Unified data loading function for all task types (retrieval, STS, classification, clustering).
 
@@ -61,17 +61,16 @@ def _load_retrieval_data(task, rank=0) -> Tuple[Dataset, Dict, bool]:
     raw_data = _get_retrieval_raw_data(task, rank)
 
     # Convert raw data to HuggingFace datasets
-    queries_ds = dict_to_dataset(texts=raw_data.query_texts, ids=raw_data.query_ids)
+    # Create qrels dataset with query_id and positive_id pairs
+    qrels_ds = create_qrels_dataset(
+        query_ids=raw_data.query_ids,
+        positive_ids=raw_data.positive_ids,
+    )
+
     unique_queries_ds = dict_to_dataset(
         texts=raw_data.unique_query_texts, ids=raw_data.unique_query_ids
     )
 
-    positives_ds = dict_to_dataset(
-        texts=raw_data.positive_texts,
-        ids=raw_data.positive_ids,
-        titles=raw_data.positive_titles,
-    )
-    
     unique_positive_ds = dict_to_dataset(
         texts=raw_data.unique_positive_texts,
         ids=raw_data.unique_positive_ids,
@@ -87,8 +86,7 @@ def _load_retrieval_data(task, rank=0) -> Tuple[Dataset, Dict, bool]:
     hf_dataset = {
         "unique_queries": unique_queries_ds,
         "unique_positives": unique_positive_ds,
-        "queries": queries_ds,
-        "positives": positives_ds,
+        "qrels": qrels_ds,
         "corpus": corpus_ds,
     }
 

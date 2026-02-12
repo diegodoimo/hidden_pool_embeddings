@@ -41,10 +41,22 @@ def get_dict(dataset, id_field, text_field, title_field=None):
     return {k: v for d in results for k, v in d.items()}
 
 
-def dict_to_dataset(texts, ids, titles=None):
+def dict_to_dataset(texts, ids, titles=None, ids_only=False):
+    """Create a HuggingFace dataset from texts and IDs.
 
-    if titles is not None:
-
+    Args:
+        texts: List of text strings (ignored if ids_only=True)
+        ids: List of ID strings
+        titles: Optional list of title strings (ignored if ids_only=True)
+        ids_only: If True, create dataset with only IDs (no texts or titles)
+    """
+    if ids_only:
+        # Create dataset with only IDs (for queries/positives with repetitions)
+        dataset = Dataset.from_dict(
+            {"id": ids},
+            features=Features({"id": Value("string")}),
+        )
+    elif titles is not None:
         dataset = Dataset.from_dict(
             {
                 "text": texts,
@@ -76,14 +88,40 @@ def dict_to_dataset(texts, ids, titles=None):
     return dataset
 
 
+def create_qrels_dataset(query_ids, positive_ids):
+    """Create a qrels dataset with query_id and positive_id columns.
+
+    Args:
+        query_ids: List of query ID strings
+        positive_ids: List of positive ID strings (must be same length as query_ids)
+
+    Returns:
+        Dataset with query_id and positive_id columns
+    """
+    assert len(query_ids) == len(
+        positive_ids
+    ), "query_ids and positive_ids must have the same length"
+
+    dataset = Dataset.from_dict(
+        {
+            "query_id": query_ids,
+            "positive_id": positive_ids,
+        },
+        features=Features(
+            {
+                "query_id": Value("string"),
+                "positive_id": Value("string"),
+            }
+        ),
+    )
+    return dataset
+
+
 @dataclass
 class RetrievalRawData:
     """Raw data structure for retrieval tasks (includes STS tasks treated as retrieval)."""
 
-    query_texts: Sequence[str]  # List[str] or pd.Series
     query_ids: List[str]
-
-    positive_texts: Sequence[str]  # List[str] or pd.Series
     positive_ids: List[str]
     positive_titles: Optional[Sequence[str]]
 
@@ -100,6 +138,7 @@ class RetrievalRawData:
 
     corpus_dict: Dict[str, Dict[str, str]]
     has_title: bool
+    documents_are_positives: bool
 
 
 @dataclass
