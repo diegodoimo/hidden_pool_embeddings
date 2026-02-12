@@ -3,7 +3,7 @@ import time
 import os
 from multiprocessing import Pool
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Set
+from typing import List, Optional, Dict, Set, Sequence
 import torch.distributed as dist
 
 
@@ -79,23 +79,24 @@ def dict_to_dataset(texts, ids, titles=None):
 @dataclass
 class RetrievalRawData:
     """Raw data structure for retrieval tasks (includes STS tasks treated as retrieval)."""
-    query_texts: List[str]
+
+    query_texts: Sequence[str]  # List[str] or pd.Series
     query_ids: List[str]
 
-    positive_texts: List[str]
+    positive_texts: Sequence[str]  # List[str] or pd.Series
     positive_ids: List[str]
-    positive_titles: Optional[List[str]]
+    positive_titles: Optional[Sequence[str]]
 
-    document_texts: List[str]
+    document_texts: Sequence[str]  # List[str] or pd.Series
     document_ids: List[str]
-    document_titles: Optional[List[str]]
+    document_titles: Optional[Sequence[str]]
 
-    unique_query_texts: List[str]
+    unique_query_texts: Sequence[str]  # List[str] or pd.Series
     unique_query_ids: List[str]
 
-    unique_positive_texts: List[str]
+    unique_positive_texts: Sequence[str]  # List[str] or pd.Series
     unique_positive_ids: List[str]
-    unique_positive_titles: Optional[List[str]]
+    unique_positive_titles: Optional[Sequence[str]]
 
     corpus_dict: Dict[str, Dict[str, str]]
     has_title: bool
@@ -104,6 +105,7 @@ class RetrievalRawData:
 @dataclass
 class ClassificationRawData:
     """Raw data structure for classification and clustering tasks."""
+
     texts: List[str]
     labels: List[int]
     ids: Optional[List[str]] = None
