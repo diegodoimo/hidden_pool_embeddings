@@ -4,6 +4,13 @@ import numpy as np
 import os
 
 
+def return_formatted(ndata):
+    for threshold, suffix in [(10**6, "M"), (10**3, "k")]:
+        if ndata >= threshold:
+            return f"{ndata / threshold:.3f} {suffix}"
+    return str(ndata)
+
+
 def print_memory_consumed(message="", rank=0):
     torch.cuda.empty_cache()
     allocated = torch.cuda.max_memory_allocated() / 2**30

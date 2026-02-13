@@ -19,7 +19,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datasets import DatasetInfo
 import json
-from utils.helpers import print_memory_consumed
+from utils.helpers import print_memory_consumed, return_formatted
 
 
 def estimate_chunk_size(query_embeddings, max_chunk=5 * 10**4):
@@ -90,8 +90,7 @@ class HardNegativesMiner:
         # qrels contains query_id and positive_id pairs
         if self.rank == 0:
             print(
-                "tokenizing dataset: num total qrels pairs (with repetitions)",
-                len(data_split["qrels"]),
+                f"\ntokenizing dataset: num total qrels pairs (with repetitions), {return_formatted(len(data_split["qrels"]))}"
             )
 
         unique_queries_dataset = create_dataset(
@@ -104,8 +103,8 @@ class HardNegativesMiner:
         )
 
         if self.rank == 0:
-            print("num unique queries", len(unique_queries_dataset))
-            print(f"num unique positives (first {n_positives} docs in corpus)")
+            print(f"num unique queries: {return_formatted(len(unique_queries_dataset))}")
+            print(f"num unique positives (first {return_formatted(n_positives)} docs in corpus)")
 
         if self.rank == 0:
             if len(unique_queries_dataset.removed_long) > 0:
@@ -119,7 +118,7 @@ class HardNegativesMiner:
 
         dist.barrier()
         if self.rank == 0:
-            print("tokenizing dataset num docs", len(data_split["corpus"]))
+            print("tokenizing dataset num docs", return_formatted(len(data_split["corpus"])))
 
         corpus_dataset = create_dataset(
             dataset=data_split["corpus"],
