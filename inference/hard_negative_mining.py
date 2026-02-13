@@ -84,7 +84,7 @@ class HardNegativesMiner:
     def prepare_dataset(self, task_name):
 
         task = get_task(task_name)
-        data_split, corpus_dict, has_title = load_task_data(task)
+        data_split, corpus_dict, has_title, n_positives = load_task_data(task)
 
         dist.barrier()
         # qrels contains query_id and positive_id pairs
@@ -103,95 +103,81 @@ class HardNegativesMiner:
             max_length=self.max_length,
         )
 
-        unique_positives_dataset = create_dataset(
-            dataset=data_split["unique_positives"],
-            task_metadata=task.metadata,
-            instruction_template=self.instruction_template,
-            tokenizer=self.tokenizer,
-            prompt_type=PromptType.document,
-            max_length=self.max_length,
-        )
-
         if self.rank == 0:
             print("num unique queries", len(unique_queries_dataset))
-            print("num unique positives", len(unique_positives_dataset))
+            print(f"num unique positives (first {n_positives} docs in corpus)")
 
         if self.rank == 0:
             if len(unique_queries_dataset.removed_long) > 0:
                 print(
                     f"removed {len(unique_queries_dataset.removed_long)} queries exceeding max_length"
                 )
-            if len(unique_positives_dataset.removed_long) > 0:
-                print(
-                    f"removed {len(unique_positives_dataset.removed_long)} positives exceeding max_length"
-                )
             if len(unique_queries_dataset.removed_empty) > 0:
                 print(
                     f"removed {len(unique_queries_dataset.removed_empty)} empty queries"
-                )
-            if len(unique_positives_dataset.removed_empty) > 0:
-                print(
-                    f"removed {len(unique_positives_dataset.removed_empty)} empty positives"
-                )
-
-        # Remove qrels pairs where either query or positive exceeds max_length
-        filtered_qrels = filter_qrels_by_length(
-            unique_queries_dataset.removed_ids,
-            unique_positives_dataset.removed_ids,
-            data_split["qrels"],
-        )
-
-        # Check that filtered pairs only contain valid IDs (subset relationship)
-        assert set(filtered_qrels["query_id"]).issubset(
-            set(unique_queries_dataset["id"])
-        ), "filtered qrels contain query IDs not in unique queries"
-        assert set(filtered_qrels["positive_id"]).issubset(
-            set(unique_positives_dataset["id"])
-        ), "filtered qrels contain positive IDs not in unique positives"
-
-        if self.rank == 0:
-            num_queries_lost = len(set(unique_queries_dataset["id"])) - len(
-                set(filtered_qrels["query_id"])
-            )
-            num_positives_lost = len(set(unique_positives_dataset["id"])) - len(
-                set(filtered_qrels["positive_id"])
-            )
-            if num_queries_lost > 0:
-                print(
-                    f"Note: {num_queries_lost} valid queries were excluded because all their paired positives were removed"
-                )
-            if num_positives_lost > 0:
-                print(
-                    f"Note: {num_positives_lost} valid positives were excluded because all their paired queries were removed"
                 )
 
         dist.barrier()
         if self.rank == 0:
             print("tokenizing dataset num docs", len(data_split["corpus"]))
 
-        corpus_dataset = None
-        if data_split["corpus"] is not None:
-            # if it is None is the same and the positives
-            corpus_dataset = create_dataset(
-                dataset=data_split["corpus"],
-                task_metadata=task.metadata,
-                instruction_template=self.instruction_template,
-                tokenizer=self.tokenizer,
-                prompt_type=PromptType.document,
-                max_length=self.max_length,
+        corpus_dataset = create_dataset(
+            dataset=data_split["corpus"],
+            task_metadata=task.metadata,
+            instruction_template=self.instruction_template,
+            tokenizer=self.tokenizer,
+            prompt_type=PromptType.document,
+            max_length=self.max_length,
+        )
+        
+        if self.rank == 0:
+            if len(corpus_dataset.removed_long) > 0:
+                print(
+                    f"removed {len(corpus_dataset.removed_long)} documents exceeding max_length"
+                )
+            if len(corpus_dataset.removed_empty) > 0:
+                print(
+                    f"removed {len(corpus_dataset.removed_empty)} empty documents"
+                )
+
+        # Remove qrels pairs where either query or positive was removed
+        # Need to check positives against corpus (first n_positives documents)
+        corpus_ids_set = set(corpus_dataset["id"])
+        
+        filtered_qrels = filter_qrels_by_length(
+            unique_queries_dataset.removed_ids,
+            corpus_dataset.removed_ids,  # All removed corpus IDs (including positives)
+            data_split["qrels"],
+        )
+
+        # Check that filtered pairs only contain valid IDs
+        assert set(filtered_qrels["query_id"]).issubset(
+            set(unique_queries_dataset["id"])
+        ), "filtered qrels contain query IDs not in unique queries"
+        assert set(filtered_qrels["positive_id"]).issubset(
+            corpus_ids_set
+        ), "filtered qrels contain positive IDs not in corpus"
+
+        if self.rank == 0:
+            num_queries_lost = len(set(unique_queries_dataset["id"])) - len(
+                set(filtered_qrels["query_id"])
             )
+            if num_queries_lost > 0:
+                print(
+                    f"Note: {num_queries_lost} valid queries were excluded because all their paired positives were removed"
+                )
 
         dataset = {
             "qrels": filtered_qrels,
             "unique_queries": unique_queries_dataset,
-            "unique_positives": unique_positives_dataset,
             "corpus": corpus_dataset,
+            "n_positives": n_positives,
         }
 
         dist.barrier()
         if self.rank == 0:
             print(f"\nnumber unique queries: {len(unique_queries_dataset)}")
-            print(f"number unique positives: {len(unique_positives_dataset)}")
+            print(f"number of positives in corpus: {n_positives}")
             print(f"number of documents: {len(corpus_dataset)}")
 
             print(f"total qrels pairs (with repetitions): {len(dataset['qrels'])}")
@@ -225,16 +211,6 @@ class HardNegativesMiner:
             collate_fn=collate_fn,
         )
 
-        sampler_positives = LenghtSortedSampler(dataset["unique_positives"])
-        positives_loader = DataLoader(
-            dataset["unique_positives"],
-            sampler=sampler_positives,
-            batch_size=batch_size,
-            num_workers=16,
-            pin_memory=True,
-            collate_fn=collate_fn,
-        )
-
         dist.barrier()
         if self.rank == 0:
             start = time.time()
@@ -250,106 +226,39 @@ class HardNegativesMiner:
         dist.barrier()
         if self.rank == 0:
             print(f"queries embedding duration: {(time.time()-start)/60} min")
-            start = time.time()
-            print("\nbuilding positive embeddings")
-
-        positive_embeddings = encode(
-            model,
-            positives_loader,
-            prompt_type=PromptType.document,
-            world_size=self.world_size,
-        )
-
-        if self.rank == 0:
-            print(f"positive embedding duration: {(time.time()-start)/60} min")
 
         # Create mappings from IDs to embedding indices
         unique_query_id_to_idx = {
             qid: idx for idx, qid in enumerate(dataset["unique_queries"]["id"])
         }
-        unique_positive_id_to_idx = {
-            pid: idx for idx, pid in enumerate(dataset["unique_positives"]["id"])
-        }
-
-        # Map each (query, positive) pair in qrels to their corresponding embeddings
-        query_indices = [
-            unique_query_id_to_idx[qid] for qid in dataset["qrels"]["query_id"]
-        ]
-        positive_indices = [
-            unique_positive_id_to_idx[pid] for pid in dataset["qrels"]["positive_id"]
-        ]
-
-        # Expand embeddings to match qrels order
-        expanded_query_embeddings = query_embeddings[query_indices]
-        expanded_positive_embeddings = positive_embeddings[positive_indices]
-
-        # Compute scores for each (query, positive) pair in qrels
-        query_positive_scores = (
-            expanded_query_embeddings * expanded_positive_embeddings
-        ).sum(dim=1)
-        query_positive_scores = query_positive_scores.cpu().numpy()
-
-        # Check if corpus is identical to positives (for optimization)
-        if dataset["corpus"] is not None:
-            corpus_ids = dataset["corpus"]["id"]
-            unique_positive_ids = dataset["unique_positives"]["id"]
-
-            # Check both length and content equality (must match exactly in same order)
-            corpus_equals_positives = len(corpus_ids) == len(
-                unique_positive_ids
-            ) and all(
-                c_id == p_id for c_id, p_id in zip(corpus_ids, unique_positive_ids)
-            )
 
         dist.barrier()
-        if dataset["corpus"] is None or corpus_equals_positives:
-            if self.rank == 0:
-                print("\n***Corpus matches positives, reusing embeddings ***")
-                print(f"Skipping corpus encoding for {len(corpus_ids)} documents")
-                print(
-                    "NOTE: precomputed embeddings are replicated across all GPUs (all_gather was performed)"
-                )
-                print(
-                    f"This means chunk_size needs to be reduced by ~{self.world_size}x compared to distributed encoding"
-                )
-            # Keep positive_embeddings to reuse them
-            precomputed_embeddings = positive_embeddings
-            print_memory_consumed(self.rank)
-        else:
-            if self.rank == 0:
-                print("\nCorpus differs from positives, will encode separately")
-            # No optimization possible
-            del positive_embeddings
-            torch.cuda.empty_cache()
-            precomputed_embeddings = None
-            print_memory_consumed(self.rank)
+        if self.rank == 0:
+            print("\nQuery-positive scores will be computed during corpus search")
+        print_memory_consumed(self.rank)
 
         dist.barrier()
         chunk_size = estimate_chunk_size(query_embeddings)
         if self.rank == 0:
-
-            if precomputed_embeddings is None:
-                print("\nBuilding document embeddings")
-            else:
-                print("\nSearching through pre-computed document embeddings")
+            print("\nBuilding document embeddings and computing query-positive scores")
             print(f"selected_chunk_size: {chunk_size}")
 
         start = time.time()
-        top_scores, top_indices = search(
+        top_scores, top_indices, query_positive_scores = search(
             model=model,
             query_embeddings=query_embeddings,
             corpus_dataset=dataset["corpus"],
             collate_fn=collate_fn,
+            n_positives=dataset["n_positives"],
+            qrels_query_ids=dataset["qrels"]["query_id"],
+            qrels_positive_ids=dataset["qrels"]["positive_id"],
+            unique_query_ids=dataset["unique_queries"]["id"],
+            unique_query_id_to_idx=unique_query_id_to_idx,
+            corpus_ids=dataset["corpus"]["id"],
             top_k=top_k,
             batch_size=batch_size,
             chunk_size=chunk_size,
-            precomputed_doc_embeddings=precomputed_embeddings,
         )
-
-        # Clean up embeddings after search
-        if precomputed_embeddings is not None:
-            del precomputed_embeddings
-            torch.cuda.empty_cache()
 
         del query_embeddings
         torch.cuda.empty_cache()

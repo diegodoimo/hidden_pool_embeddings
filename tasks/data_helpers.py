@@ -119,26 +119,26 @@ def create_qrels_dataset(query_ids, positive_ids):
 
 @dataclass
 class RetrievalRawData:
-    """Raw data structure for retrieval tasks (includes STS tasks treated as retrieval)."""
+    """Raw data structure for retrieval tasks (includes STS tasks treated as retrieval).
+    
+    Documents are organized with unique positives first (at indices 0 to n_positives-1),
+    followed by other unique documents. This unified format allows efficient corpus 
+    construction regardless of whether documents come from one or multiple datasets.
+    """
 
     query_ids: List[str]
     positive_ids: List[str]
-    positive_titles: Optional[Sequence[str]]
 
-    document_texts: Sequence[str]  # List[str] or pd.Series
-    document_ids: List[str]
-    document_titles: Optional[Sequence[str]]
+    document_texts: Sequence[str]  # List[str] or pd.Series - unique docs with positives first
+    document_ids: List[str]  # IDs for unique documents with positives first
+    document_titles: Optional[Sequence[str]]  # Titles for unique documents (if available)
 
     unique_query_texts: Sequence[str]  # List[str] or pd.Series
     unique_query_ids: List[str]
 
-    unique_positive_texts: Sequence[str]  # List[str] or pd.Series
-    unique_positive_ids: List[str]
-    unique_positive_titles: Optional[Sequence[str]]
-
     corpus_dict: Dict[str, Dict[str, str]]
     has_title: bool
-    documents_are_positives: bool
+    n_positives: int  # Number of unique positives at the beginning of documents
 
 
 @dataclass

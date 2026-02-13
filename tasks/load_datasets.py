@@ -24,7 +24,7 @@ def normalize_text(
     return text.lower().strip()
 
 
-def load_task_data(task) -> Union[Tuple[Dataset, Dict, bool], ClassificationRawData]:
+def load_task_data(task) -> Union[Tuple[Dataset, Dict, bool, int], ClassificationRawData]:
     """
     Unified data loading function for all task types (retrieval, STS, classification, clustering).
 
@@ -33,8 +33,8 @@ def load_task_data(task) -> Union[Tuple[Dataset, Dict, bool], ClassificationRawD
         rank: Process rank for distributed training (default: 0)
 
     Returns:
-        For retrieval/STS tasks: tuple of (hf_dataset, corpus_dict, has_title)
-            where hf_dataset contains: unique_queries, unique_positives, queries, positives, corpus
+        For retrieval/STS tasks: tuple of (hf_dataset, corpus_dict, has_title, n_positives)
+            where hf_dataset contains: unique_queries, qrels, corpus
         For classification/clustering tasks: ClassificationRawData with texts, labels, and ids
     """
     task_type = task.metadata.type
@@ -50,12 +50,12 @@ def load_task_data(task) -> Union[Tuple[Dataset, Dict, bool], ClassificationRawD
         raise ValueError(f"Unknown task type: {task_type}")
 
 
-def _load_retrieval_data(task, rank=0) -> Tuple[Dataset, Dict, bool]:
+def _load_retrieval_data(task, rank=0) -> Tuple[Dataset, Dict, bool, int]:
     """
     Load data for retrieval tasks (including STS tasks).
 
     Returns:
-        tuple of (hf_dataset, corpus_dict, has_title)
+        tuple of (hf_dataset, corpus_dict, has_title, n_positives)
     """
     # Dispatch to appropriate loader based on task configuration
     raw_data = _get_retrieval_raw_data(task, rank)
@@ -71,12 +71,6 @@ def _load_retrieval_data(task, rank=0) -> Tuple[Dataset, Dict, bool]:
         texts=raw_data.unique_query_texts, ids=raw_data.unique_query_ids
     )
 
-    unique_positive_ds = dict_to_dataset(
-        texts=raw_data.unique_positive_texts,
-        ids=raw_data.unique_positive_ids,
-        titles=raw_data.unique_positive_titles,
-    )
-
     corpus_ds = dict_to_dataset(
         texts=raw_data.document_texts,
         ids=raw_data.document_ids,
@@ -85,12 +79,11 @@ def _load_retrieval_data(task, rank=0) -> Tuple[Dataset, Dict, bool]:
 
     hf_dataset = {
         "unique_queries": unique_queries_ds,
-        "unique_positives": unique_positive_ds,
         "qrels": qrels_ds,
         "corpus": corpus_ds,
     }
 
-    return hf_dataset, raw_data.corpus_dict, raw_data.has_title
+    return hf_dataset, raw_data.corpus_dict, raw_data.has_title, raw_data.n_positives
 
 
 def _get_retrieval_raw_data(task, rank) -> RetrievalRawData:
@@ -109,7 +102,7 @@ def _get_retrieval_raw_data(task, rank) -> RetrievalRawData:
 
     # Check if loader needs rank parameter
     loader_name = loader_func.__name__
-    if loader_name == "from_multiple_hf_datasets":
+    if loader_name in ["from_multiple_hf_datasets", "from_multiple_hf_datasets_vectorized"]:
         # Pass rank parameter
         return loader_func(task, rank)
     else:

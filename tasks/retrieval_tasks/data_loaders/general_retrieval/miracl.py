@@ -107,28 +107,27 @@ def load_miracl_retrieval(task) -> RetrievalRawData:
     (
         unique_query_texts,
         unique_query_ids,
-        unique_positive_texts,
-        unique_positive_ids,
-        unique_positive_titles,
+        _,  # unique_positive_texts (not used anymore)
+        _,  # unique_positive_ids (not used anymore)
+        _,  # unique_positive_titles (not used anymore)
     ) = extract_unique_queries(
         query_texts, query_ids, positive_texts, positive_ids, None
     )
+    
+    # All documents are positives in this dataset
+    n_positives = len(document_ids)
 
     return RetrievalRawData(
         query_ids=query_ids,
         positive_ids=positive_ids,
-        positive_titles=None,
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=None,
         unique_query_texts=unique_query_texts,
         unique_query_ids=unique_query_ids,
-        unique_positive_texts=unique_positive_texts,
-        unique_positive_ids=unique_positive_ids,
-        unique_positive_titles=unique_positive_titles,
         corpus_dict=corpus_dict,
         has_title=False,
-        documents_are_positives=True,
+        n_positives=n_positives,
     )
 
 

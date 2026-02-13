@@ -15,18 +15,25 @@ def load_squad_retrieval(task) -> RetrievalRawData:
     positive_texts = list(dataset[task.positive_name])
 
     # Remove duplicate contexts to create corpus
+    # Track unique positives separately to put them first
     seen_contexts = {}
-    document_texts = []
-    document_ids = []
+    unique_positive_texts = []
+    unique_positive_ids = []
     positive_ids = []
 
+    # First pass: collect unique positives in order
     for i, context in enumerate(positive_texts):
         if context not in seen_contexts:
             doc_id = f"doc_{len(seen_contexts)}"
             seen_contexts[context] = doc_id
-            document_texts.append(context)
-            document_ids.append(doc_id)
+            unique_positive_texts.append(context)
+            unique_positive_ids.append(doc_id)
         positive_ids.append(seen_contexts[context])
+
+    # In SQuAD, all documents are positives (no extra corpus documents)
+    document_texts = unique_positive_texts
+    document_ids = unique_positive_ids
+    n_positives = len(unique_positive_ids)
 
     n_pairs = len(query_texts)
     query_ids = [f"query_{i}" for i in range(n_pairs)]
@@ -38,18 +45,14 @@ def load_squad_retrieval(task) -> RetrievalRawData:
     return RetrievalRawData(
         query_ids=query_ids,
         positive_ids=positive_ids,
-        positive_titles=None,
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=None,
         unique_query_texts=query_texts,
         unique_query_ids=query_ids,
-        unique_positive_texts=positive_texts,
-        unique_positive_ids=positive_ids,
-        unique_positive_titles=None,
         corpus_dict=corpus_dict,
         has_title=False,
-        documents_are_positives=False,
+        n_positives=n_positives,
     )
 
 

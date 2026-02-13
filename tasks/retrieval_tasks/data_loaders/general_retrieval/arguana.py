@@ -95,22 +95,21 @@ def load_arguana_dedup_retrieval(task) -> RetrievalRawData:
     corpus_dict = {
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
+    
+    # All documents are positives in this dataset
+    n_positives = len(document_ids)
 
     return RetrievalRawData(
         query_ids=query_ids,
         positive_ids=positive_ids,
-        positive_titles=None,
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=None,
         unique_query_texts=query_texts,
         unique_query_ids=query_ids,
-        unique_positive_texts=positive_texts,
-        unique_positive_ids=positive_ids,
-        unique_positive_titles=None,
         corpus_dict=corpus_dict,
         has_title=False,
-        documents_are_positives=True,
+        n_positives=n_positives,
     )
 
 

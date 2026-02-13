@@ -86,19 +86,18 @@ def load_sts_retrieval(task) -> RetrievalRawData:
         # Use the corpus doc ID for the positive
         positive_ids.append(text_to_doc_id[positive_text])
 
+    # All documents are positives in STS datasets
+    n_positives = len(document_ids)
+
     return RetrievalRawData(
         query_ids=query_ids,
         positive_ids=positive_ids,
-        positive_titles=None,
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=None,
         unique_query_texts=unique_query_texts,
         unique_query_ids=unique_query_ids,
-        unique_positive_texts=document_texts,
-        unique_positive_ids=document_ids,
-        unique_positive_titles=None,
         corpus_dict=corpus_dict,
         has_title=False,
-        documents_are_positives=True,
+        n_positives=n_positives,
     )

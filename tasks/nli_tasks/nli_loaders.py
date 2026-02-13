@@ -103,44 +103,43 @@ def load_nli_retrieval(task) -> RetrievalRawData:
                 doc_counter += 1
 
     # Build corpus from all unique hypotheses (entailment + non-entailment)
-    document_texts = []
-    document_ids = []
+    # Organize with positives first
     id_to_hypothesis = {v: k for k, v in hypothesis_to_id.items()}
-
+    
+    # Collect unique positives first (in order of first appearance)
+    unique_positive_ids = []
+    seen_positive_ids = set()
+    for pos_id in positive_ids:
+        if pos_id not in seen_positive_ids:
+            seen_positive_ids.add(pos_id)
+            unique_positive_ids.append(pos_id)
+    
+    # Collect remaining documents (non-positives)
+    remaining_doc_ids = []
     for doc_id in sorted(id_to_hypothesis.keys(), key=lambda x: int(x.split("_")[1])):
-        document_ids.append(doc_id)
-        document_texts.append(id_to_hypothesis[doc_id])
+        if doc_id not in seen_positive_ids:
+            remaining_doc_ids.append(doc_id)
+    
+    # Build unified document lists: positives first, then remaining
+    document_ids = unique_positive_ids + remaining_doc_ids
+    document_texts = [id_to_hypothesis[doc_id] for doc_id in document_ids]
+    n_positives = len(unique_positive_ids)
 
     corpus_dict = {
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
 
-    # Build unique positives (only from actual positives used in pairs, not all corpus)
-    unique_positive_texts = []
-    unique_positive_ids = []
-    seen_positive_ids = set()
-
-    for pos_id in positive_ids:
-        if pos_id not in seen_positive_ids:
-            seen_positive_ids.add(pos_id)
-            unique_positive_ids.append(pos_id)
-            unique_positive_texts.append(corpus_dict[pos_id]["text"])
-
     return RetrievalRawData(
         query_ids=query_ids,
         positive_ids=positive_ids,
-        positive_titles=None,
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=None,
         unique_query_texts=unique_query_texts,
         unique_query_ids=unique_query_ids,
-        unique_positive_texts=unique_positive_texts,
-        unique_positive_ids=unique_positive_ids,
-        unique_positive_titles=None,
         corpus_dict=corpus_dict,
         has_title=False,
-        documents_are_positives=False,
+        n_positives=n_positives,
     )
 
 
@@ -206,38 +205,37 @@ def load_all_nli_retrieval(task) -> RetrievalRawData:
         query_ids.append(query_text_to_id[query_text])
         positive_ids.append(text_to_id[pos_text])
 
-    # Build corpus
-    document_ids = list(text_to_id.values())
-    document_texts = list(text_to_id.keys())
-
-    corpus_dict = {
-        id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
-    }
-
     # Build unique positives (only from actual positives, not negatives)
-    unique_positive_texts = []
     unique_positive_ids = []
     seen_positive_texts = set()
 
     for pos_text in all_positive_texts:
         if pos_text not in seen_positive_texts:
             seen_positive_texts.add(pos_text)
-            unique_positive_texts.append(pos_text)
             unique_positive_ids.append(text_to_id[pos_text])
+    
+    # Build corpus with positives first, then remaining documents
+    seen_positive_ids_set = set(unique_positive_ids)
+    remaining_doc_ids = [doc_id for doc_id in text_to_id.values() if doc_id not in seen_positive_ids_set]
+    
+    # Unified document lists: positives first
+    document_ids = unique_positive_ids + remaining_doc_ids
+    document_texts = [list(text_to_id.keys())[list(text_to_id.values()).index(doc_id)] for doc_id in document_ids]
+    n_positives = len(unique_positive_ids)
+
+    corpus_dict = {
+        id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
+    }
 
     return RetrievalRawData(
         query_ids=query_ids,
         positive_ids=positive_ids,
-        positive_titles=None,
         document_texts=document_texts,
         document_ids=document_ids,
         document_titles=None,
         unique_query_texts=unique_query_texts,
         unique_query_ids=unique_query_ids,
-        unique_positive_texts=unique_positive_texts,
-        unique_positive_ids=unique_positive_ids,
-        unique_positive_titles=None,
         corpus_dict=corpus_dict,
         has_title=False,
-        documents_are_positives=False,
+        n_positives=n_positives,
     )
