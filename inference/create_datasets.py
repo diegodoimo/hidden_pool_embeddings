@@ -210,11 +210,9 @@ def create_dataset(
     )
 
     new_ds = dataset.map(input_to_dict, batched=True, batch_size=10000)
-
-    # Track removed IDs across all batches
+    
     all_removed_long_ids = []
     all_removed_empty_ids = []
-
     def filter_wrapper(rows):
         keep_mask, removed_long, removed_empty = _remove_long_sequences(
             rows, tokenizer, max_length
@@ -231,9 +229,7 @@ def create_dataset(
     # Store removed IDs as an attribute on the dataset
     new_ds.removed_long = all_removed_long_ids
     new_ds.removed_empty = all_removed_empty_ids
-
     new_ds.removed_ids = all_removed_long_ids + all_removed_empty_ids
-
     assert len(new_ds.removed_ids) == len(all_removed_long_ids) + len(
         all_removed_empty_ids
     )
