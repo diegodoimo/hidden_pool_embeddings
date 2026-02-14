@@ -7,7 +7,7 @@ import os
 def return_formatted(ndata):
     for threshold, suffix in [(10**6, "M"), (10**3, "k")]:
         if ndata >= threshold:
-            return f"{ndata / threshold:.3f} {suffix}"
+            return f"{ndata / threshold:.2f} {suffix}"
     return str(ndata)
 
 
@@ -16,8 +16,8 @@ def print_memory_consumed(message="", rank=0):
     allocated = torch.cuda.max_memory_allocated() / 2**30
     reserved = torch.cuda.max_memory_reserved() / 2**30
     if rank == 0:
-        print(f"CUDA mem allocated {message}: {allocated} GB")
-        print(f"CUDA mem reserved {message}: {reserved} GB")
+        print(f"CUDA mem allocated {message}: {allocated:.2f} GB")
+        print(f"CUDA mem reserved {message}: {reserved:.2f} GB")
 
 
 def get_cpt_steps(nsteps, max_train_steps, logspace=True):

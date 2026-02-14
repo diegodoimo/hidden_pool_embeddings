@@ -196,7 +196,7 @@ class HardNegativesMiner:
         model,
         has_title,
         corpus_dict,
-        batch_size=8,
+        batch_size=64,
         top_k=100,
     ):
 
@@ -241,13 +241,12 @@ class HardNegativesMiner:
         dist.barrier()
         if self.rank == 0:
             print("\nQuery-positive scores will be computed during corpus search")
-        print_memory_consumed(self.rank)
+            print_memory_consumed(rank=self.rank)
 
         dist.barrier()
         chunk_size = estimate_chunk_size(query_embeddings)
         if self.rank == 0:
             print("\nBuilding document embeddings and computing query-positive scores")
-            print(f"selected_chunk_size: {chunk_size}")
 
         start = time.time()
         top_scores, top_indices, query_positive_scores = search(

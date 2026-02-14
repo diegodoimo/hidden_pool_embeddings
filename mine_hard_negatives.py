@@ -26,6 +26,8 @@ from tasks.task_categories import (
     SUMMARIZATION,
 )
 
+from utils.helpers import print_memory_consumed
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -46,6 +48,7 @@ def parse_args():
         help="Select task types to mine hard negatives for. Can specify multiple types. Ignored if --task_names is provided.",
     )
     parser.add_argument("--max_length", type=int, default=4096)
+    parser.add_argument("--batch_size", type=int, default=32)
     args = parser.parse_args()
     return args
 
@@ -213,14 +216,16 @@ def main():
         print("model loaded")
     dist.barrier()
     model = model.eval()
-    model = DDP(model, device_ids=[dist.get_rank()])
+    # ddp is only needed for training here we are adding gradient buffers and the memory occupied with doubl
+    #model = DDP(model, device_ids=[dist.get_rank()])
     model = torch.compile(model)
     
     if RANK == 0:
         print("model wrapped in DDP and compile")
+        print_memory_consumed()
     dist.barrier()
 
-    miner.mine_negatives(model, batch_size=32)
+    miner.mine_negatives(model, batch_size=args.batch_size)
     dist.destroy_process_group()
 
 

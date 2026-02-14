@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from utils.sorted_sampler import LenghtSortedSampler
 import time
 import numpy as np
-from utils.helpers import print_memory_consumed
+from utils.helpers import print_memory_consumed, return_formatted
 
 # ***********************************************************************************************
 
@@ -169,9 +169,9 @@ def search(
     dist.barrier()
     start = time.time()
     if rank == 0:
-        print(f"Using chunk_size: {chunk_size}")
+        print(f"Using chunk_size: {return_formatted(chunk_size)}")
         print(
-            f"Will extract query-positive scores for {len(qrels_query_ids)} qrels pairs"
+            f"Will extract query-positive scores for {return_formatted(len(qrels_query_ids))} qrels pairs"
         )
 
     time_loading = 0
@@ -191,7 +191,7 @@ def search(
         if (i + 1) % interval == 0 and rank == 0:
             # if rank == 0:
             print(
-                f"processed {chunk_idx//10**3}k/{N_corpus//10**3}k samples in {(time.time()-start)/60} mins"
+                f"processed {return_formatted(chunk_idx)}/{return_formatted(N_corpus)} samples in {(time.time()-start)/60} mins"
             )
             print(
                 f"Time loading: {time_loading/60:.2f}min, Time encoding: {time_encoding/60:.2f}min, Time sim: {time_sim/60:.2f}min, Time pos: {time_pos/60:.2f}min, Time hard: {time_hard/60:.2f}min, Total: {(time_loading+time_encoding+time_sim+time_pos+time_hard)/60:.2f}min"

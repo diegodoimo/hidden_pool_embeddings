@@ -5,10 +5,10 @@
 #SBATCH --nodes=1
 #SBATCH --time=24:00:00            
 #SBATCH --ntasks-per-node=1       
-#SBATCH --cpus-per-task=28
-#SBATCH --mem=150G       
+#SBATCH --cpus-per-task=56
+#SBATCH --mem=300G       
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:2
+#SBATCH --gres=gpu:H100:4
 ##SBATCH --gres=gpu:A100:2
 
 
@@ -37,8 +37,10 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     mine_hard_negatives.py  \
-    --model_name_or_path "Qwen/Qwen3-Embedding-0.6B" \
+    --model_name_or_path "Qwen/Qwen3-Embedding-8B" \
+    --batch_size 128 \
     --task_names "paq" \
+
     #--task_names 'eli5' 'squad' 'hotpotqa' 'bioasq' 'pubmedqa' \
 
 
