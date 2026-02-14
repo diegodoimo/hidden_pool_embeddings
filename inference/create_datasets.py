@@ -48,6 +48,7 @@ def instruction_template_qwen3(prompt_type, task_metadata, text, title="") -> st
 
     return prompt
 
+
 def _is_valid_row(text: str) -> bool:
     """Check if a dataset row has non-empty text content."""
     if not text or not text.strip():
@@ -93,23 +94,23 @@ def _is_valid_row(text: str) -> bool:
 
 def _remove_long_sequences(rows, tokenizer, max_length):
     """Remove rows where the tokenized prompt exceeds max_length."""
-    
+
     texts = np.array(rows["text"])
     ids = np.array(rows["id"])
     prompts = rows["prompt"]
-    
+
     # Vectorized empty check
     valid_text_mask = np.array([bool(text and text.strip()) for text in texts])
     removed_empty_ids = ids[~valid_text_mask].tolist()
-    
+
     # Pre-filter by character length (fast heuristic)
     char_lengths = np.array([len(p) for p in prompts])
     definitely_valid = char_lengths <= max_length
     needs_tokenization = (char_lengths > max_length) & valid_text_mask
-    
+
     # Batch tokenize only the ones that need it
     prompts_to_check = [prompts[i] for i in np.where(needs_tokenization)[0]]
-    
+
     if prompts_to_check:
         # Batch tokenization - MUCH faster than loop
         tokenized = tokenizer(
@@ -120,7 +121,7 @@ def _remove_long_sequences(rows, tokenizer, max_length):
         )
         token_lengths = np.array([len(ids) for ids in tokenized["input_ids"]])
         too_long_mask = token_lengths > max_length
-        
+
         # Map back to original indices
         check_indices = np.where(needs_tokenization)[0]
         removed_long_indices = check_indices[too_long_mask]
@@ -128,14 +129,13 @@ def _remove_long_sequences(rows, tokenizer, max_length):
     else:
         removed_long_ids = []
         removed_long_indices = np.array([], dtype=int)
-    
+
     # Final keep mask
     keep_mask = valid_text_mask & definitely_valid
     if len(removed_long_indices) > 0:
         keep_mask[removed_long_indices] = False
-    
-    return keep_mask.tolist(), removed_long_ids, removed_empty_ids
 
+    return keep_mask.tolist(), removed_long_ids, removed_empty_ids
 
 
 def _build_prompt(
@@ -221,13 +221,14 @@ def create_dataset(
         eot_id=tokenizer.pad_token_id,
     )
     new_ds = dataset.map(input_to_dict, batched=True, batch_size=10000)
-    
+
     if rank == 0:
         print(f"prompt constructed in {(time.time()-start)/60}min")
         start = time.time()
 
     all_removed_long_ids = []
     all_removed_empty_ids = []
+
     def filter_wrapper(rows):
         keep_mask, removed_long, removed_empty = _remove_long_sequences(
             rows, tokenizer, max_length
@@ -243,7 +244,6 @@ def create_dataset(
 
     if rank == 0:
         print(f"dataset filtered in {(time.time()-start)/60}min")
-        start = time.time()
     # Store removed IDs as an attribute on the dataset
     new_ds.removed_long = all_removed_long_ids
     new_ds.removed_empty = all_removed_empty_ids
@@ -253,6 +253,7 @@ def create_dataset(
     )
 
     return new_ds
+
 
 def filter_qrels_by_length(
     removed_query_ids,
@@ -282,8 +283,6 @@ def filter_qrels_by_length(
     filtered_qrels = qrels_dataset.select(pair_valid_indices)
 
     return filtered_qrels
-
-
 
 
 def instruction_template_embeddinggemma(prompt_type, task_metadata, row):
