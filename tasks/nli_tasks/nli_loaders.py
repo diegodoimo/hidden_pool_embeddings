@@ -6,14 +6,20 @@ These loaders handle Natural Language Inference tasks.
 from datasets import load_dataset
 from typing import List, Optional
 import random
+import time
+import torch.distributed as dist
+import pandas as pd
+import numpy as np
 from collections import defaultdict
 
 from tasks.data_helpers import RetrievalRawData
+from utils.helpers import return_formatted
+from tasks.retrieval_tasks.retrieval_loaders import limit_number_of_queries
 
 
-def load_nli_retrieval(task) -> RetrievalRawData:
+def load_nli_retrieval(task, max_num_queries=10**6, rank=None) -> RetrievalRawData:
     """
-    Load NLI datasets (SNLI, MNLI, ANLI) for retrieval with hard negatives.
+    Load NLI datasets (SNLI, MNLI, ANLI) for retrieval with hard negatives using vectorized operations.
 
     For natural language inference (NLI) datasets, we retain only premises with at least one
     entailed hypothesis as queries, and sample one of the entailed hypotheses as the positive.
@@ -21,113 +27,204 @@ def load_nli_retrieval(task) -> RetrievalRawData:
     corpus so they can be mined as hard negatives.
 
     Used by: SNLI, MNLI, ANLI, XNLI
+    
+    Args:
+        task: Task object with dataset configuration
+        max_num_queries: Maximum number of queries to keep (default: 1 million)
+        rank: Distributed training rank (if None, obtained from dist.get_rank())
     """
+    rank = dist.get_rank() if rank is None else rank
+    
+    if rank == 0:
+        start = time.time()
+        print("Loading dataset...")
+    
     if hasattr(task, "hf_subset") and task.hf_subset:
         dataset = load_dataset(task.hf_name, name=task.hf_subset, split=task.split)
     else:
         dataset = load_dataset(task.hf_name, split=task.split)
+    
+    dist.barrier()
+    if rank == 0:
+        print(f"Dataset loaded in {(time.time()-start)/60:.2f} min")
+        print(f"num elements in dataset: {return_formatted(len(dataset))}")
+        start = time.time()
+        print("Converting to pandas and processing...")
 
     # Get label configuration
     entailment_label = getattr(task, "entailment_label", 0)
     neutral_label = getattr(task, "neutral_label", 1)
     contradiction_label = getattr(task, "contradiction_label", 2)
 
-    # Group by premise to find all hypotheses for each premise
-    premise_to_hypotheses = defaultdict(
-        lambda: {"entailment": [], "non_entailment": []}
+    # Convert to pandas DataFrame for vectorized operations
+    cols_to_load = [task.anchor_name, task.positive_name, task.label_name]
+    df = dataset.select_columns(cols_to_load).to_pandas()
+    df.columns = ["premise", "hypothesis", "label"]
+    
+    # Filter out invalid labels (e.g., -1 in SNLI)
+    df = df[df["label"] >= 0].reset_index(drop=True)
+    
+    dist.barrier()
+    if rank == 0:
+        print(f"Conversion done in {(time.time()-start)/60:.2f} min")
+        start = time.time()
+        print("Grouping by premise...")
+    
+    # Create label categories
+    df["is_entailment"] = df["label"] == entailment_label
+    df["is_non_entailment"] = df["label"].isin([neutral_label, contradiction_label])
+    
+    # Group by premise to find premises with at least one entailment
+    premise_groups = df.groupby("premise").agg({
+        "is_entailment": "sum",
+        "is_non_entailment": "sum"
+    })
+    
+    # Keep only premises with at least one entailment
+    valid_premises = premise_groups[premise_groups["is_entailment"] > 0].index.tolist()
+    df_valid = df[df["premise"].isin(valid_premises)].reset_index(drop=True)
+    
+    dist.barrier()
+    if rank == 0:
+        print(f"Grouping done in {(time.time()-start)/60:.2f} min")
+        print(f"Found {return_formatted(len(valid_premises))} valid premises with entailment")
+        start = time.time()
+        print("Building query-positive pairs...")
+
+    # Build unique query ID mapping (one-to-one: unique premise -> unique query ID)
+    unique_premises = pd.Series(valid_premises).drop_duplicates()
+    unique_query_ids = [f"query_{i}" for i in range(len(unique_premises))]
+    unique_query_texts = unique_premises.tolist()
+    premise_to_query_id = pd.Series(unique_query_ids, index=unique_premises.values)
+    
+    # For each premise, sample one entailed hypothesis as positive
+    # Group entailments by premise
+    df_entailments = df_valid[df_valid["is_entailment"]].copy()
+    
+    # Sample one entailment per premise (using groupby + sample)
+    sampled_positives = df_entailments.groupby("premise")["hypothesis"].apply(
+        lambda x: x.sample(n=1, random_state=42).iloc[0]
+    ).reset_index()
+    sampled_positives.columns = ["premise", "positive_hypothesis"]
+    
+    # Map premises to query IDs
+    sampled_positives["query_id"] = sampled_positives["premise"].map(premise_to_query_id)
+    
+    # Build unique hypotheses (all hypotheses, both entailment and non-entailment)
+    all_hypotheses = df_valid["hypothesis"].drop_duplicates().reset_index(drop=True)
+    hypothesis_to_id = pd.Series(
+        [f"doc_{i}" for i in range(len(all_hypotheses))],
+        index=all_hypotheses.values
     )
+    
+    # Map positive hypotheses to doc IDs
+    sampled_positives["positive_id"] = sampled_positives["positive_hypothesis"].map(hypothesis_to_id)
+    
+    # Build query-positive pairs
+    query_ids = sampled_positives["query_id"].tolist()
+    positive_ids = sampled_positives["positive_id"].tolist()
+    n_pairs = len(query_ids)
 
-    for row in dataset:
-        label = row[task.label_name]
-        premise = row[task.anchor_name]
-        hypothesis = row[task.positive_name]
-
-        # Skip invalid labels (e.g., -1 in SNLI)
-        if label < 0:
-            continue
-
-        if label == entailment_label:
-            premise_to_hypotheses[premise]["entailment"].append(hypothesis)
-        elif label in [neutral_label, contradiction_label]:
-            # These will be added to corpus as potential hard negatives
-            premise_to_hypotheses[premise]["non_entailment"].append(hypothesis)
-
-    # Filter to keep only premises with at least one entailed hypothesis
-    valid_premises = {
-        premise: hyps
-        for premise, hyps in premise_to_hypotheses.items()
-        if len(hyps["entailment"]) > 0
-    }
-
-    # Build unique query ID mapping first (one-to-one: unique premise -> unique query ID)
-    premise_to_query_id = {}
-    unique_query_ids = []
-    unique_query_texts = []
-
-    for premise in valid_premises.keys():
-        if premise not in premise_to_query_id:
-            query_id = f"query_{len(unique_query_ids)}"
-            premise_to_query_id[premise] = query_id
-            unique_query_ids.append(query_id)
-            unique_query_texts.append(premise)
-
-    # Build the retrieval data (query-positive pairs)
-    query_ids = []
-    positive_ids = []
-
-    # Track unique documents for corpus
-    hypothesis_to_id = {}
-    doc_counter = 0
-
-    for premise, hyps in valid_premises.items():
-        # Sample one entailed hypothesis as positive
-        positive_hypothesis = random.choice(hyps["entailment"])
-
-        # Use the unique query ID for this premise
-        query_id = premise_to_query_id[premise]
-
-        # Get or create positive ID
-        if positive_hypothesis not in hypothesis_to_id:
-            hypothesis_to_id[positive_hypothesis] = f"doc_{doc_counter}"
-            doc_counter += 1
-        positive_id = hypothesis_to_id[positive_hypothesis]
-
-        query_ids.append(query_id)
-        positive_ids.append(positive_id)
-
-        # Add all non-entailment hypotheses to the corpus
-        # These will be available as hard negatives during mining
-        for neg_hyp in hyps["non_entailment"]:
-            if neg_hyp not in hypothesis_to_id:
-                hypothesis_to_id[neg_hyp] = f"doc_{doc_counter}"
-                doc_counter += 1
-
-    # Build corpus from all unique hypotheses (entailment + non-entailment)
-    # Organize with positives first
+    dist.barrier()
+    if rank == 0:
+        print(f"Query-positive pairs built in {(time.time()-start)/60:.2f} min")
+        start = time.time()
+        print("Building corpus and applying query limiting...")
+    
+    # Get unique positives
+    unique_positive_ids_series = pd.Series(positive_ids).drop_duplicates()
+    unique_positive_ids = unique_positive_ids_series.tolist()
+    unique_positive_texts = [all_hypotheses.iloc[hypothesis_to_id[hypothesis_to_id == pid].index[0]] 
+                             for pid in unique_positive_ids]
+    
+    # Create ID to hypothesis mapping
     id_to_hypothesis = {v: k for k, v in hypothesis_to_id.items()}
     
-    # Collect unique positives first (in order of first appearance)
-    unique_positive_ids = []
-    seen_positive_ids = set()
-    for pos_id in positive_ids:
-        if pos_id not in seen_positive_ids:
-            seen_positive_ids.add(pos_id)
-            unique_positive_ids.append(pos_id)
+    # Apply query limiting if needed
+    unique_query_idx = np.arange(len(unique_query_ids))
     
-    # Collect remaining documents (non-positives)
-    remaining_doc_ids = []
-    for doc_id in sorted(id_to_hypothesis.keys(), key=lambda x: int(x.split("_")[1])):
-        if doc_id not in seen_positive_ids:
-            remaining_doc_ids.append(doc_id)
-    
-    # Build unified document lists: positives first, then remaining
-    document_ids = unique_positive_ids + remaining_doc_ids
-    document_texts = [id_to_hypothesis[doc_id] for doc_id in document_ids]
-    n_positives = len(unique_positive_ids)
+    if max_num_queries is not None and len(unique_query_idx) > max_num_queries:
+        if rank == 0:
+            print(
+                f"Number of unique queries {return_formatted(len(unique_query_idx))} > {max_num_queries//10**6}M: limiting queries"
+            )
+        
+        unique_query_texts = unique_query_texts[:max_num_queries]
+        unique_query_ids = unique_query_ids[:max_num_queries]
+        unique_query_idx = unique_query_idx[:max_num_queries]
+        
+        # Use the unified limit_number_of_queries function
+        (
+            query_ids,
+            positive_ids,
+            document_ids,
+            document_texts,
+            _,
+            n_positives,
+        ) = limit_number_of_queries(
+            query_ids=query_ids,
+            positive_ids=positive_ids,
+            unique_query_idx=unique_query_idx,
+            n_pairs=n_pairs,
+            unique_positive_ids=unique_positive_ids,
+            unique_positive_texts=unique_positive_texts,
+            unique_positive_titles=None,
+            has_title=False,
+            max_queries=max_num_queries,
+        )
+        
+        # Add remaining corpus hypotheses not in positives
+        seen_positive_ids_set = set(unique_positive_ids)
+        all_document_ids_set = set(document_ids)
+        remaining_corpus_ids = [
+            doc_id for doc_id in hypothesis_to_id.values()
+            if doc_id not in seen_positive_ids_set and doc_id not in all_document_ids_set
+        ]
+        
+        if remaining_corpus_ids:
+            document_ids.extend(remaining_corpus_ids)
+            document_texts.extend([id_to_hypothesis[did] for did in remaining_corpus_ids])
+        
+        if rank == 0:
+            print(f"Queries limited in {(time.time()-start)/60:.2f} min")
+            print(f"Positives referenced by filtered pairs: {return_formatted(n_positives)}")
+            print(f"Total unique documents in corpus: {return_formatted(len(document_ids))}")
+    else:
+        # No limiting needed
+        # Collect remaining documents (non-positives)
+        seen_positive_ids_set = set(unique_positive_ids)
+        remaining_doc_ids = [
+            doc_id for doc_id in hypothesis_to_id.values()
+            if doc_id not in seen_positive_ids_set
+        ]
+        
+        # Build unified document lists: positives first, then remaining
+        document_ids = unique_positive_ids + remaining_doc_ids
+        document_texts = [id_to_hypothesis[doc_id] for doc_id in document_ids]
+        n_positives = len(unique_positive_ids)
+        
+        if rank == 0:
+            print(
+                f"Found {return_formatted(len(unique_query_ids))} unique queries (under {max_num_queries//10**6}M limit)"
+            )
+            print(f"Total number of query-positive pairs: {return_formatted(len(query_ids))}")
+            print(f"Positives referenced by pairs (n_positives): {return_formatted(n_positives)}")
+            print(f"Total unique documents in corpus: {return_formatted(len(document_ids))}")
 
     corpus_dict = {
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
+    
+    # Assertions to ensure data consistency
+    assert set(positive_ids).issubset(
+        set(document_ids)
+    ), "filtered qrels contain positive IDs not in document list"
+    
+    assert set(unique_positive_ids).issubset(
+        set(document_ids)
+    ), "unique positives not in document list"
+    
+    assert set(corpus_dict.keys()) == set(document_ids), "corpus_dict keys mismatch with document_ids"
 
     return RetrievalRawData(
         query_ids=query_ids,
@@ -143,89 +240,186 @@ def load_nli_retrieval(task) -> RetrievalRawData:
     )
 
 
-def load_all_nli_retrieval(task) -> RetrievalRawData:
+def load_all_nli_retrieval(task, max_num_queries=10**6, rank=None) -> RetrievalRawData:
     """
-    Load ALL_NLI dataset which already has triplets (anchor, positive, negative).
+    Load ALL_NLI dataset which already has triplets (anchor, positive, negative) using vectorized operations.
     The negatives are included in the corpus so they can be mined as hard negatives.
 
     Used by: ALL_NLI
+    
+    Args:
+        task: Task object with dataset configuration
+        max_num_queries: Maximum number of queries to keep (default: 1 million)
+        rank: Distributed training rank (if None, obtained from dist.get_rank())
     """
+    rank = dist.get_rank() if rank is None else rank
+    
+    if rank == 0:
+        start = time.time()
+        print("Loading dataset...")
+    
     if task.hf_subset:
         dataset = load_dataset(task.hf_name, name=task.hf_subset, split=task.split)
     else:
         dataset = load_dataset(task.hf_name, split=task.split)
-
-    all_query_texts = list(dataset[task.anchor_name])
-    all_positive_texts = list(dataset[task.positive_name])
+    
+    dist.barrier()
+    if rank == 0:
+        print(f"Dataset loaded in {(time.time()-start)/60:.2f} min")
+        print(f"num elements in dataset: {return_formatted(len(dataset))}")
+        start = time.time()
+        print("Converting to pandas...")
 
     # Check if negative field exists
     has_negatives = (
         hasattr(task, "negative_name") and task.negative_name in dataset.column_names
     )
+    
+    # Convert to pandas DataFrame
+    cols_to_load = [task.anchor_name, task.positive_name]
     if has_negatives:
-        negative_texts = list(dataset[task.negative_name])
+        cols_to_load.append(task.negative_name)
+    
+    df = dataset.select_columns(cols_to_load).to_pandas()
+    
+    if has_negatives:
+        df.columns = ["query_text", "positive_text", "negative_text"]
     else:
-        negative_texts = []
-
-    # Build unique query mapping (one-to-one: unique query text -> unique query ID)
-    query_text_to_id = {}
-    unique_query_texts = []
-    unique_query_ids = []
-
-    for query_text in all_query_texts:
-        if query_text not in query_text_to_id:
-            query_id = f"query_{len(unique_query_ids)}"
-            query_text_to_id[query_text] = query_id
-            unique_query_ids.append(query_id)
-            unique_query_texts.append(query_text)
-
-    # Build corpus: include both positives and negatives
-    # Use a dict to deduplicate
-    text_to_id = {}
-    doc_counter = 0
-
-    # Add positives
-    for pos_text in all_positive_texts:
-        if pos_text not in text_to_id:
-            text_to_id[pos_text] = f"doc_{doc_counter}"
-            doc_counter += 1
-
-    # Add negatives to corpus
+        df.columns = ["query_text", "positive_text"]
+    
+    n_pairs = len(df)
+    
+    dist.barrier()
+    if rank == 0:
+        print(f"Conversion done in {(time.time()-start)/60:.2f} min")
+        start = time.time()
+        print("Building unique queries and corpus...")
+    
+    # Build unique query mapping using pandas
+    unique_query_mask = ~df["query_text"].duplicated(keep="first")
+    unique_query_idx = unique_query_mask[unique_query_mask].index.values
+    unique_query_texts = df.loc[unique_query_mask, "query_text"].tolist()
+    unique_query_ids = [f"query_{i}" for i in range(len(unique_query_texts))]
+    
+    # Create query text to ID mapping
+    query_text_to_id = pd.Series(unique_query_ids, index=unique_query_texts)
+    
+    # Build corpus from all unique texts (positives + negatives)
     if has_negatives:
-        for neg_text in negative_texts:
-            if neg_text not in text_to_id:
-                text_to_id[neg_text] = f"doc_{doc_counter}"
-                doc_counter += 1
-
-    # Build query-positive pairs using unique query IDs
-    query_ids = []
-    positive_ids = []
-
-    for query_text, pos_text in zip(all_query_texts, all_positive_texts):
-        query_ids.append(query_text_to_id[query_text])
-        positive_ids.append(text_to_id[pos_text])
-
-    # Build unique positives (only from actual positives, not negatives)
-    unique_positive_ids = []
-    seen_positive_texts = set()
-
-    for pos_text in all_positive_texts:
-        if pos_text not in seen_positive_texts:
-            seen_positive_texts.add(pos_text)
-            unique_positive_ids.append(text_to_id[pos_text])
+        all_corpus_texts = pd.concat([
+            df["positive_text"],
+            df["negative_text"]
+        ]).drop_duplicates().reset_index(drop=True)
+    else:
+        all_corpus_texts = df["positive_text"].drop_duplicates().reset_index(drop=True)
     
-    # Build corpus with positives first, then remaining documents
-    seen_positive_ids_set = set(unique_positive_ids)
-    remaining_doc_ids = [doc_id for doc_id in text_to_id.values() if doc_id not in seen_positive_ids_set]
+    # Create text to doc ID mapping
+    text_to_id = pd.Series(
+        [f"doc_{i}" for i in range(len(all_corpus_texts))],
+        index=all_corpus_texts.values
+    )
     
-    # Unified document lists: positives first
-    document_ids = unique_positive_ids + remaining_doc_ids
-    document_texts = [list(text_to_id.keys())[list(text_to_id.values()).index(doc_id)] for doc_id in document_ids]
-    n_positives = len(unique_positive_ids)
+    # Map query texts and positive texts to IDs
+    query_ids = df["query_text"].map(query_text_to_id).tolist()
+    positive_ids = df["positive_text"].map(text_to_id).tolist()
+
+    # Get unique positives (only from actual positives, not negatives)
+    unique_positive_mask = ~df["positive_text"].duplicated(keep="first")
+    unique_positive_ids_series = df.loc[unique_positive_mask, "positive_text"].map(text_to_id)
+    unique_positive_ids = unique_positive_ids_series.tolist()
+    unique_positive_texts = df.loc[unique_positive_mask, "positive_text"].tolist()
+    
+    # Create ID to text mapping for corpus reconstruction
+    id_to_text = {v: k for k, v in text_to_id.items()}
+    
+    dist.barrier()
+    if rank == 0:
+        print(f"Corpus building done in {(time.time()-start)/60:.2f} min")
+        print(f"Found {return_formatted(len(unique_query_ids))} unique queries before limiting")
+        print(f"Found {return_formatted(len(unique_positive_ids))} unique positives")
+        start = time.time()
+        print("Applying query limiting...")
+    
+    # Apply query limiting if needed
+    if max_num_queries is not None and len(unique_query_idx) > max_num_queries:
+        if rank == 0:
+            print(
+                f"Number of unique queries {return_formatted(len(unique_query_idx))} > {max_num_queries//10**6}M: limiting queries"
+            )
+        
+        unique_query_texts = unique_query_texts[:max_num_queries]
+        unique_query_ids = unique_query_ids[:max_num_queries]
+        unique_query_idx = unique_query_idx[:max_num_queries]
+        
+        # Use the unified limit_number_of_queries function
+        (
+            query_ids,
+            positive_ids,
+            document_ids,
+            document_texts,
+            _,
+            n_positives,
+        ) = limit_number_of_queries(
+            query_ids=query_ids,
+            positive_ids=positive_ids,
+            unique_query_idx=unique_query_idx,
+            n_pairs=n_pairs,
+            unique_positive_ids=unique_positive_ids,
+            unique_positive_texts=unique_positive_texts,
+            unique_positive_titles=None,
+            has_title=False,
+            max_queries=max_num_queries,
+        )
+        
+        # Add remaining corpus texts not in positives
+        seen_positive_ids_set = set(unique_positive_ids)
+        all_document_ids_set = set(document_ids)
+        remaining_corpus_ids = [
+            doc_id for doc_id in text_to_id.values()
+            if doc_id not in seen_positive_ids_set and doc_id not in all_document_ids_set
+        ]
+        
+        if remaining_corpus_ids:
+            document_ids.extend(remaining_corpus_ids)
+            document_texts.extend([id_to_text[did] for did in remaining_corpus_ids])
+        
+        if rank == 0:
+            print(f"Queries limited in {(time.time()-start)/60:.2f} min")
+            print(f"Positives referenced by filtered pairs: {return_formatted(n_positives)}")
+            print(f"Total unique documents in corpus: {return_formatted(len(document_ids))}")
+    else:
+        # No limiting needed
+        # Build corpus with positives first, then remaining documents
+        seen_positive_ids_set = set(unique_positive_ids)
+        remaining_doc_ids = [doc_id for doc_id in text_to_id.values() if doc_id not in seen_positive_ids_set]
+        
+        # Unified document lists: positives first
+        document_ids = unique_positive_ids + remaining_doc_ids
+        document_texts = [id_to_text[doc_id] for doc_id in document_ids]
+        n_positives = len(unique_positive_ids)
+        
+        if rank == 0:
+            print(
+                f"Found {return_formatted(len(unique_query_ids))} unique queries (under {max_num_queries//10**6}M limit)"
+            )
+            print(f"Total number of query-positive pairs: {return_formatted(len(query_ids))}")
+            print(f"Positives referenced by pairs (n_positives): {return_formatted(n_positives)}")
+            print(f"Total unique documents in corpus: {return_formatted(len(document_ids))}")
 
     corpus_dict = {
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
+    
+    # Assertions to ensure data consistency
+    assert set(positive_ids).issubset(
+        set(document_ids)
+    ), "filtered qrels contain positive IDs not in document list"
+    
+    assert set(unique_positive_ids).issubset(
+        set(document_ids)
+    ), "unique positives not in document list"
+    
+    assert set(corpus_dict.keys()) == set(document_ids), "corpus_dict keys mismatch with document_ids"
 
     return RetrievalRawData(
         query_ids=query_ids,
