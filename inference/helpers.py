@@ -174,7 +174,9 @@ def search(
             f"Will extract query-positive scores for {len(qrels_query_ids)} qrels pairs"
         )
 
-    time_before = 0
+    time_loading = 0
+    time_encoding = 0
+    time_sim = 0
     time_pos = 0
     time_hard = 0
 
@@ -192,7 +194,7 @@ def search(
                 f"processed {chunk_idx//10**3}k/{N_corpus//10**3}k samples in {(time.time()-start)/60} mins"
             )
             print(
-                f"Time before: {time_before/60:.2f}min, Time pos: {time_pos/60:.2f}min, Time hard: {time_hard/60:.2f}min, Total: {(time_before+time_pos+time_hard)/60:.2f}min"
+                f"Time loading: {time_loading/60:.2f}min, Time encoding: {time_encoding/60:.2f}min, Time sim: {time_sim/60:.2f}min, Time pos: {time_pos/60:.2f}min, Time hard: {time_hard/60:.2f}min, Total: {(time_loading+time_encoding+time_sim+time_pos+time_hard)/60:.2f}min"
             )
             print_memory_consumed(rank=rank)
 
@@ -211,6 +213,9 @@ def search(
             collate_fn=collate_fn,
         )
 
+        torch.cuda.synchronize()
+        t01 = time.time()
+
         local_corpus_chunk, local_indices = encode(
             model,
             corpus_loader,
@@ -218,6 +223,9 @@ def search(
             world_size=world_size,
             divided_by_chunks=True,
         )
+
+        torch.cuda.synchronize()
+        t1 = time.time()
 
         # Compute global indices for this chunk
         global_indices = local_indices + chunk_idx
@@ -227,7 +235,7 @@ def search(
         del local_corpus_chunk  # Free corpus embeddings immediately
 
         torch.cuda.synchronize()
-        t1 = time.time()
+        t11 = time.time()
 
         if chunk_idx < n_positives:
             query_positive_scores = update_query_positive_score(
@@ -244,22 +252,16 @@ def search(
         torch.cuda.synchronize()
         t3 = time.time()
 
-        time_before += t1 - t0
-        time_pos += t2 - t1
+        time_loading = t01 - t0
+        time_encoding += t1 - t01
+        time_sim += t11 - t1
+        time_pos += t2 - t11
         time_hard += t3 - t2
 
         del scores, local_indices
 
     dist.barrier()
     torch.cuda.synchronize()
-
-    if rank == 0:
-        print("\nFinal Benchmarking Results:")
-        print(f"Total time before: {time_before/60:.2f}min")
-        print(f"Total time update_query_positive_score: {time_pos/60:.2f}min")
-        print(f"Total time update_hard_negatives: {time_hard/60:.2f}min")
-        print(f"Total benchmarked time: {(time_before+time_pos+time_hard)/60:.2f}min")
-        print(f"Total elapsed time: {(time.time()-start)/60:.2f}min\n")
 
     # Distributed merging for top-k results
     if world_size > 1:
