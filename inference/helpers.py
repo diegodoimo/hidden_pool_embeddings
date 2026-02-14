@@ -249,6 +249,7 @@ def search(
             scores, local_indices, chunk_idx, top_scores, top_indices, top_k
         )
 
+        del scores, local_indices
         torch.cuda.synchronize()
         t3 = time.time()
 
@@ -257,8 +258,6 @@ def search(
         time_sim += t11 - t1
         time_pos += t2 - t11
         time_hard += t3 - t2
-
-        del scores, local_indices
 
     dist.barrier()
     torch.cuda.synchronize()
