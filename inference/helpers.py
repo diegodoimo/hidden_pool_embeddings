@@ -174,15 +174,25 @@ def search(
             f"Will extract query-positive scores for {len(qrels_query_ids)} qrels pairs"
         )
 
+    time_before = 0
+    time_pos = 0
+    time_hard = 0
+
     for i, chunk_idx in enumerate(range(0, N_corpus, chunk_size)):
 
         dist.barrier()
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+        t0 = time.time()
 
         if (i + 1) % interval == 0 and rank == 0:
-        #if rank == 0:
+            # if rank == 0:
             print(
                 f"processed {chunk_idx//10**3}k/{N_corpus//10**3}k samples in {(time.time()-start)/60} mins"
+            )
+            print(
+                f"Time before: {time_before/60:.2f}min, Time pos: {time_pos/60:.2f}min, Time hard: {time_hard/60:.2f}min, Total: {(time_before+time_pos+time_hard)/60:.2f}min"
             )
             print_memory_consumed(rank=rank)
 
@@ -216,38 +226,40 @@ def search(
         scores = torch.matmul(query_embeddings, local_corpus_chunk.T)
         del local_corpus_chunk  # Free corpus embeddings immediately
 
+        torch.cuda.synchronize()
+        t1 = time.time()
+
         if chunk_idx < n_positives:
             query_positive_scores = update_query_positive_score(
                 query_positive_scores, global_indices, positive_to_queries, scores
             )
 
-        chunk_top_scores, chunk_top_indices = torch.topk(
-            scores,
-            k=min(top_k, scores.shape[1]),
-            dim=1,
-            largest=True,
+        torch.cuda.synchronize()
+        t2 = time.time()
+
+        top_scores, top_indices = update_hard_negatives(
+            scores, local_indices, chunk_idx, top_scores, top_indices, top_k
         )
-        del scores  # Free the large scores tensor
 
-        chunk_absolute_indices = local_indices[chunk_top_indices] + chunk_idx
-        del local_indices, chunk_top_indices
+        torch.cuda.synchronize()
+        t3 = time.time()
 
-        combined_scores = torch.cat([top_scores, chunk_top_scores], dim=1)
-        combined_indices = torch.cat([top_indices, chunk_absolute_indices], dim=1)
-        del chunk_top_scores, chunk_absolute_indices
+        time_before += t1 - t0
+        time_pos += t2 - t1
+        time_hard += t3 - t2
 
-        # Find the true global top-k among the combined results
-        top_k_in_combined_scores, top_k_in_combined_indices = torch.topk(
-            combined_scores,
-            k=top_k,
-            dim=1,
-            largest=True,
-        )
-        top_scores = top_k_in_combined_scores
-        top_indices = torch.gather(combined_indices, 1, top_k_in_combined_indices)
-        del combined_scores, combined_indices, top_k_in_combined_indices
+        del scores, local_indices
 
     dist.barrier()
+    torch.cuda.synchronize()
+
+    if rank == 0:
+        print("\nFinal Benchmarking Results:")
+        print(f"Total time before: {time_before/60:.2f}min")
+        print(f"Total time update_query_positive_score: {time_pos/60:.2f}min")
+        print(f"Total time update_hard_negatives: {time_hard/60:.2f}min")
+        print(f"Total benchmarked time: {(time_before+time_pos+time_hard)/60:.2f}min")
+        print(f"Total elapsed time: {(time.time()-start)/60:.2f}min\n")
 
     # Distributed merging for top-k results
     if world_size > 1:
@@ -290,6 +302,38 @@ def search(
         print(f"Query-positive scores computed for {len(qrels_query_ids)} pairs")
 
     return top_scores, top_indices, query_positive_scores
+
+
+def update_hard_negatives(
+    scores, local_indices, chunk_idx, top_scores, top_indices, top_k
+):
+    chunk_top_scores, chunk_top_indices = torch.topk(
+        scores,
+        k=min(top_k, scores.shape[1]),
+        dim=1,
+        largest=True,
+    )
+    # del scores  # Free the large scores tensor
+
+    chunk_absolute_indices = local_indices[chunk_top_indices] + chunk_idx
+    # del local_indices, chunk_top_indices
+
+    combined_scores = torch.cat([top_scores, chunk_top_scores], dim=1)
+    combined_indices = torch.cat([top_indices, chunk_absolute_indices], dim=1)
+    del chunk_top_scores, chunk_absolute_indices
+
+    # Find the true global top-k among the combined results
+    top_k_in_combined_scores, top_k_in_combined_indices = torch.topk(
+        combined_scores,
+        k=top_k,
+        dim=1,
+        largest=True,
+    )
+    top_scores = top_k_in_combined_scores
+    top_indices = torch.gather(combined_indices, 1, top_k_in_combined_indices)
+    del combined_scores, combined_indices, top_k_in_combined_indices
+
+    return top_scores, top_indices
 
 
 def update_query_positive_score(
