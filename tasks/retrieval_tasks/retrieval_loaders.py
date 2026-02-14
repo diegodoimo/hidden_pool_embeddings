@@ -13,13 +13,6 @@ from tasks.data_helpers import RetrievalRawData, get_dict
 from utils.helpers import return_formatted
 
 
-def return_formatted(ndata):
-    for threshold, suffix in [(10**6, "M"), (10**3, "k")]:
-        if ndata >= threshold:
-            return f"{ndata / threshold:.3f}{suffix}"
-    return str(ndata)
-
-
 def from_one_hf_dataset(task) -> RetrievalRawData:
     """
     Load data from a single HuggingFace dataset where queries and positives
@@ -284,7 +277,7 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
     )
 
 
-def limit_number_of_queries(
+def limit_number_of_queries_old(
     query_ids,
     positive_ids, 
     unique_query_idx,
@@ -365,7 +358,7 @@ def limit_number_of_queries(
     )
 
 
-def limit_number_of_queries_faster(
+def limit_number_of_queries(
     query_ids,
     positive_ids, 
     unique_query_idx,

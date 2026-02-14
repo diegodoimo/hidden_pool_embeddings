@@ -179,8 +179,8 @@ def search(
         dist.barrier()
         torch.cuda.empty_cache()
 
-        # if (i + 1) % interval == 0 and rank == 0:
-        if rank == 0:
+        if (i + 1) % interval == 0 and rank == 0:
+        #if rank == 0:
             print(
                 f"processed {chunk_idx//10**3}k/{N_corpus//10**3}k samples in {(time.time()-start)/60} mins"
             )

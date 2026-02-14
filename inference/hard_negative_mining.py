@@ -27,7 +27,7 @@ def estimate_chunk_size(query_embeddings, max_chunk=5 * 10**4):
     bytes_per_number = query_embeddings.element_size()
     bytes_per_doc = query_embeddings.shape[1] * bytes_per_number
     bytes_per_sim_column = query_embeddings.shape[0] * bytes_per_number
-    chunk = int(0.7 * free_mem // (bytes_per_doc + bytes_per_sim_column))
+    chunk = int(0.8 * free_mem // (bytes_per_doc + bytes_per_sim_column))
     return max(1000, min(chunk, max_chunk))
 
 
@@ -141,30 +141,37 @@ class HardNegativesMiner:
 
         # Remove qrels pairs where either query or positive was removed
         # Need to check positives against corpus (first n_positives documents)
-        corpus_ids_set = set(corpus_dataset["id"])
-        
-        filtered_qrels = filter_qrels_by_length(
-            unique_queries_dataset.removed_ids,
-            corpus_dataset.removed_ids,  # All removed corpus IDs (including positives)
-            data_split["qrels"],
-        )
+        dist.barrier()
+        filtered_qrels = data_split["qrels"]
+        if len(unique_queries_dataset.removed_ids) > 0  or len(corpus_dataset.removed_ids) > 0: 
 
-        # Check that filtered pairs only contain valid IDs
-        assert set(filtered_qrels["query_id"]).issubset(
-            set(unique_queries_dataset["id"])
-        ), "filtered qrels contain query IDs not in unique queries"
-        assert set(filtered_qrels["positive_id"]).issubset(
-            corpus_ids_set
-        ), "filtered qrels contain positive IDs not in corpus"
+            if rank ==0:
+                start = time.time()
+                print("removing long sequences from full queries and corpus")
+            filtered_qrels = filter_qrels_by_length(
+                unique_queries_dataset.removed_ids,
+                corpus_dataset.removed_ids,  # All removed corpus IDs (including positives)
+                data_split["qrels"],
+            )               
 
-        if self.rank == 0:
-            num_queries_lost = len(set(unique_queries_dataset["id"])) - len(
-                set(filtered_qrels["query_id"])
-            )
-            if num_queries_lost > 0:
-                print(
-                    f"Note: {num_queries_lost} valid queries were excluded because all their paired positives were removed"
+            corpus_ids_set = set(corpus_dataset["id"])
+            # Check that filtered pairs only contain valid IDs
+            assert set(filtered_qrels["query_id"]).issubset(
+                set(unique_queries_dataset["id"])
+            ), "filtered qrels contain query IDs not in unique queries"
+            assert set(filtered_qrels["positive_id"]).issubset(
+                corpus_ids_set
+            ), "filtered qrels contain positive IDs not in corpus"
+
+            if self.rank == 0:
+                print(f"full queries and corpus filters in {(time.time()-start)/60}min")
+                num_queries_lost = len(set(unique_queries_dataset["id"])) - len(
+                    set(filtered_qrels["query_id"])
                 )
+                if num_queries_lost > 0:
+                    print(
+                        f"Note: {num_queries_lost} valid queries were excluded because all their paired positives were removed"
+                    )
 
         dataset = {
             "qrels": filtered_qrels,
@@ -175,11 +182,11 @@ class HardNegativesMiner:
 
         dist.barrier()
         if self.rank == 0:
-            print(f"\nnumber unique queries: {len(unique_queries_dataset)}")
-            print(f"number of positives in corpus: {n_positives}")
-            print(f"number of documents: {len(corpus_dataset)}")
+            print(f"\nnumber unique queries: {return_formatted(len(unique_queries_dataset))}")
+            print(f"number of positives in corpus: {return_formatted(n_positives)}")
+            print(f"number of documents: {return_formatted(len(corpus_dataset))}")
 
-            print(f"total qrels pairs (with repetitions): {len(dataset['qrels'])}")
+            print(f"total qrels pairs (with repetitions): {return_formatted(len(dataset['qrels']))}")
 
         return dataset, corpus_dict, has_title
 
