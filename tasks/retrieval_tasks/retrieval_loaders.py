@@ -8,6 +8,7 @@ from typing import List, Optional
 import time
 import torch.distributed as dist
 import pandas as pd
+import numpy as np
 from tasks.data_helpers import RetrievalRawData, get_dict
 from utils.helpers import return_formatted
 
@@ -39,6 +40,7 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
 
     n_pairs = len(dataset)
 
+
     dist.barrier()
     if rank == 0:
         print(f"Dataset loaded in {(time.time()-start)/60}min")
@@ -58,6 +60,7 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
 
     # Convert Arrow -> pandas DataFrame in one shot (fast columnar conversion),
     # avoiding the slow path of dataset[col] (Python list) -> pd.Series.
+
     cols_to_load = [task.anchor_name, task.positive_name]
     if has_title:
         cols_to_load.append(title_col)
@@ -69,36 +72,72 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
     query_texts = df[task.anchor_name]
     positive_texts = df[task.positive_name]
 
+
+    # Convert Arrow -> numpy arrays directly (fastest path)
+    # cols_to_load = [task.anchor_name, task.positive_name]
+    # if has_title:
+    #     cols_to_load.append(title_col)
+
+    # # Direct Arrow -> numpy conversion (no pandas intermediate)
+    # arrow_table = dataset.select_columns(cols_to_load).data.table
+    # query_texts = arrow_table[task.anchor_name].to_numpy(zero_copy_only=False)
+    # positive_texts = arrow_table[task.positive_name].to_numpy(zero_copy_only=False)
+
+
     dist.barrier()
     if rank == 0:
         print(f"preprocessing done in {(time.time()-start)/60}min")
         start = time.time()
-        print("finding unique queries items...")
+        print("finding unique queries and positives items...")
 
     # Fast deduplication via pandas C-optimized hash tables.
     unique_query_mask = ~query_texts.duplicated(keep="first")
     unique_query_idx = unique_query_mask[unique_query_mask].index
-    unique_query_texts = query_texts.iloc[unique_query_idx]
+    unique_query_texts = query_texts.iloc[unique_query_idx].reset_index(drop=True)
     # Use first occurrence indices as IDs
     unique_query_ids = [f"query_{i}" for i in unique_query_idx]
 
-    if rank == 0:
-        print(f"queries done in {(time.time()-start)/60}min")
-        start = time.time()
-        print("finding unique positives items...")
+
+    # # Fast deduplication using numpy
+    # unique_query_texts, unique_query_idx = np.unique(
+    #     query_texts, return_index=True
+    # )
+    # # Restore original order
+    # sort_idx = np.argsort(unique_query_idx)
+    # unique_query_texts = unique_query_texts[sort_idx]
+    # unique_query_idx = unique_query_idx[sort_idx]
+    # unique_query_ids = [f"query_{i}" for i in unique_query_idx]
 
     unique_positive_mask = ~positive_texts.duplicated(keep="first")
     unique_positive_idx = unique_positive_mask[unique_positive_mask].index
-    unique_positive_texts = positive_texts.iloc[unique_positive_idx]
+    unique_positive_texts = positive_texts.iloc[unique_positive_idx].reset_index(drop=True)
     # Use first occurrence indices as IDs
     unique_positive_ids = [f"doc_{i}" for i in unique_positive_idx]
     n_positives = len(unique_positive_ids)
 
     if has_title:
-        unique_positive_titles = df[title_col].iloc[unique_positive_idx]
+        unique_positive_titles = df[title_col].iloc[unique_positive_idx].reset_index(drop=True)
     else:
         unique_positive_titles = None
 
+
+    # unique_positive_texts, unique_positive_idx = np.unique(
+    #     positive_texts, return_index=True
+    # )
+    # sort_idx = np.argsort(unique_positive_idx)
+    # unique_positive_texts = unique_positive_texts[sort_idx]
+    # unique_positive_idx = unique_positive_idx[sort_idx]
+    # unique_positive_ids = [f"doc_{i}" for i in unique_positive_idx]
+    # n_positives = len(unique_positive_ids)
+
+    # if has_title:
+    #     title_array = arrow_table[title_col].to_numpy(zero_copy_only=False)
+    #     unique_positive_titles = title_array[unique_positive_idx]
+    # else:
+    #     unique_positive_titles = None
+
+
+    dist.barrier()
     if rank == 0:
         print(f"positives done in {(time.time()-start)/60}min")
         start = time.time()
@@ -106,6 +145,30 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
 
     # Vectorized remapping: map each text to its first-occurrence index via pandas .map()
     # Build Series mapping text -> first occurrence index, then map over all rows at once
+
+    # 10 times slower
+    # positive_text_to_first_idx = {}
+    # for idx in unique_positive_idx:
+    #     text = positive_texts.iloc[idx]
+    #     positive_text_to_first_idx[text] = idx
+
+    # # Generate remapped IDs: map all occurrences (including duplicates) to first occurrence ID
+    # query_ids = [
+    #     f"query_{query_text_to_first_idx[query_texts.iloc[i]]}" for i in range(n_pairs)
+    # ]
+    # referenced_positive_ids = [
+    #     f"doc_{positive_text_to_first_idx[positive_texts.iloc[i]]}"
+    #     for i in range(n_pairs)
+    # ]
+
+    # slower
+    # positive_text_to_first_idx = {text: id_ for text, id_ in zip(unique_positive_texts, unique_positive_ids)}
+    # query_text_to_first_idx = {text: id_ for text, id_ in zip(unique_query_texts, unique_query_ids)}
+
+    # full_query_ids = [query_text_to_first_idx[text] for text in query_texts]
+    # full_positive_ids = [positive_text_to_first_idx[text] for text in positive_texts]
+
+
     query_text_to_first_idx = pd.Series(
         unique_query_idx.values, index=query_texts.iloc[unique_query_idx].values
     )
@@ -114,15 +177,14 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
         index=positive_texts.iloc[unique_positive_idx].values,
     )
 
-    # Generate remapped IDs: map all occurrences (including duplicates) to first occurrence ID
-    query_ids = (
+    #Generate remapped IDs: map all occurrences (including duplicates) to first occurrence ID
+    full_query_ids = (
         "query_" + query_texts.map(query_text_to_first_idx).astype(str)
     ).tolist()
-    referenced_positive_ids = (
+    full_positive_ids = (
         "doc_" + positive_texts.map(positive_text_to_first_idx).astype(str)
     ).tolist()
 
-    del unique_query_mask, unique_positive_mask
 
     dist.barrier()
     if rank == 0:
@@ -149,7 +211,7 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
     if rank == 0:
         print(f"corpus dict built in {(time.time()-start)/60}min")
 
-    assert set(referenced_positive_ids).issubset(
+    assert set(full_positive_ids).issubset(
         set(unique_positive_ids)
     ), "filtered qrels contain positive IDs not in corpus"
 
@@ -161,55 +223,56 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
             print(
                 f"number of unique_queries {return_formatted(len(unique_query_idx))} > 1M: removing queries"
             )
+
+        unique_query_texts = unique_query_texts[:max_queries]
+        unique_query_ids = unique_query_ids[:max_queries]
+        unique_query_idx = unique_query_idx[:max_queries]
         # Apply query limiting and reorganize documents
         (
-            unique_query_texts,
-            unique_query_ids,
-            query_ids,
-            referenced_positive_ids,
+            full_query_ids,
+            full_positive_ids,
             unique_positive_ids,
             unique_positive_texts,
             unique_positive_titles,
             n_positives,
         ) = limit_number_of_queries(
+            query_ids=full_query_ids, 
+            positive_ids=full_positive_ids,
             unique_query_idx=unique_query_idx,
-            query_texts=query_texts,
             n_pairs=n_pairs,
-            query_ids=query_ids,
-            positive_ids=referenced_positive_ids,
             unique_positive_ids=unique_positive_ids,
             unique_positive_texts=unique_positive_texts,
             unique_positive_titles=unique_positive_titles,
             has_title=has_title,
             max_queries=max_queries,
         )
+
         if rank == 0:
             print(f"queries pruned {(time.time()-start)/60}min")
-            print(
-                f"Total unique documents in corpus: {return_formatted(len(unique_positive_ids))}"
-            )
-            print(
-                f"Positives referenced by filtered pairs: {return_formatted(len(referenced_positive_ids))}"
-            )
 
     dist.barrier()
     if rank == 0:
         print(
             f"Found {return_formatted(len(unique_query_texts))} unique queries (under {max_queries//10**6}M limit)"
         )
+        print(f"Positives referenced by filtered pairs: {return_formatted(len(full_positive_ids))}"
+            )
+        print(
+            f"Total number of queries with repetitions {return_formatted(len(full_query_ids))} (under {max_queries//10**6}M limit)"
+        )
         print(
             f"Total unique documents in corpus: {return_formatted(len(unique_positive_ids))}"
         )
 
-    assert set(referenced_positive_ids).issubset(
+    assert set(full_positive_ids).issubset(
         set(unique_positive_ids)
     ), "filtered qrels contain positive IDs not in corpus"
 
     assert set(unique_positive_ids) == set(corpus_dict.keys())
 
     return RetrievalRawData(
-        query_ids=query_ids,
-        positive_ids=referenced_positive_ids,
+        query_ids=full_query_ids,
+        positive_ids=full_positive_ids,
         document_texts=unique_positive_texts,
         document_ids=unique_positive_ids,
         document_titles=unique_positive_titles,
@@ -222,11 +285,10 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
 
 
 def limit_number_of_queries(
-    unique_query_idx,
-    query_texts,
-    n_pairs,
     query_ids,
-    positive_ids,
+    positive_ids, 
+    unique_query_idx,
+    n_pairs,
     unique_positive_ids,
     unique_positive_texts,
     unique_positive_titles,
@@ -254,13 +316,8 @@ def limit_number_of_queries(
                    document_ids, document_texts, document_titles, n_positives)
     """
 
-    unique_query_idx = unique_query_idx[:max_queries]
-    unique_query_texts = query_texts.iloc[unique_query_idx].reset_index(drop=True)
-    unique_query_ids = [f"query_{i}" for i in unique_query_idx]
-
-    # Filter query_ids and positive_ids to only include pairs with queries in the limited set
-    unique_query_idx_set = set(unique_query_idx)
-    valid_pair_mask = [i in unique_query_idx_set for i in range(n_pairs)]
+    # Filter query_ids and positive_ids to only include pairs with queries in the limited set  
+    valid_pair_mask = [i in unique_query_idx for i in range(n_pairs)]
     query_ids = [qid for qid, valid in zip(query_ids, valid_pair_mask) if valid]
     positive_ids = [pid for pid, valid in zip(positive_ids, valid_pair_mask) if valid]
 
@@ -299,8 +356,6 @@ def limit_number_of_queries(
     n_positives = len(referenced_pos_ids)
 
     return (
-        unique_query_texts,
-        unique_query_ids,
         query_ids,
         positive_ids,
         document_ids,
@@ -308,6 +363,79 @@ def limit_number_of_queries(
         document_titles,
         n_positives,
     )
+
+
+def limit_number_of_queries_faster(
+    query_ids,
+    positive_ids, 
+    unique_query_idx,
+    n_pairs,
+    unique_positive_ids,
+    unique_positive_texts,
+    unique_positive_titles,
+    has_title,
+    max_queries=10**6,
+):
+    """Optimized version using vectorized operations."""
+    
+    # Convert inputs to numpy arrays once
+    query_ids_arr = np.array(query_ids)
+    positive_ids_arr = np.array(positive_ids)
+    
+    # Fast filtering: if unique_query_idx is already an array, use isin
+    unique_query_idx_set = set(unique_query_idx)
+    pair_indices = np.arange(n_pairs)
+    valid_pair_mask = np.isin(pair_indices, list(unique_query_idx_set))
+    
+    query_ids_filtered = query_ids_arr[valid_pair_mask]
+    positive_ids_filtered = positive_ids_arr[valid_pair_mask]
+    
+    # Get referenced positives
+    referenced_positive_ids_set = set(positive_ids_filtered)
+    
+    # Convert to arrays for vectorized operations
+    unique_positive_ids_arr = np.array(unique_positive_ids)
+    unique_positive_texts_arr = np.array(unique_positive_texts)
+    
+    # Vectorized mask creation (still requires loop but on smaller set)
+    referenced_mask = np.array([pid in referenced_positive_ids_set 
+                                for pid in unique_positive_ids_arr])
+    
+    # Split using boolean indexing
+    document_ids = np.concatenate([
+        unique_positive_ids_arr[referenced_mask],
+        unique_positive_ids_arr[~referenced_mask]
+    ]).tolist()
+    
+    document_texts = np.concatenate([
+        unique_positive_texts_arr[referenced_mask],
+        unique_positive_texts_arr[~referenced_mask]
+    ]).tolist()
+    
+    if has_title:
+        unique_positive_titles_arr = np.array(unique_positive_titles)
+        document_titles = np.concatenate([
+            unique_positive_titles_arr[referenced_mask],
+            unique_positive_titles_arr[~referenced_mask]
+        ]).tolist()
+    else:
+        document_titles = None
+    
+    n_positives = referenced_mask.sum()
+    
+    return (
+        query_ids_filtered.tolist(),
+        positive_ids_filtered.tolist(),
+        document_ids,
+        document_texts,
+        document_titles,
+        n_positives,
+    )
+
+
+
+
+
 
 
 def limit_number_of_queries_multi_dataset(

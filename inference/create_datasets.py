@@ -1,8 +1,9 @@
 from mteb.types import PromptType
 from functools import partial
 from datasets import Dataset
-
-
+import torch.distributed as dist
+import time
+import numpy as np
 from datasets import disable_progress_bars
 
 disable_progress_bars()
@@ -47,14 +48,6 @@ def instruction_template_qwen3(prompt_type, task_metadata, text, title="") -> st
 
     return prompt
 
-
-# def _is_valid_row(row: dict[str, str]) -> bool:
-#     """Check if a dataset row has non-empty text content."""
-#     if "text" not in row or not row["text"] or not row["text"].strip():
-#         return False
-#     return True
-
-
 def _is_valid_row(text: str) -> bool:
     """Check if a dataset row has non-empty text content."""
     if not text or not text.strip():
@@ -62,69 +55,87 @@ def _is_valid_row(text: str) -> bool:
     return True
 
 
+# def _remove_long_sequences(rows, tokenizer, max_length):
+#     """Remove rows where the tokenized prompt exceeds max_length.
+
+#     Returns:
+#         tuple: (keep_mask, removed_long_ids, removed_empty_ids)
+#             - keep_mask: list of booleans indicating which rows to keep
+#             - removed_long_ids: list of IDs that were removed due to length
+#             - removed_empty_ids: list of IDs that were removed due to being empty
+#     """
+#     keep_mask = []
+#     removed_long_ids = []
+#     removed_empty_ids = []
+
+#     # rows is a batched dictionary: {"id": [...], "text": [...], "prompt": [...]}
+#     for i, (prompt, text) in enumerate(zip(rows["prompt"], rows["text"])):
+
+#         if not _is_valid_row(text):
+#             keep_mask.append(False)
+#             removed_empty_ids.append(rows["id"][i])
+#             continue
+
+#         # Fast path: if char length is very short, definitely keep
+#         if len(prompt) <= max_length:
+#             keep_mask.append(True)
+#         else:
+#             # Must tokenize to check actual token length
+#             token_length = len(tokenizer.encode(prompt, add_special_tokens=False))
+#             if token_length > max_length:
+#                 keep_mask.append(False)
+#                 removed_long_ids.append(rows["id"][i])
+#             else:
+#                 keep_mask.append(True)
+
+#     return keep_mask, removed_long_ids, removed_empty_ids
+
+
 def _remove_long_sequences(rows, tokenizer, max_length):
-    """Remove rows where the tokenized prompt exceeds max_length.
+    """Remove rows where the tokenized prompt exceeds max_length."""
+    
+    texts = np.array(rows["text"])
+    ids = np.array(rows["id"])
+    prompts = rows["prompt"]
+    
+    # Vectorized empty check
+    valid_text_mask = np.array([bool(text and text.strip()) for text in texts])
+    removed_empty_ids = ids[~valid_text_mask].tolist()
+    
+    # Pre-filter by character length (fast heuristic)
+    char_lengths = np.array([len(p) for p in prompts])
+    definitely_valid = char_lengths <= max_length
+    needs_tokenization = (char_lengths > max_length) & valid_text_mask
+    
+    # Batch tokenize only the ones that need it
+    prompts_to_check = [prompts[i] for i in np.where(needs_tokenization)[0]]
+    
+    if prompts_to_check:
+        # Batch tokenization - MUCH faster than loop
+        tokenized = tokenizer(
+            prompts_to_check,
+            add_special_tokens=False,
+            return_attention_mask=False,
+            truncation=False,
+        )
+        token_lengths = np.array([len(ids) for ids in tokenized["input_ids"]])
+        too_long_mask = token_lengths > max_length
+        
+        # Map back to original indices
+        check_indices = np.where(needs_tokenization)[0]
+        removed_long_indices = check_indices[too_long_mask]
+        removed_long_ids = ids[removed_long_indices].tolist()
+    else:
+        removed_long_ids = []
+        removed_long_indices = np.array([], dtype=int)
+    
+    # Final keep mask
+    keep_mask = valid_text_mask & definitely_valid
+    if len(removed_long_indices) > 0:
+        keep_mask[removed_long_indices] = False
+    
+    return keep_mask.tolist(), removed_long_ids, removed_empty_ids
 
-    Returns:
-        tuple: (keep_mask, removed_long_ids, removed_empty_ids)
-            - keep_mask: list of booleans indicating which rows to keep
-            - removed_long_ids: list of IDs that were removed due to length
-            - removed_empty_ids: list of IDs that were removed due to being empty
-    """
-    keep_mask = []
-    removed_long_ids = []
-    removed_empty_ids = []
-
-    # rows is a batched dictionary: {"id": [...], "text": [...], "prompt": [...]}
-    for i, (prompt, text) in enumerate(zip(rows["prompt"], rows["text"])):
-
-        if not _is_valid_row(text):
-            keep_mask.append(False)
-            removed_empty_ids.append(rows["id"][i])
-            continue
-
-        # Fast path: if char length is very short, definitely keep
-        if len(prompt) <= max_length:
-            keep_mask.append(True)
-        else:
-            # Must tokenize to check actual token length
-            token_length = len(tokenizer.encode(prompt, add_special_tokens=False))
-            if token_length > max_length:
-                keep_mask.append(False)
-                removed_long_ids.append(rows["id"][i])
-            else:
-                keep_mask.append(True)
-
-    return keep_mask, removed_long_ids, removed_empty_ids
-
-
-def _build_prompt(
-    rows,
-    tokenizer,
-    instruction_template,
-    prompt_type,
-    task_metadata,
-    eot_id,
-):
-
-    # at this stage we have {"id": [id1, id2, id3, ...], "text": [text1, text2, text3, ...], }
-    num_rows = len(rows["text"])
-    row_dicts = [{key: rows[key][i] for key in rows.keys()} for i in range(num_rows)]
-
-    text_prompts = [
-        instruction_template(prompt_type, task_metadata, row=row) for row in row_dicts
-    ]
-    # we use the dafault add_special_tokens = True, tokenizer.encode do not add the special token
-    tokens = [tokenizer.encode(prompt) + [eot_id] for prompt in text_prompts]
-
-    new_rows = {
-        "id": rows["id"],
-        "input_ids": tokens,
-        "prompt": text_prompts,
-        "text": rows["text"],
-    }
-
-    return new_rows
 
 
 def _build_prompt(
@@ -167,7 +178,6 @@ def _build_prompt(
         "prompt": text_prompts,
         "text": rows["text"],
     }
-    # "input_ids": tokens,
     return new_rows
 
 
@@ -193,12 +203,14 @@ def create_dataset(
     Returns:
         A tokenized dataset.
     """
-
+    rank = dist.get_rank()
     if "text" not in dataset.column_names:
         raise ValueError(f"Column 'text' not found in dataset")
 
     if isinstance(dataset["text"][0], list):
         raise ValueError(f"Can't handle queries type queries for conversation")
+
+    start = time.time()
 
     input_to_dict = partial(
         _build_prompt,
@@ -208,9 +220,12 @@ def create_dataset(
         task_metadata=task_metadata,
         eot_id=tokenizer.pad_token_id,
     )
-
     new_ds = dataset.map(input_to_dict, batched=True, batch_size=10000)
     
+    if rank == 0:
+        print(f"prompt constructed in {(time.time()-start)/60}min")
+        start = time.time()
+
     all_removed_long_ids = []
     all_removed_empty_ids = []
     def filter_wrapper(rows):
@@ -226,6 +241,9 @@ def create_dataset(
         batched=True,
     )
 
+    if rank == 0:
+        print(f"dataset filtered in {(time.time()-start)/60}min")
+        start = time.time()
     # Store removed IDs as an attribute on the dataset
     new_ds.removed_long = all_removed_long_ids
     new_ds.removed_empty = all_removed_empty_ids
@@ -235,7 +253,6 @@ def create_dataset(
     )
 
     return new_ds
-
 
 def filter_qrels_by_length(
     removed_query_ids,
@@ -265,6 +282,8 @@ def filter_qrels_by_length(
     filtered_qrels = qrels_dataset.select(pair_valid_indices)
 
     return filtered_qrels
+
+
 
 
 def instruction_template_embeddinggemma(prompt_type, task_metadata, row):

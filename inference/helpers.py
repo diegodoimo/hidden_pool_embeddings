@@ -174,10 +174,12 @@ def search(
         dist.barrier()
         torch.cuda.empty_cache()
 
-        if (i + 1) % interval == 0 and rank == 0:
+        #if (i + 1) % interval == 0 and rank == 0:
+        if rank == 0:
             print(
                 f"processed {chunk_idx//10**3}k/{N_corpus//10**3}k samples in {(time.time()-start)/60} mins"
             )
+            print_memory_consumed(rank=rank)
 
         # Compute embeddings on-the-fly
         subcorpus = corpus_dataset.select(
@@ -207,39 +209,10 @@ def search(
 
         # Compute similarity scores for all query-document pairs in this chunk
         scores = torch.matmul(query_embeddings, local_corpus_chunk.T)
-        
-                # ====================================================================
-        # SIMPLIFIED QUERY-POSITIVE SCORE EXTRACTION
-        # ====================================================================
-        
-        # Extract query-positive scores only if this chunk contains positives
+
         if chunk_idx < n_positives:
-            # Convert global indices to set for faster lookup
-            global_indices_set = set(global_indices.cpu().numpy())
-            
-            # Collect all (query_idx, local_idx, qrel_idx) tuples for this chunk
-            batch_queries = []
-            batch_locals = []
-            batch_qrels = []
-            
-            # Build global_to_local mapping for this chunk
-            global_to_local = {g.item(): i for i, g in enumerate(global_indices)}
-            
-            # Check which positives are in this chunk
-            for global_idx in global_indices_set:
-                if global_idx in positive_to_queries:
-                    local_idx = global_to_local[global_idx]
-                    for query_idx, qrel_idx in positive_to_queries[global_idx]:
-                        batch_queries.append(query_idx)
-                        batch_locals.append(local_idx)
-                        batch_qrels.append(qrel_idx)
-            
-            # Vectorized extraction: gather all scores at once
-            if batch_queries:
-                extracted_scores = scores[batch_queries, batch_locals]
-                query_positive_scores[batch_qrels] = extracted_scores
-        
-        # ====================================================================
+            query_positive_scores = update_query_positive_score(query_positive_scores, global_indices, positive_to_queries, scores)
+
 
         chunk_top_scores, chunk_top_indices = torch.topk(
             scores,
@@ -259,7 +232,6 @@ def search(
             dim=1,
             largest=True,
         )
-
         top_scores = top_k_in_combined_scores
         top_indices = torch.gather(combined_indices, 1, top_k_in_combined_indices)
 
@@ -307,6 +279,39 @@ def search(
 
 
 
+def update_query_positive_score(query_positive_scores, global_indices, positive_to_queries, scores):
+    # ====================================================================
+    # SIMPLIFIED QUERY-POSITIVE SCORE EXTRACTION
+    # ====================================================================
+    
+    # Extract query-positive scores only if this chunk contains positives
+
+    # Convert global indices to set for faster lookup
+    global_indices_set = set(global_indices.cpu().numpy())
+    
+    # Collect all (query_idx, local_idx, qrel_idx) tuples for this chunk
+    batch_queries = []
+    batch_locals = []
+    batch_qrels = []
+    
+    # Build global_to_local mapping for this chunk
+    global_to_local = {g.item(): i for i, g in enumerate(global_indices)}
+    
+    # Check which positives are in this chunk
+    for global_idx in global_indices_set:
+        if global_idx in positive_to_queries:
+            local_idx = global_to_local[global_idx]
+            for query_idx, qrel_idx in positive_to_queries[global_idx]:
+                batch_queries.append(query_idx)
+                batch_locals.append(local_idx)
+                batch_qrels.append(qrel_idx)
+    
+    # Vectorized extraction: gather all scores at once
+    if batch_queries:
+        extracted_scores = scores[batch_queries, batch_locals]
+        query_positive_scores[batch_qrels] = extracted_scores
+        
+    return query_positive_scores
 
 def search2(
     model,
