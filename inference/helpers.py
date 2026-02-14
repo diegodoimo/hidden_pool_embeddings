@@ -67,6 +67,40 @@ def last_token_pool(last_hidden_states, attention_mask):
         ]
 
 
+# class CUDAPrefetcher:
+#     """Prefetches batches to GPU using a separate CUDA stream,
+#     overlapping H2D transfer with forward-pass compute."""
+
+#     def __init__(self, loader, device):
+#         self.loader = loader
+#         self.device = device
+#         self.stream = torch.cuda.Stream(device=device)
+
+#     def __iter__(self):
+#         loader_iter = iter(self.loader)
+#         # preload the first batch
+#         self._next_batch = self._preload(loader_iter)
+#         while self._next_batch is not None:
+#             # wait for the prefetch stream to finish the transfer
+#             torch.cuda.current_stream(self.device).wait_stream(self.stream)
+#             batch = self._next_batch
+#             # mark tensors so the default stream knows about the dependency
+#             for v in batch.values():
+#                 v.record_stream(torch.cuda.current_stream(self.device))
+#             # start loading the next batch in the background
+#             self._next_batch = self._preload(loader_iter)
+#             yield batch
+
+#     def _preload(self, loader_iter):
+#         try:
+#             batch = next(loader_iter)
+#         except StopIteration:
+#             return None
+#         with torch.cuda.stream(self.stream):
+#             batch = {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
+#         return batch
+
+
 def abs_task_preprocessing(task, eval_split):
 
     subsets_to_run = None
@@ -182,10 +216,7 @@ def search(
 
     for i, chunk_idx in enumerate(range(0, N_corpus, chunk_size)):
 
-        dist.barrier()
-        torch.cuda.empty_cache()
         torch.cuda.synchronize()
-
         t0 = time.time()
 
         if (i + 1) % interval == 0 and rank == 0:
@@ -210,6 +241,8 @@ def search(
             batch_size=batch_size,
             num_workers=16,
             pin_memory=True,
+            prefetch_factor=4,
+            persistent_workers=False,
             collate_fn=collate_fn,
         )
 
@@ -283,7 +316,7 @@ def search(
 
     # Gather query-positive scores from all GPUs
     if rank == 0:
-        print(f"\nGathering query-positive scores from all GPUs...")
+        print("\nGathering query-positive scores from all GPUs...")
 
     if world_size > 1:
         # Each GPU has computed scores for some qrels pairs based on the chunks it processed
@@ -609,9 +642,11 @@ def encode(model, loader, world_size, prompt_type, divided_by_chunks=False):
     num_samples = len(loader.dataset)
     embeddings = []
 
-    for i, batch in enumerate(loader):
+    # Use CUDA prefetcher to overlap H2D transfer with forward pass
+    # prefetcher = CUDAPrefetcher(loader, device=model.device)
 
-        batch = {key: val.to(model.device) for key, val in batch.items()}
+    for batch in loader:
+        # batch is already on GPU (transferred asynchronously by the prefetcher)
 
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 
@@ -624,9 +659,9 @@ def encode(model, loader, world_size, prompt_type, divided_by_chunks=False):
                 batch["attention_mask"],
             )
             batch_embeddings = F.normalize(out_embeddings, p=2, dim=1)
-        embeddings.append(batch_embeddings.float())
+        embeddings.append(batch_embeddings)
 
-    embeddings = torch.cat(embeddings, dim=0)
+    embeddings = torch.cat(embeddings, dim=0).float()
     indices = torch.tensor(indices, device=embeddings.device)
 
     if prompt_type == PromptType.document and divided_by_chunks:
