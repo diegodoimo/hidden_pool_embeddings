@@ -60,7 +60,7 @@ class HardNegativesMiner:
         path,
         model_name,
         tokenizer,
-        tasks,
+        task_names,
         instruction_template,
         padding_side="right",
         max_length=512,
@@ -70,7 +70,7 @@ class HardNegativesMiner:
         self.rank = dist.get_rank()
 
         self.tokenizer = tokenizer
-        self.task_names = tasks
+        self.task_names = task_names
         self.padding_side = padding_side
         self.max_length = max_length
 
@@ -103,8 +103,12 @@ class HardNegativesMiner:
         )
 
         if self.rank == 0:
-            print(f"num unique queries: {return_formatted(len(unique_queries_dataset))}")
-            print(f"num unique positives (first {return_formatted(n_positives)} docs in corpus)")
+            print(
+                f"num unique queries: {return_formatted(len(unique_queries_dataset))}"
+            )
+            print(
+                f"num unique positives (first {return_formatted(n_positives)} docs in corpus)"
+            )
 
         if self.rank == 0:
             if len(unique_queries_dataset.removed_long) > 0:
@@ -118,7 +122,10 @@ class HardNegativesMiner:
 
         dist.barrier()
         if self.rank == 0:
-            print("tokenizing dataset num docs", return_formatted(len(data_split["corpus"])))
+            print(
+                "tokenizing dataset num docs",
+                return_formatted(len(data_split["corpus"])),
+            )
 
         corpus_dataset = create_dataset(
             dataset=data_split["corpus"],
@@ -128,31 +135,32 @@ class HardNegativesMiner:
             prompt_type=PromptType.document,
             max_length=self.max_length,
         )
-        
+
         if self.rank == 0:
             if len(corpus_dataset.removed_long) > 0:
                 print(
                     f"removed {len(corpus_dataset.removed_long)} documents exceeding max_length"
                 )
             if len(corpus_dataset.removed_empty) > 0:
-                print(
-                    f"removed {len(corpus_dataset.removed_empty)} empty documents"
-                )
+                print(f"removed {len(corpus_dataset.removed_empty)} empty documents")
 
         # Remove qrels pairs where either query or positive was removed
         # Need to check positives against corpus (first n_positives documents)
         dist.barrier()
         filtered_qrels = data_split["qrels"]
-        if len(unique_queries_dataset.removed_ids) > 0  or len(corpus_dataset.removed_ids) > 0: 
+        if (
+            len(unique_queries_dataset.removed_ids) > 0
+            or len(corpus_dataset.removed_ids) > 0
+        ):
 
-            if rank ==0:
+            if self.rank == 0:
                 start = time.time()
                 print("removing long sequences from full queries and corpus")
             filtered_qrels = filter_qrels_by_length(
                 unique_queries_dataset.removed_ids,
                 corpus_dataset.removed_ids,  # All removed corpus IDs (including positives)
                 data_split["qrels"],
-            )               
+            )
 
             corpus_ids_set = set(corpus_dataset["id"])
             # Check that filtered pairs only contain valid IDs
@@ -182,11 +190,15 @@ class HardNegativesMiner:
 
         dist.barrier()
         if self.rank == 0:
-            print(f"\nnumber unique queries: {return_formatted(len(unique_queries_dataset))}")
+            print(
+                f"\nnumber unique queries: {return_formatted(len(unique_queries_dataset))}"
+            )
             print(f"number of positives in corpus: {return_formatted(n_positives)}")
             print(f"number of documents: {return_formatted(len(corpus_dataset))}")
 
-            print(f"total qrels pairs (with repetitions): {return_formatted(len(dataset['qrels']))}")
+            print(
+                f"total qrels pairs (with repetitions): {return_formatted(len(dataset['qrels']))}"
+            )
 
         return dataset, corpus_dict, has_title
 

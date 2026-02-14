@@ -36,7 +36,7 @@ def from_one_hf_dataset(task, max_num_queries=10**6) -> RetrievalRawData:
 
     dist.barrier()
     if rank == 0:
-        print(f"Dataset loaded in {(time.time()-start)/60:.2f} min")
+        print(f"Dataset loaded in {(time.time()-start)/60}min")
         start = time.time()
         print(f"num elements in dataset: {return_formatted(n_pairs)}")
         print("building dataframes")
@@ -66,10 +66,18 @@ def from_one_hf_dataset(task, max_num_queries=10**6) -> RetrievalRawData:
     positive_texts = df[task.positive_name]
 
     # Convert Arrow -> numpy arrays directly (fastest path)
+    # cols_to_load = [task.anchor_name, task.positive_name]
+    # if has_title:
+    #     cols_to_load.append(title_col)
+
+    # # Direct Arrow -> numpy conversion (no pandas intermediate)
+    # arrow_table = dataset.select_columns(cols_to_load).data.table
+    # query_texts = arrow_table[task.anchor_name].to_numpy(zero_copy_only=False)
+    # positive_texts = arrow_table[task.positive_name].to_numpy(zero_copy_only=False)
 
     dist.barrier()
     if rank == 0:
-        print(f"preprocessing done in {(time.time()-start)/60:.2f} min")
+        print(f"preprocessing done in {(time.time()-start)/60}min")
         start = time.time()
         print("finding unique queries and positives items...")
 
@@ -79,6 +87,17 @@ def from_one_hf_dataset(task, max_num_queries=10**6) -> RetrievalRawData:
     unique_query_texts = query_texts.iloc[unique_query_idx].reset_index(drop=True)
     # Use first occurrence indices as IDs
     unique_query_ids = [f"query_{i}" for i in unique_query_idx]
+
+    # # Fast deduplication using numpy
+    # unique_query_texts, unique_query_idx = np.unique(
+    #     query_texts, return_index=True
+    # )
+    # # Restore original order
+    # sort_idx = np.argsort(unique_query_idx)
+    # unique_query_texts = unique_query_texts[sort_idx]
+    # unique_query_idx = unique_query_idx[sort_idx]
+    # unique_query_ids = [f"query_{i}" for i in unique_query_idx]
+
     unique_positive_mask = ~positive_texts.duplicated(keep="first")
     unique_positive_idx = unique_positive_mask[unique_positive_mask].index
     unique_positive_texts = positive_texts.iloc[unique_positive_idx].reset_index(
@@ -95,14 +114,51 @@ def from_one_hf_dataset(task, max_num_queries=10**6) -> RetrievalRawData:
     else:
         unique_positive_titles = None
 
+    # unique_positive_texts, unique_positive_idx = np.unique(
+    #     positive_texts, return_index=True
+    # )
+    # sort_idx = np.argsort(unique_positive_idx)
+    # unique_positive_texts = unique_positive_texts[sort_idx]
+    # unique_positive_idx = unique_positive_idx[sort_idx]
+    # unique_positive_ids = [f"doc_{i}" for i in unique_positive_idx]
+    # n_positives = len(unique_positive_ids)
+
+    # if has_title:
+    #     title_array = arrow_table[title_col].to_numpy(zero_copy_only=False)
+    #     unique_positive_titles = title_array[unique_positive_idx]
+    # else:
+    #     unique_positive_titles = None
+
     dist.barrier()
     if rank == 0:
-        print(f"positives done in {(time.time()-start)/60:.2f} min")
+        print(f"positives done in {(time.time()-start)/60}min")
         start = time.time()
         print("remapping original indices based on unique query positive indices...")
 
     # Vectorized remapping: map each text to its first-occurrence index via pandas .map()
     # Build Series mapping text -> first occurrence index, then map over all rows at once
+
+    # 10 times slower
+    # positive_text_to_first_idx = {}
+    # for idx in unique_positive_idx:
+    #     text = positive_texts.iloc[idx]
+    #     positive_text_to_first_idx[text] = idx
+
+    # # Generate remapped IDs: map all occurrences (including duplicates) to first occurrence ID
+    # query_ids = [
+    #     f"query_{query_text_to_first_idx[query_texts.iloc[i]]}" for i in range(n_pairs)
+    # ]
+    # referenced_positive_ids = [
+    #     f"doc_{positive_text_to_first_idx[positive_texts.iloc[i]]}"
+    #     for i in range(n_pairs)
+    # ]
+
+    # slower
+    # positive_text_to_first_idx = {text: id_ for text, id_ in zip(unique_positive_texts, unique_positive_ids)}
+    # query_text_to_first_idx = {text: id_ for text, id_ in zip(unique_query_texts, unique_query_ids)}
+
+    # full_query_ids = [query_text_to_first_idx[text] for text in query_texts]
+    # full_positive_ids = [positive_text_to_first_idx[text] for text in positive_texts]
 
     query_text_to_first_idx = pd.Series(
         unique_query_idx.values, index=query_texts.iloc[unique_query_idx].values
@@ -122,7 +178,7 @@ def from_one_hf_dataset(task, max_num_queries=10**6) -> RetrievalRawData:
 
     dist.barrier()
     if rank == 0:
-        print(f"remapping done in {(time.time()-start)/60:.2f} min")
+        print(f"remapping done in {(time.time()-start)/60}min")
         start = time.time()
         print("generating corpus dict...")
 
@@ -143,7 +199,7 @@ def from_one_hf_dataset(task, max_num_queries=10**6) -> RetrievalRawData:
 
     dist.barrier()
     if rank == 0:
-        print(f"corpus dict built in {(time.time()-start)/60:.2f} min")
+        print(f"corpus dict built in {(time.time()-start)/60}min")
 
     assert set(full_positive_ids).issubset(
         set(unique_positive_ids)
@@ -182,7 +238,7 @@ def from_one_hf_dataset(task, max_num_queries=10**6) -> RetrievalRawData:
         )
 
         if rank == 0:
-            print(f"queries pruned {(time.time()-start)/60:.2f} min")
+            print(f"queries pruned {(time.time()-start)/60}min")
 
     dist.barrier()
     if rank == 0:
@@ -219,6 +275,87 @@ def from_one_hf_dataset(task, max_num_queries=10**6) -> RetrievalRawData:
     )
 
 
+def limit_number_of_queries_old(
+    query_ids,
+    positive_ids,
+    unique_query_idx,
+    n_pairs,
+    unique_positive_ids,
+    unique_positive_texts,
+    unique_positive_titles,
+    has_title,
+    max_queries=10**6,
+):
+    """
+    Limit the number of queries to max_queries and adjust all related data structures.
+
+    Args:
+        unique_query_idx: Index of unique queries in original data
+        query_texts: Series of all query texts
+        n_pairs: Total number of query-positive pairs
+        query_ids: List of query IDs for each pair
+        positive_ids: List of positive IDs for each pair
+        unique_positive_ids: List of all unique positive IDs
+        unique_positive_texts: List of all unique positive texts
+        unique_positive_titles: List of all unique positive titles (or None)
+        has_title: Boolean indicating if titles exist
+        rank: Distributed training rank
+        max_queries: Maximum number of queries to keep (default: 1 million)
+
+    Returns:
+        Tuple of: (unique_query_texts, unique_query_ids, query_ids, positive_ids,
+                   document_ids, document_texts, document_titles, n_positives)
+    """
+
+    # Filter query_ids and positive_ids to only include pairs with queries in the limited set
+    valid_pair_mask = [i in unique_query_idx for i in range(n_pairs)]
+    query_ids = [qid for qid, valid in zip(query_ids, valid_pair_mask) if valid]
+    positive_ids = [pid for pid, valid in zip(positive_ids, valid_pair_mask) if valid]
+
+    # Reorganize documents: referenced positives first, then unreferenced ones
+    referenced_positive_ids_set = set(positive_ids)
+
+    # Split into referenced and unreferenced positives
+    referenced_pos_ids = []
+    referenced_pos_texts = []
+    referenced_pos_titles = [] if has_title else None
+
+    unreferenced_pos_ids = []
+    unreferenced_pos_texts = []
+    unreferenced_pos_titles = [] if has_title else None
+
+    for i, pos_id in enumerate(unique_positive_ids):
+        if pos_id in referenced_positive_ids_set:
+            referenced_pos_ids.append(pos_id)
+            referenced_pos_texts.append(unique_positive_texts[i])
+            if has_title:
+                referenced_pos_titles.append(unique_positive_titles[i])
+        else:
+            unreferenced_pos_ids.append(pos_id)
+            unreferenced_pos_texts.append(unique_positive_texts[i])
+            if has_title:
+                unreferenced_pos_titles.append(unique_positive_titles[i])
+
+    # Concatenate: referenced positives first, then unreferenced
+    document_ids = referenced_pos_ids + unreferenced_pos_ids
+    document_texts = referenced_pos_texts + unreferenced_pos_texts
+    if has_title:
+        document_titles = referenced_pos_titles + unreferenced_pos_titles
+    else:
+        document_titles = None
+
+    n_positives = len(referenced_pos_ids)
+
+    return (
+        query_ids,
+        positive_ids,
+        document_ids,
+        document_texts,
+        document_titles,
+        n_positives,
+    )
+
+
 def limit_number_of_queries(
     query_ids,
     positive_ids,
@@ -228,6 +365,7 @@ def limit_number_of_queries(
     unique_positive_texts,
     unique_positive_titles,
     has_title,
+    max_queries=10**6,
 ):
     """Optimized version using vectorized operations."""
 
@@ -585,185 +723,6 @@ def from_multiple_hf_datasets(task, rank=0) -> RetrievalRawData:
                 f"Found {len(unique_query_ids)//10**3}k unique queries (under {max_queries//10**6}M limit)"
             )
             print(f"Total unique documents in corpus: {len(document_ids)}")
-
-    return RetrievalRawData(
-        query_ids=query_ids,
-        positive_ids=positive_ids,
-        document_texts=document_texts,
-        document_ids=document_ids,
-        document_titles=document_titles,
-        unique_query_texts=unique_query_texts,
-        unique_query_ids=unique_query_ids,
-        corpus_dict=corpus_dict,
-        has_title=has_title,
-        n_positives=n_positives,
-    )
-
-
-def from_multiple_hf_datasets_vectorized(task, rank=0) -> RetrievalRawData:
-    """
-    Load data from multiple HuggingFace datasets (queries, corpus, qrels) using vectorized operations.
-    This is the standard MTEB format with pandas-based vectorization for better performance.
-
-    Uses the same unified format as from_one_hf_dataset:
-    - Documents are unique with positives first
-    - n_positives indicates how many positives are at the beginning
-    """
-    if rank == 0:
-        start = time.time()
-        print("Loading datasets...")
-
-    qrels = load_dataset(task.hf_name, name=task.qrels_name, split=task.split)
-    anchors_ = load_dataset(task.hf_name, name=task.anchor_name, split=task.anchor_name)
-    corpus = load_dataset(
-        task.hf_name, name=task.positive_name, split=task.positive_name
-    )
-
-    dist.barrier()
-    if rank == 0:
-        print(f"Datasets loaded in {(time.time()-start)/60:.2f} min")
-        start = time.time()
-        print(f"num elements in queries: {len(queries)//10**3}k")
-        print(f"num elements in qrels: {len(qrels)//10**3}k")
-        print(f"num elements in corpus: {len(corpus)//10**3}k")
-        print(f"Processing {len(anchors_)} queries...")
-
-    # Build queries dict
-    queries_dict = get_dict(
-        anchors_, task.anchor_fields["id"], task.anchor_fields["text"]
-    )
-
-    dist.barrier()
-    if rank == 0:
-        print(f"Queries processed in {(time.time()-start)/60:.2f} min")
-        start = time.time()
-        print(f"Processing {len(corpus)} docs...")
-
-    # Build corpus dict
-    has_title = task.corpus_fields.get("title", None) is not None
-    corpus_dict = get_dict(
-        corpus,
-        task.corpus_fields["id"],
-        task.corpus_fields["text"],
-        task.corpus_fields.get("title", None),
-    )
-
-    dist.barrier()
-    if rank == 0:
-        print(f"Corpus processed in {(time.time()-start)/60:.2f} min")
-        start = time.time()
-        print("Processing qrels with vectorized operations...")
-
-    # Convert qrels to pandas DataFrame for vectorized operations
-    qrels_cols = [
-        task.qrels_fields["anchor_id"],
-        task.qrels_fields["positive_id"],
-        task.qrels_fields["score"],
-    ]
-    df_qrels = qrels.select_columns(qrels_cols).to_pandas()
-
-    # Rename columns for easier access
-    df_qrels.columns = ["query_id", "positive_id", "score"]
-
-    # Filter valid pairs: score >= 1, query_id in queries_dict, positive_id in corpus_dict
-    valid_queries = df_qrels["query_id"].isin(queries_dict.keys())
-    valid_positives = df_qrels["positive_id"].isin(corpus_dict.keys())
-    valid_scores = df_qrels["score"] >= 1
-    df_qrels = df_qrels[valid_queries & valid_positives & valid_scores].reset_index(
-        drop=True
-    )
-
-    if rank == 0:
-        print(f"Found {len(df_qrels)} valid query-positive pairs")
-
-    # Extract query and positive IDs for all pairs
-    query_ids = df_qrels["query_id"].tolist()
-    positive_ids = df_qrels["positive_id"].tolist()
-
-    # Get unique queries (preserving first occurrence order)
-    unique_query_mask = ~df_qrels["query_id"].duplicated(keep="first")
-    unique_query_ids = df_qrels.loc[unique_query_mask, "query_id"].tolist()
-    unique_query_texts = [queries_dict[qid]["text"] for qid in unique_query_ids]
-
-    # Get unique positives (preserving first occurrence order) - calculate BEFORE filtering
-    unique_positive_mask = ~df_qrels["positive_id"].duplicated(keep="first")
-    unique_positive_ids = df_qrels.loc[unique_positive_mask, "positive_id"].tolist()
-
-    # Extract texts and titles for unique positives from corpus_dict
-    if has_title:
-        unique_positive_texts = [
-            corpus_dict[pid]["text"] for pid in unique_positive_ids
-        ]
-        unique_positive_titles = [
-            corpus_dict[pid]["title"] for pid in unique_positive_ids
-        ]
-    else:
-        unique_positive_texts = [
-            corpus_dict[pid]["text"] for pid in unique_positive_ids
-        ]
-        unique_positive_titles = None
-
-    # Apply query limiting only if needed
-    max_queries = 10**6
-    if len(unique_query_ids) > max_queries:
-        # Apply query limiting and reorganize documents
-        (
-            unique_query_ids,
-            unique_query_texts,
-            query_ids,
-            positive_ids,
-            _,
-            document_ids,
-            document_texts,
-            document_titles,
-            n_positives,
-        ) = limit_number_of_queries_multi_dataset(
-            unique_query_ids=unique_query_ids,
-            unique_query_texts=unique_query_texts,
-            query_ids=query_ids,
-            positive_ids=positive_ids,
-            positive_titles=None,  # Not tracked in vectorized version
-            unique_positive_ids=unique_positive_ids,
-            unique_positive_texts=unique_positive_texts,
-            unique_positive_titles=unique_positive_titles,
-            corpus_dict=corpus_dict,
-            has_title=has_title,
-            rank=rank,
-            max_queries=max_queries,
-        )
-    else:
-        # No limiting needed, keep data as is
-        # Build unified document lists: unique positives first, then remaining corpus docs
-        seen_positive_ids_set = set(unique_positive_ids)
-        remaining_doc_ids = [
-            doc_id
-            for doc_id in corpus_dict.keys()
-            if doc_id not in seen_positive_ids_set
-        ]
-
-        # Concatenate: positives first, then remaining
-        document_ids = unique_positive_ids + remaining_doc_ids
-        document_texts = unique_positive_texts + [
-            corpus_dict[did]["text"] for did in remaining_doc_ids
-        ]
-
-        if has_title:
-            document_titles = unique_positive_titles + [
-                corpus_dict[did]["title"] for did in remaining_doc_ids
-            ]
-        else:
-            document_titles = None
-
-        n_positives = len(unique_positive_ids)
-
-        if rank == 0:
-            print(
-                f"Found {len(unique_query_ids)//10**3}k unique queries (under {max_queries//10**6}M limit)"
-            )
-            print(f"Total unique documents: {len(document_ids)}")
-
-    if rank == 0:
-        print(f"Qrels processing completed in {(time.time()-start)/60:.2f} min")
 
     return RetrievalRawData(
         query_ids=query_ids,

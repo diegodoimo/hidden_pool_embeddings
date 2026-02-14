@@ -24,7 +24,9 @@ def normalize_text(
     return text.lower().strip()
 
 
-def load_task_data(task) -> Union[Tuple[Dataset, Dict, bool, int], ClassificationRawData]:
+def load_task_data(
+    task, max_num_queries=10**6
+) -> Union[Tuple[Dataset, Dict, bool, int], ClassificationRawData]:
     """
     Unified data loading function for all task types (retrieval, STS, classification, clustering).
 
@@ -42,7 +44,7 @@ def load_task_data(task) -> Union[Tuple[Dataset, Dict, bool, int], Classificatio
 
     if task_type == "Retrieval":
         # Handle all retrieval and STS tasks (STS is treated as retrieval)
-        return _load_retrieval_data(task, rank)
+        return _load_retrieval_data(task, rank, max_num_queries=max_num_queries)
     elif task_type in ["Classification", "Clustering"]:
         # Handle classification and clustering tasks
         return _load_classification_data(task, rank)
@@ -50,7 +52,9 @@ def load_task_data(task) -> Union[Tuple[Dataset, Dict, bool, int], Classificatio
         raise ValueError(f"Unknown task type: {task_type}")
 
 
-def _load_retrieval_data(task, rank=0) -> Tuple[Dataset, Dict, bool, int]:
+def _load_retrieval_data(
+    task, rank=0, max_num_queries=10**6
+) -> Tuple[Dataset, Dict, bool, int]:
     """
     Load data for retrieval tasks (including STS tasks).
 
@@ -58,7 +62,7 @@ def _load_retrieval_data(task, rank=0) -> Tuple[Dataset, Dict, bool, int]:
         tuple of (hf_dataset, corpus_dict, has_title, n_positives)
     """
     # Dispatch to appropriate loader based on task configuration
-    raw_data = _get_retrieval_raw_data(task, rank)
+    raw_data = _get_retrieval_raw_data(task, rank, max_num_queries=max_num_queries)
 
     # Convert raw data to HuggingFace datasets
     # Create qrels dataset with query_id and positive_id pairs
@@ -86,7 +90,7 @@ def _load_retrieval_data(task, rank=0) -> Tuple[Dataset, Dict, bool, int]:
     return hf_dataset, raw_data.corpus_dict, raw_data.has_title, raw_data.n_positives
 
 
-def _get_retrieval_raw_data(task, rank) -> RetrievalRawData:
+def _get_retrieval_raw_data(task, rank, max_num_queries=10**6) -> RetrievalRawData:
     """
     Get raw retrieval data using the loader function defined in the task.
     Each task now has a 'loader' attribute that is the function to call.
@@ -102,9 +106,12 @@ def _get_retrieval_raw_data(task, rank) -> RetrievalRawData:
 
     # Check if loader needs rank parameter
     loader_name = loader_func.__name__
-    if loader_name in ["from_multiple_hf_datasets", "from_multiple_hf_datasets_vectorized"]:
+    if loader_name in [
+        "from_multiple_hf_datasets",
+        "from_multiple_hf_datasets_vectorized",
+    ]:
         # Pass rank parameter
-        return loader_func(task, rank)
+        return loader_func(task, rank, max_num_queries=max_num_queries)
     else:
         # Call with just task
         return loader_func(task)

@@ -1,12 +1,6 @@
-from inference.hard_negative_mining import HardNegativesMiner
-import os
-import torch
-from torch.nn.parallel import DistributedDataParallel as DDP
 import argparse
-from transformers import AutoModel, AutoTokenizer
-import torch.distributed as dist
-from inference.create_datasets import instruction_template_qwen3
-from datetime import timedelta
+
+from matplotlib import category
 from tasks import (
     NAME_TO_TASK,
     BINARY_CLASSIFICATION_TASKS,
@@ -26,7 +20,10 @@ from tasks.task_categories import (
     SUMMARIZATION,
 )
 
-from utils.helpers import print_memory_consumed
+from tasks.task_categories import get_category_path
+from tasks.load_datasets import load_task_data
+import json
+from pathlib import Path
 
 
 def parse_args():
@@ -49,6 +46,17 @@ def parse_args():
     )
     parser.add_argument("--max_length", type=int, default=4096)
     parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--path", type=str, default="results/datasets")
+    parser.add_argument(
+        "--filename",
+        type=str,
+        help="filename to save the statistics",
+    )
+    parser.add_argument(
+        "--force_recompute",
+        action="store_true",
+        help="Force recomputation of statistics even if they exist",
+    )
     args = parser.parse_args()
     return args
 
@@ -167,66 +175,69 @@ def validate_and_select_tasks(task_names, task_types):
 def main():
     args = parse_args()
 
-    WORLD_SIZE = int(os.environ["WORLD_SIZE"])
-    LOCAL_RANK = int(os.environ["LOCAL_RANK"])
-    RANK = int(os.environ["RANK"])
-
-    dist.init_process_group(
-        "nccl",
-        device_id=LOCAL_RANK,
-        timeout=timedelta(seconds=30),  # Reduce from default 600s to 60s
-    )
-    torch.cuda.set_device(dist.get_rank())
-
-    # enable tensorfloat32
-    torch.set_float32_matmul_precision("high")
-
     # Select tasks based on task_names (if provided) or task_types
-    selected_tasks = validate_and_select_tasks(args.task_names, args.task_types)
+    task_names = validate_and_select_tasks(args.task_names, args.task_types)
+    if args.task_names is not None:
+        print(f"Selected specific tasks: {args.task_names}")
+    else:
+        print(f"Selected task types: {args.task_types}")
+    print(f"Tasks to process: {task_names}")
 
-    if RANK == 0:
-        if args.task_names is not None:
-            print(f"Selected specific tasks: {args.task_names}")
+    # Load existing stats if file exists
+    stats = {}
+    output_file = Path(args.path) / args.filename
+
+    # Create directory if it doesn't exist
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    if output_file.exists():
+        with open(output_file, "r") as f:
+            stats = json.load(f)
+        print(f"Loaded existing statistics for {len(stats)} tasks from {output_file}")
+
+    for task_name in task_names:
+        if task_name in stats and not args.force_recompute:
+            print(
+                f"Skipping {task_name}, already in stats. Use --force_recompute to override."
+            )
+            continue
+
+        _, category = get_category_path(task_name, args.path)
+        task_type, category_name = category.split("/")
+
+        print(f"\n\nPREPARING DATASET {category}: {task_name}\n")
+
+        task = get_task(task_name)
+        loaded_data = load_task_data(task, max_num_queries=None)
+
+        if isinstance(loaded_data, tuple):
+            # Retrieval/STS task: (hf_dataset, corpus_dict, has_title, n_positives)
+            data_split, corpus_dict, has_title, n_positives = loaded_data
+            stats[task_name] = {
+                "task_type": task_type,
+                "category": category_name,
+                "total_queries": len(
+                    data_split["qrels"]
+                ),  # Usually qrels count is total queries in many contexts
+                "unique_queries": len(data_split["unique_queries"]),
+                "unique_positives": n_positives,
+                "unique_documents": len(data_split["corpus"]),
+                "total_qrels": len(data_split["qrels"]),
+            }
         else:
-            print(f"Selected task types: {args.task_types}")
-        print(f"Tasks to process: {selected_tasks}")
+            # Classification/Clustering task: ClassificationRawData
+            stats[task_name] = {
+                "task_type": task_type,
+                "category": category_name,
+                "total_samples": len(loaded_data.texts),
+                "unique_labels": (
+                    len(set(loaded_data.labels)) if loaded_data.labels else 0
+                ),
+            }
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.model_name_or_path, use_fast=False, trust_remote_code=True
-    )
-
-    model = AutoModel.from_pretrained(
-        args.model_name_or_path,
-        dtype=torch.bfloat16,
-    ).to("cuda")
-
-    max_length = min(args.max_length, model.config.max_position_embeddings)
-
-    miner = HardNegativesMiner(
-        path=f"./results/datasets_negatives/{path_to_name[args.model_name_or_path]}",
-        model_name=path_to_name[args.model_name_or_path],
-        task_names=selected_tasks,
-        tokenizer=tokenizer,
-        instruction_template=instruction_template_qwen3,
-        padding_side="right",
-        max_length=max_length,
-    )
-
-    if RANK == 0:
-        print("model loaded")
-    dist.barrier()
-    model = model.eval()
-    # ddp is only needed for training here we are adding gradient buffers and the memory occupied with doubl
-    # model = DDP(model, device_ids=[dist.get_rank()])
-    model = torch.compile(model)
-
-    if RANK == 0:
-        print("model wrapped in DDP and compile")
-        print_memory_consumed()
-    dist.barrier()
-
-    miner.mine_negatives(model, batch_size=args.batch_size)
-    dist.destroy_process_group()
+        with open(output_file, "w") as f:
+            json.dump(stats, f, indent=2)
+            print(f"Updated statistics saved to {output_file}")
 
 
 if __name__ == "__main__":
