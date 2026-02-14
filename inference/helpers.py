@@ -647,7 +647,7 @@ def encode(model, loader, world_size, prompt_type, divided_by_chunks=False):
 
     for batch in loader:
         # batch is already on GPU (transferred asynchronously by the prefetcher)
-
+        batch = {key: val.to(model.device) for key, val in batch.items()}
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 
             out_embeddings = model(
