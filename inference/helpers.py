@@ -216,6 +216,7 @@ def search(
 
     for i, chunk_idx in enumerate(range(0, N_corpus, chunk_size)):
 
+        torch.cuda.empty_cache()
         torch.cuda.synchronize()
         t0 = time.time()
 

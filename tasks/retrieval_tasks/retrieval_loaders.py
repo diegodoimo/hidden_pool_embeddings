@@ -36,7 +36,7 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
 
     dist.barrier()
     if rank == 0:
-        print(f"Dataset loaded in {(time.time()-start)/60}min")
+        print(f"Dataset loaded in {(time.time()-start)/60:.2f} min")
         start = time.time()
         print(f"num elements in dataset: {return_formatted(n_pairs)}")
         print("building dataframes")
@@ -79,7 +79,7 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
 
     dist.barrier()
     if rank == 0:
-        print(f"preprocessing done in {(time.time()-start)/60}min")
+        print(f"preprocessing done in {(time.time()-start)/60:.2f} min")
         start = time.time()
         print("finding unique queries and positives items...")
 
@@ -132,7 +132,7 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
 
     dist.barrier()
     if rank == 0:
-        print(f"positives done in {(time.time()-start)/60}min")
+        print(f"positives done in {(time.time()-start)/60:.2f} min")
         start = time.time()
         print("remapping original indices based on unique query positive indices...")
 
@@ -181,7 +181,7 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
 
     dist.barrier()
     if rank == 0:
-        print(f"remapping done in {(time.time()-start)/60}min")
+        print(f"remapping done in {(time.time()-start)/60:.2f} min")
         start = time.time()
         print("generating corpus dict...")
 
@@ -202,7 +202,7 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
 
     dist.barrier()
     if rank == 0:
-        print(f"corpus dict built in {(time.time()-start)/60}min")
+        print(f"corpus dict built in {(time.time()-start)/60:.2f} min")
 
     assert set(full_positive_ids).issubset(
         set(unique_positive_ids)
@@ -241,7 +241,7 @@ def from_one_hf_dataset(task) -> RetrievalRawData:
         )
 
         if rank == 0:
-            print(f"queries pruned {(time.time()-start)/60}min")
+            print(f"queries pruned {(time.time()-start)/60:.2f} min")
 
     dist.barrier()
     if rank == 0:
@@ -759,7 +759,7 @@ def from_multiple_hf_datasets_vectorized(task, rank=0) -> RetrievalRawData:
 
     dist.barrier()
     if rank == 0:
-        print(f"Datasets loaded in {(time.time()-start)/60}min")
+        print(f"Datasets loaded in {(time.time()-start)/60:.2f} min")
         start = time.time()
         print(f"num elements in queries: {len(queries)//10**3}k")
         print(f"num elements in qrels: {len(qrels)//10**3}k")
@@ -773,7 +773,7 @@ def from_multiple_hf_datasets_vectorized(task, rank=0) -> RetrievalRawData:
 
     dist.barrier()
     if rank == 0:
-        print(f"Queries processed in {(time.time()-start)/60}min")
+        print(f"Queries processed in {(time.time()-start)/60:.2f} min")
         start = time.time()
         print(f"Processing {len(corpus)} docs...")
 
@@ -788,7 +788,7 @@ def from_multiple_hf_datasets_vectorized(task, rank=0) -> RetrievalRawData:
 
     dist.barrier()
     if rank == 0:
-        print(f"Corpus processed in {(time.time()-start)/60}min")
+        print(f"Corpus processed in {(time.time()-start)/60:.2f} min")
         start = time.time()
         print("Processing qrels with vectorized operations...")
 
@@ -901,7 +901,7 @@ def from_multiple_hf_datasets_vectorized(task, rank=0) -> RetrievalRawData:
             print(f"Total unique documents: {len(document_ids)}")
 
     if rank == 0:
-        print(f"Qrels processing completed in {(time.time()-start)/60}min")
+        print(f"Qrels processing completed in {(time.time()-start)/60:.2f} min")
 
     return RetrievalRawData(
         query_ids=query_ids,

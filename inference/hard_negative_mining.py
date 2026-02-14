@@ -164,7 +164,7 @@ class HardNegativesMiner:
             ), "filtered qrels contain positive IDs not in corpus"
 
             if self.rank == 0:
-                print(f"full queries and corpus filters in {(time.time()-start)/60}min")
+                print(f"full queries and corpus filters in {(time.time()-start)/60:.2f}min")
                 num_queries_lost = len(set(unique_queries_dataset["id"])) - len(
                     set(filtered_qrels["query_id"])
                 )
@@ -231,7 +231,7 @@ class HardNegativesMiner:
 
         dist.barrier()
         if self.rank == 0:
-            print(f"queries embedding duration: {(time.time()-start)/60} min")
+            print(f"queries embedding duration: {(time.time()-start)/60:.2f} min")
 
         # Create mappings from IDs to embedding indices
         unique_query_id_to_idx = {
@@ -270,7 +270,7 @@ class HardNegativesMiner:
 
         dist.barrier()
         if self.rank == 0:
-            print(f"duration: {(time.time()-start)/60} min")
+            print(f"duration: {(time.time()-start)/60:.2f} min")
             print("\nbuilding negative lists")
 
         start = time.time()
@@ -293,7 +293,7 @@ class HardNegativesMiner:
 
         dist.barrier()
         if self.rank == 0:
-            print(f"duration: {(time.time()-start)/60} min")
+            print(f"duration: {(time.time()-start)/60:.2f} min")
 
         return hard_negatives, stats
 
