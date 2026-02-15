@@ -1,6 +1,12 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from datasets import load_dataset
 from tasks.data_helpers import RetrievalRawData
+import datasets
+
+print(datasets.__version__)
+data = load_dataset(
+    "flax-sentence-embeddings/stackexchange_title_best_voted_answer_jsonl", name="apple"
+)
 
 
 def load_stackexchange_retrieval(task) -> RetrievalRawData:
@@ -27,7 +33,7 @@ def load_stackexchange_retrieval(task) -> RetrievalRawData:
     corpus_dict = {
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
-    
+
     # All documents are positives in this dataset
     n_positives = len(document_ids)
 
