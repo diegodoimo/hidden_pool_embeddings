@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from dataclasses import dataclass
 
 
@@ -19,6 +19,7 @@ class AbsTask(ABC):
     qrels_fields: Dict[str, str] = None
     anchor_fields: Dict[str, str] = None
     corpus_fields: Dict[str, str] = None
+    subtask: Optional[List] = None
 
     @classmethod
     @abstractmethod

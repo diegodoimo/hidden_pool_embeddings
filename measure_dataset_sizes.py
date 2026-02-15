@@ -1,4 +1,7 @@
 import argparse
+import os
+import torch
+import torch.distributed as dist
 
 from matplotlib import category
 from tasks import (
@@ -174,70 +177,96 @@ def validate_and_select_tasks(task_names, task_types):
 
 def main():
     args = parse_args()
+    
+    # Initialize PyTorch distributed (required by load_task_data)
+    # Use gloo backend for CPU-only operation
+    if not dist.is_initialized():
+        dist.init_process_group(backend="gloo")
+    
+    # Get rank for distributed processing
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    
+    if rank == 0:
+        print(f"Initialized distributed with {world_size} process(es)")
 
     # Select tasks based on task_names (if provided) or task_types
     task_names = validate_and_select_tasks(args.task_names, args.task_types)
-    if args.task_names is not None:
-        print(f"Selected specific tasks: {args.task_names}")
-    else:
-        print(f"Selected task types: {args.task_types}")
-    print(f"Tasks to process: {task_names}")
+    if rank == 0:
+        if args.task_names is not None:
+            print(f"Selected specific tasks: {args.task_names}")
+        else:
+            print(f"Selected task types: {args.task_types}")
+        print(f"Tasks to process: {task_names}")
 
-    # Load existing stats if file exists
+    # Load existing stats if file exists (only on rank 0)
     stats = {}
-    output_file = Path(args.path) / args.filename
+    if rank == 0:
+        output_file = Path(args.path) / args.filename
 
-    # Create directory if it doesn't exist
-    output_file.parent.mkdir(parents=True, exist_ok=True)
+        # Create directory if it doesn't exist
+        output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    if output_file.exists():
-        with open(output_file, "r") as f:
-            stats = json.load(f)
-        print(f"Loaded existing statistics for {len(stats)} tasks from {output_file}")
+        if output_file.exists():
+            with open(output_file, "r") as f:
+                stats = json.load(f)
+            print(f"Loaded existing statistics for {len(stats)} tasks from {output_file}")
+    else:
+        output_file = None
 
     for task_name in task_names:
-        if task_name in stats and not args.force_recompute:
-            print(
-                f"Skipping {task_name}, already in stats. Use --force_recompute to override."
-            )
+        if rank == 0:
+            if task_name in stats and not args.force_recompute:
+                print(
+                    f"Skipping {task_name}, already in stats. Use --force_recompute to override."
+                )
+                continue
+
+        try:
+            _, category = get_category_path(task_name, args.path)
+            task_type, category_name = category.split("/")
+
+            if rank == 0:
+                print(f"\n\nPREPARING DATASET {category}: {task_name}\n")
+
+            task = get_task(task_name)
+            loaded_data = load_task_data(task, max_num_queries=None)
+        except Exception as e:
+            if rank == 0:
+                print(f"Skipping {task_name} due to error: {type(e).__name__}: {str(e)}")
             continue
 
-        _, category = get_category_path(task_name, args.path)
-        task_type, category_name = category.split("/")
+        if rank == 0:
+            if isinstance(loaded_data, tuple):
+                # Retrieval/STS task: (hf_dataset, corpus_dict, has_title, n_positives)
+                data_split, corpus_dict, has_title, n_positives = loaded_data
+                stats[task_name] = {
+                    "task_type": task_type,
+                    "category": category_name,
+                    "total_queries": len(
+                        data_split["qrels"]
+                    ),  # Usually qrels count is total queries in many contexts
+                    "unique_queries": len(data_split["unique_queries"]),
+                    "unique_positives": int(n_positives),  # Convert numpy/pandas int to Python int
+                    "unique_documents": len(data_split["corpus"]),
+                    "total_qrels": len(data_split["qrels"]),
+                }
+            else:
+                # Classification/Clustering task: ClassificationRawData
+                stats[task_name] = {
+                    "task_type": task_type,
+                    "category": category_name,
+                    "total_samples": len(loaded_data.texts),
+                    "unique_labels": len(set(loaded_data.labels)) if loaded_data.labels else 0,
+                }
 
-        print(f"\n\nPREPARING DATASET {category}: {task_name}\n")
-
-        task = get_task(task_name)
-        loaded_data = load_task_data(task, max_num_queries=None)
-
-        if isinstance(loaded_data, tuple):
-            # Retrieval/STS task: (hf_dataset, corpus_dict, has_title, n_positives)
-            data_split, corpus_dict, has_title, n_positives = loaded_data
-            stats[task_name] = {
-                "task_type": task_type,
-                "category": category_name,
-                "total_queries": len(
-                    data_split["qrels"]
-                ),  # Usually qrels count is total queries in many contexts
-                "unique_queries": len(data_split["unique_queries"]),
-                "unique_positives": n_positives,
-                "unique_documents": len(data_split["corpus"]),
-                "total_qrels": len(data_split["qrels"]),
-            }
-        else:
-            # Classification/Clustering task: ClassificationRawData
-            stats[task_name] = {
-                "task_type": task_type,
-                "category": category_name,
-                "total_samples": len(loaded_data.texts),
-                "unique_labels": (
-                    len(set(loaded_data.labels)) if loaded_data.labels else 0
-                ),
-            }
-
-        with open(output_file, "w") as f:
-            json.dump(stats, f, indent=2)
-            print(f"Updated statistics saved to {output_file}")
+            with open(output_file, "w") as f:
+                json.dump(stats, f, indent=2)
+                print(f"Updated statistics saved to {output_file}")
+    
+    # Clean up distributed
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

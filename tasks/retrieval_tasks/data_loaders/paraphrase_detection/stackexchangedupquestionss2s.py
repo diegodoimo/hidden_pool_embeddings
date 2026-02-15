@@ -12,8 +12,8 @@ class StackExchangeDupQuestionsS2S(AbsTask):
     hf_subset = "title-title-pair"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "anchor"
-    positive_name = "positive"
+    anchor_name = "title1"
+    positive_name = "title2"
     metadata = TaskMetadata(
         type="Retrieval",
         prompt={"query": "Given a question title, retrieve duplicate question titles"},

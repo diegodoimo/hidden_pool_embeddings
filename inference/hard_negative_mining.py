@@ -81,21 +81,24 @@ class HardNegativesMiner:
         self.model_name = model_name
         dist.barrier()
 
-    def prepare_dataset(self, task_name):
-
-        task = get_task(task_name)
-        data_split, corpus_dict, has_title, n_positives = load_task_data(task)
+    def prepare_dataset(
+        self,
+        data_split,
+        corpus_dict,
+        task_metadata,
+        n_positives,
+    ):
 
         dist.barrier()
         # qrels contains query_id and positive_id pairs
         if self.rank == 0:
             print(
-                f"\ntokenizing dataset: num total qrels pairs (with repetitions), {return_formatted(len(data_split["qrels"]))}"
+                f"\ntokenizing dataset: num total qrels pairs (with repetitions), {return_formatted(len(data_split['qrels']))}"
             )
 
         unique_queries_dataset = create_dataset(
             dataset=data_split["unique_queries"],
-            task_metadata=task.metadata,
+            task_metadata=task_metadata,
             instruction_template=self.instruction_template,
             tokenizer=self.tokenizer,
             prompt_type=PromptType.query,
@@ -127,14 +130,27 @@ class HardNegativesMiner:
                 return_formatted(len(data_split["corpus"])),
             )
 
+        positive_ids = set(data_split["corpus"]["id"][:n_positives])
+        assert len(positive_ids) == n_positives
+
         corpus_dataset = create_dataset(
             dataset=data_split["corpus"],
-            task_metadata=task.metadata,
+            task_metadata=task_metadata,
             instruction_template=self.instruction_template,
             tokenizer=self.tokenizer,
             prompt_type=PromptType.document,
             max_length=self.max_length,
         )
+        if corpus_dataset.removed_ids > 0:
+            positives_to_remove = positive_ids.intersection(
+                set(corpus_dataset.removed_ids)
+            )
+            n_positives_to_remove = len(positives_to_remove)
+
+            if n_positives_to_remove > 0:
+                n_positives -= n_positives_to_remove
+                if self.rank == 0:
+                    print(f"removed {n_positives_to_remove} positives")
 
         if self.rank == 0:
             if len(corpus_dataset.removed_long) > 0:
@@ -172,7 +188,9 @@ class HardNegativesMiner:
             ), "filtered qrels contain positive IDs not in corpus"
 
             if self.rank == 0:
-                print(f"full queries and corpus filters in {(time.time()-start)/60}min")
+                print(
+                    f"full queries and corpus filters in {(time.time()-start)/60:.2f}min"
+                )
                 num_queries_lost = len(set(unique_queries_dataset["id"])) - len(
                     set(filtered_qrels["query_id"])
                 )
@@ -200,7 +218,7 @@ class HardNegativesMiner:
                 f"total qrels pairs (with repetitions): {return_formatted(len(dataset['qrels']))}"
             )
 
-        return dataset, corpus_dict, has_title
+        return dataset, corpus_dict
 
     def mine_one(
         self,
@@ -243,7 +261,7 @@ class HardNegativesMiner:
 
         dist.barrier()
         if self.rank == 0:
-            print(f"queries embedding duration: {(time.time()-start)/60} min")
+            print(f"queries embedding duration: {(time.time()-start)/60:.2f} min")
 
         # Create mappings from IDs to embedding indices
         unique_query_id_to_idx = {
@@ -282,7 +300,7 @@ class HardNegativesMiner:
 
         dist.barrier()
         if self.rank == 0:
-            print(f"duration: {(time.time()-start)/60} min")
+            print(f"duration: {(time.time()-start)/60:.2f} min")
             print("\nbuilding negative lists")
 
         start = time.time()
@@ -305,7 +323,7 @@ class HardNegativesMiner:
 
         dist.barrier()
         if self.rank == 0:
-            print(f"duration: {(time.time()-start)/60} min")
+            print(f"duration: {(time.time()-start)/60:.2f} min")
 
         return hard_negatives, stats
 
@@ -415,48 +433,70 @@ class HardNegativesMiner:
         for task_name in self.task_names:
 
             save_path, category = get_category_path(task_name, self.path)
-            if self.rank == 0:
-                print(f"\n\nPREPARING DATASET {category}: {task_name}\n")
 
-            dataset, corpus_dict, has_title = self.prepare_dataset(task_name=task_name)
-
-            dist.barrier()
             if self.rank == 0:
-                print(f"\n\nprocessing dataset {task_name}")
+                print(f"\n\nLOADING DATASET {category}: {task_name}\n")
+
+            task = get_task(task_name)
+            subtasks = getattr(task, "subtasks", None)
+            if subtasks is None:
+                subtask = [None]
+
+            for subtask in subtasks:
+                (
+                    data_split,
+                    corpus_dict,
+                    has_title,
+                    n_positives,
+                ) = load_task_data(task, subtask)
+
+                if self.rank == 0:
+                    print(f"\n\nPREPARING DATASET {category}: {task_name}\n")
+
+                dataset, corpus_dict = self.prepare_dataset(
+                    data_split=data_split,
+                    corpus_dict=corpus_dict,
+                    task_metadata=task.metadata,
+                    n_positives=n_positives,
+                )
+
+                dist.barrier()
+                if self.rank == 0:
+                    print(f"\n\nprocessing dataset {task_name}")
+                    print_memory_consumed(rank=self.rank)
+
+                hard_negatives, stats = self.mine_one(
+                    dataset=dataset,
+                    model=model,
+                    batch_size=batch_size,
+                    has_title=has_title,
+                    corpus_dict=corpus_dict,
+                )
+
+                dist.barrier()
+                if self.rank == 0:
+                    print(f"\n\nsaving dataset {task_name}")
+
+                self.save_to_disk(
+                    qrels=dataset["qrels"],
+                    negatives=hard_negatives,
+                    has_title=has_title,
+                    stats=stats,
+                    task_name=task_name,
+                    save_path=save_path,
+                    corpus_dict=corpus_dict,
+                )
+
+                torch.cuda.empty_cache()
                 print_memory_consumed(rank=self.rank)
 
-            hard_negatives, stats = self.mine_one(
-                dataset=dataset,
-                model=model,
-                batch_size=batch_size,
-                has_title=has_title,
-                corpus_dict=corpus_dict,
-            )
-
-            dist.barrier()
-            if self.rank == 0:
-                print(f"\n\nsaving dataset {task_name}")
-
-            self.save_to_disk(
-                dataset=dataset,
-                negatives=hard_negatives,
-                has_title=has_title,
-                stats=stats,
-                task_name=task_name,
-                save_path=save_path,
-                corpus_dict=corpus_dict,
-            )
-
-            torch.cuda.empty_cache()
-            print_memory_consumed(rank=self.rank)
-
     def save_to_disk(
-        self, dataset, negatives, has_title, stats, task_name, save_path, corpus_dict
+        self, qrels, negatives, has_title, stats, task_name, save_path, corpus_dict
     ):
 
         # Retrieve texts from corpus_dict using IDs from qrels
-        query_ids = dataset["qrels"]["query_id"]
-        positive_ids = dataset["qrels"]["positive_id"]
+        query_ids = qrels["query_id"]
+        positive_ids = qrels["positive_id"]
 
         texts = [corpus_dict[qid]["text"] for qid in query_ids]
         positive_text = [corpus_dict[pid]["text"] for pid in positive_ids]
@@ -479,8 +519,8 @@ class HardNegativesMiner:
 
             dataset = Dataset.from_dict(
                 {
-                    "anchor_text": texts,
-                    "anchor_id": query_ids,
+                    "query_text": texts,
+                    "query_id": query_ids,
                     "positive_text": positive_text,
                     "positive_title": positive_title,
                     "positive_id": positive_ids,
@@ -490,8 +530,8 @@ class HardNegativesMiner:
                 },
                 features=Features(
                     {
-                        "anchor_text": Value("string"),
-                        "anchor_id": Value("string"),
+                        "query_text": Value("string"),
+                        "query_id": Value("string"),
                         "positive_text": Value("string"),
                         "positive_title": Value("string"),
                         "positive_id": Value("string"),
@@ -504,8 +544,8 @@ class HardNegativesMiner:
         else:
             dataset = Dataset.from_dict(
                 {
-                    "anchor_text": texts,
-                    "anchor_id": query_ids,
+                    "query_text": texts,
+                    "query_id": query_ids,
                     "positive_text": positive_text,
                     "positive_id": positive_ids,
                     "negative_text": negative_text,
@@ -513,8 +553,8 @@ class HardNegativesMiner:
                 },
                 features=Features(
                     {
-                        "anchor_text": Value("string"),
-                        "anchor_id": Value("string"),
+                        "query_text": Value("string"),
+                        "query_id": Value("string"),
                         "positive_text": Value("string"),
                         "positive_id": Value("string"),
                         "negative_text": Sequence(Value("string")),
