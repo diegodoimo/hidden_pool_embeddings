@@ -12,8 +12,8 @@ class StackExchangeDupQuestionsP2P(AbsTask):
     hf_subset = "post-post-pair"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "anchor"
-    positive_name = "positive"
+    anchor_name = "post1"
+    positive_name = "post2"
     metadata = TaskMetadata(
         type="Retrieval",
         prompt={"query": "Given a question post, retrieve duplicate question posts"},

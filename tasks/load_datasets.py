@@ -44,7 +44,7 @@ def load_task_data(
 
     if task_type == "Retrieval":
         # Handle all retrieval and STS tasks (STS is treated as retrieval)
-        return _load_retrieval_data(task, rank, max_num_queries=max_num_queries)
+        return _load_retrieval_data(task=task, rank = rank, max_num_queries=max_num_queries)
     elif task_type in ["Classification", "Clustering"]:
         # Handle classification and clustering tasks
         return _load_classification_data(task, rank)
@@ -62,10 +62,21 @@ def _load_retrieval_data(
         tuple of (hf_dataset, corpus_dict, has_title, n_positives)
     """
     # Dispatch to appropriate loader based on task configuration
-    raw_data = _get_retrieval_raw_data(task, rank, max_num_queries=max_num_queries)
+
+    loader_func = getattr(task, "loader", None)
+
+    if loader_func is None:
+        raise ValueError(
+            f"Task {task.__class__.__name__} does not have a 'loader' attribute defined. "
+            "Please define a loader for this task."
+        )
+
+    raw_data = loader_func(task= task, rank =rank, max_num_queries=max_num_queries)
+    #raw_data = _get_retrieval_raw_data(task, rank, max_num_queries=max_num_queries)
 
     # Convert raw data to HuggingFace datasets
     # Create qrels dataset with query_id and positive_id pairs
+
     qrels_ds = create_qrels_dataset(
         query_ids=raw_data.query_ids,
         positive_ids=raw_data.positive_ids,
@@ -88,33 +99,6 @@ def _load_retrieval_data(
     }
 
     return hf_dataset, raw_data.corpus_dict, raw_data.has_title, raw_data.n_positives
-
-
-def _get_retrieval_raw_data(task, rank, max_num_queries=10**6) -> RetrievalRawData:
-    """
-    Get raw retrieval data using the loader function defined in the task.
-    Each task now has a 'loader' attribute that is the function to call.
-    """
-    # Every task should now have a 'loader' attribute
-    loader_func = getattr(task, "loader", None)
-
-    if loader_func is None:
-        raise ValueError(
-            f"Task {task.__class__.__name__} does not have a 'loader' attribute defined. "
-            "Please define a loader for this task."
-        )
-
-    # Check if loader needs rank parameter
-    loader_name = loader_func.__name__
-    if loader_name in [
-        "from_multiple_hf_datasets",
-        "from_multiple_hf_datasets_vectorized",
-    ]:
-        # Pass rank parameter
-        return loader_func(task, rank, max_num_queries=max_num_queries)
-    else:
-        # Call with just task
-        return loader_func(task)
 
 
 def _load_classification_data(task, rank) -> ClassificationRawData:
@@ -141,3 +125,5 @@ def _load_classification_data(task, rank) -> ClassificationRawData:
 def _build_corpus_dict(dataset, id_field, text_field, title_field=None):
     """Helper to build corpus dictionary from dataset."""
     return get_dict(dataset, id_field, text_field, title_field)
+
+

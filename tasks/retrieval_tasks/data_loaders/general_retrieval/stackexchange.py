@@ -1,18 +1,51 @@
 from tasks.abs_task import AbsTask, TaskMetadata
-from datasets import load_dataset
+from datasets import load_dataset, concatenate_datasets, Dataset
 import time
 import torch.distributed as dist
 import pandas as pd
 import numpy as np
 from tasks.data_helpers import RetrievalRawData
 from utils.helpers import return_formatted
-from tasks.retrieval_tasks.retrieval_loaders import limit_number_of_queries
+from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 
 
-def load_stackexchange_retrieval(task, max_num_queries=10**6, rank=None) -> RetrievalRawData:
-    """Load StackExchange dataset for retrieval using vectorized operations.
+# List of all 174 StackExchange subjects
+STACKEXCHANGE_SUBJECTS = [
+    "3dprinting", "academia", "ai", "android", "anime", "apple", "arduino", "askubuntu",
+    "astronomy", "avp", "aviation", "beer", "bicycles", "bioinformatics", "biology",
+    "bitcoin", "blender", "boardgames", "bricks", "buddhism", "chemistry", "chess",
+    "christianity", "civicrm", "codegolf", "codereview", "coffee", "cogsci", "computergraphics",
+    "conlang", "cooking", "craftcms", "crafts", "crypto", "cs", "cseducators", "cstheory",
+    "datascience", "dba", "devops", "diy", "drupal", "dsp", "earthscience", "ebooks",
+    "economics", "electronics", "elementaryos", "ell", "emacs", "engineering", "english",
+    "ethereum", "expatriates", "expressionengine", "fitness", "freelancing", "french",
+    "gamedev", "gaming", "gardening", "genealogy", "german", "gis", "graphicdesign",
+    "ham", "hardwarerecs", "health", "hermeneutics", "hin", "history", "hobbyists",
+    "homebrew", "hsm", "hsm-history", "iot", "islam", "italian", "japanese", "joomla",
+    "judaism", "korean", "languagelearning", "latin", "law", "libertarianism", "lifehacks",
+    "linguistics", "literature", "magento", "martialarts", "materials", "mathematica",
+    "math", "matheducators", "mathoverflow", "mechanics", "money", "monero", "movies",
+    "music", "musicfans", "mythology", "networkengineering", "opendata", "opensource",
+    "outdoors", "parenting", "patents", "pets", "philosophy", "philosophy-of-language",
+    "photo", "physics", "pm", "poker", "politics", "portuguese", "productivity",
+    "proofassistants", "psychology", "pt", "puzzling", "quant", "quantumcomputing",
+    "raspberrypi", "retrocomputing", "reverseengineering", "robotics", "rpg", "rus",
+    "russian", "salesforce", "scicomp", "scifi", "security", "sharepoint", "sitecore",
+    "skeptics", "softwareengineering", "solana", "sound", "space", "sports", "sqa",
+    "stackapps", "stats", "stellar", "success", "superuser", "sustainability", "tex",
+    "tezos", "tor", "travel", "tridion", "unix", "ux", "vi", "webapps", "webmasters",
+    "wine", "woodworking", "wordpress", "workplace", "worldbuilding", "writing",
+]
 
-    Title+body is used as query, upvoted_answer is used as positive document.
+
+def load_stackexchange_all_subjects(task, max_num_queries=10**6, rank=None) -> RetrievalRawData:
+    """Load all 174 StackExchange subjects, concatenate them, and process as a single dataset.
+    
+    This loader:
+    1. Loads all 174 StackExchange subject subsets
+    2. Concatenates them into a single dataset
+    3. Combines title + body into a single query field
+    4. Uses the standard from_one_hf_dataset processing logic
     
     Args:
         task: Task object with dataset configuration
@@ -22,73 +55,160 @@ def load_stackexchange_retrieval(task, max_num_queries=10**6, rank=None) -> Retr
     rank = dist.get_rank() if rank is None else rank
     
     if rank == 0:
-        start = time.time()
-        print("Loading dataset...")
+        start_total = time.time()
+        print(f"Loading all {len(STACKEXCHANGE_SUBJECTS)} StackExchange subjects...")
     
-    if task.hf_subset:
-        dataset = load_dataset(task.hf_name, name=task.hf_subset, split=task.split)
-    else:
-        dataset = load_dataset(task.hf_name, split=task.split)
+    # Load and concatenate all subjects
+    all_datasets = []
+    for i, subject in enumerate(STACKEXCHANGE_SUBJECTS):
+        try:
+            if rank == 0 and i % 20 == 0:
+                print(f"  Loading subject {i+1}/{len(STACKEXCHANGE_SUBJECTS)}: {subject}")
+            
+            dataset = load_dataset(task.hf_name, name=subject, split=task.split)
+            all_datasets.append(dataset)
+            
+        except Exception as e:
+            if rank == 0:
+                print(f"  Warning: Failed to load {subject}: {e}")
+            continue
     
     dist.barrier()
     if rank == 0:
-        print(f"Dataset loaded in {(time.time()-start)/60:.2f} min")
-        print(f"num elements in dataset: {return_formatted(len(dataset))}")
+        print(f"Loaded {len(all_datasets)} subjects in {(time.time()-start_total)/60:.2f} min")
+        print("Concatenating datasets...")
         start = time.time()
-        print("Converting to pandas...")
-
-    # Convert to pandas DataFrame
-    df = dataset.select_columns(["title", "body", task.positive_name]).to_pandas()
-    df.columns = ["title", "body", "answer"]
     
-    # Combine title and body for query
-    df["query"] = df["title"] + " " + df["body"]
-    n_pairs = len(df)
+    # Concatenate all datasets
+    combined_dataset = concatenate_datasets(all_datasets)
+    
+    dist.barrier()
+    if rank == 0:
+        print(f"Concatenation done in {(time.time()-start)/60:.2f} min")
+        print(f"Total dataset size: {return_formatted(len(combined_dataset))}")
+        print("Combining title and body into query field...")
+        start = time.time()
+    
+    # Combine title and body into a single query field
+    def combine_title_body(example):
+        example[task.anchor_name] = example["title"] + " " + example["body"]
+        return example
+    
+    combined_dataset = combined_dataset.map(
+        combine_title_body,
+        batched=False,
+        desc="Combining title+body" if rank == 0 else None,
+    )
+    
+    dist.barrier()
+    if rank == 0:
+        print(f"Title+body combination done in {(time.time()-start)/60:.2f} min")
+        print(f"Processing with unified loader...")
+    
+    # Create a temporary task-like object for from_one_hf_dataset
+    # We'll modify the dataset in place and pass the task object
+    # The from_one_hf_dataset expects to load the dataset itself, so we need to
+    # work around this by temporarily storing the combined dataset
+    
+    # Actually, let's just replicate the from_one_hf_dataset logic here with our combined dataset
+    # This is cleaner than trying to monkey-patch
+    
+    start = time.time()
+    n_pairs = len(combined_dataset)
+    
+    if rank == 0:
+        print("Converting to pandas...")
+    
+    # Convert to pandas DataFrame
+    has_title = task.corpus_fields.get("title", None) is not None
+    cols_to_load = [task.anchor_name, task.positive_name]
+    if has_title:
+        title_col = task.corpus_fields.get("title", None)
+        if title_col in combined_dataset.column_names:
+            cols_to_load.append(title_col)
+        else:
+            has_title = False
+    
+    df = combined_dataset.select_columns(cols_to_load).to_pandas()
+    
+    # Keep as pandas Series
+    query_texts = df[task.anchor_name]
+    positive_texts = df[task.positive_name]
     
     dist.barrier()
     if rank == 0:
         print(f"Conversion done in {(time.time()-start)/60:.2f} min")
         start = time.time()
-        print("Building query-positive pairs with deduplication...")
+        print("Finding unique queries and positives...")
     
-    # Get unique queries using pandas
-    unique_query_mask = ~df["query"].duplicated(keep="first")
-    unique_query_idx = unique_query_mask[unique_query_mask].index.values
-    unique_query_texts = df.loc[unique_query_mask, "query"].tolist()
+    # Fast deduplication via pandas
+    unique_query_mask = ~query_texts.duplicated(keep="first")
+    unique_query_idx = unique_query_mask[unique_query_mask].index
+    unique_query_texts = query_texts.iloc[unique_query_idx].reset_index(drop=True)
     unique_query_ids = [f"query_{i}" for i in unique_query_idx]
     
-    # Create query text to ID mapping
-    query_text_to_id = pd.Series(unique_query_ids, index=df.loc[unique_query_mask, "query"].values)
-    
-    # Map all queries to their unique IDs
-    query_ids = df["query"].map(query_text_to_id).tolist()
-    
-    # Get unique positives
-    unique_positive_mask = ~df["answer"].duplicated(keep="first")
-    unique_positive_idx = unique_positive_mask[unique_positive_mask].index.values
-    unique_positive_texts = df.loc[unique_positive_mask, "answer"].tolist()
+    unique_positive_mask = ~positive_texts.duplicated(keep="first")
+    unique_positive_idx = unique_positive_mask[unique_positive_mask].index
+    unique_positive_texts = positive_texts.iloc[unique_positive_idx].reset_index(drop=True)
     unique_positive_ids = [f"doc_{i}" for i in unique_positive_idx]
+    n_positives = len(unique_positive_ids)
     
-    # Create document text to ID mapping
-    doc_text_to_id = pd.Series(unique_positive_ids, index=df.loc[unique_positive_mask, "answer"].values)
-    
-    # Map all positives to their unique IDs
-    positive_ids = df["answer"].map(doc_text_to_id).tolist()
+    if has_title:
+        unique_positive_titles = df[title_col].iloc[unique_positive_idx].reset_index(drop=True)
+    else:
+        unique_positive_titles = None
     
     dist.barrier()
     if rank == 0:
         print(f"Deduplication done in {(time.time()-start)/60:.2f} min")
-        print(f"Found {return_formatted(len(unique_query_ids))} unique queries before limiting")
-        print(f"Found {return_formatted(len(unique_positive_ids))} unique documents")
         start = time.time()
-        print("Applying query limiting...")
+        print("Remapping indices...")
+    
+    # Vectorized remapping
+    query_text_to_first_idx = pd.Series(
+        unique_query_idx.values, index=query_texts.iloc[unique_query_idx].values
+    )
+    positive_text_to_first_idx = pd.Series(
+        unique_positive_idx.values,
+        index=positive_texts.iloc[unique_positive_idx].values,
+    )
+    
+    query_ids = ("query_" + query_texts.map(query_text_to_first_idx).astype(str)).tolist()
+    positive_ids = ("doc_" + positive_texts.map(positive_text_to_first_idx).astype(str)).tolist()
+    
+    dist.barrier()
+    if rank == 0:
+        print(f"Remapping done in {(time.time()-start)/60:.2f} min")
+        start = time.time()
+        print("Generating corpus dict...")
+    
+    # Build corpus dict
+    if has_title:
+        corpus_dict = {
+            id_: {"text": doc_text, "title": doc_title}
+            for id_, doc_text, doc_title in zip(
+                unique_positive_ids, unique_positive_texts, unique_positive_titles
+            )
+        }
+    else:
+        corpus_dict = {
+            id_: {"text": doc_text}
+            for id_, doc_text in zip(unique_positive_ids, unique_positive_texts)
+        }
+    
+    dist.barrier()
+    if rank == 0:
+        print(f"Corpus dict built in {(time.time()-start)/60:.2f} min")
     
     # Apply query limiting if needed
     if max_num_queries is not None and len(unique_query_idx) > max_num_queries:
         if rank == 0:
+            start = time.time()
             print(
                 f"Number of unique queries {return_formatted(len(unique_query_idx))} > {max_num_queries//10**6}M: limiting queries"
             )
+        
+        from tasks.retrieval_tasks.retrieval_loaders import limit_number_of_queries
         
         unique_query_texts = unique_query_texts[:max_num_queries]
         unique_query_ids = unique_query_ids[:max_num_queries]
@@ -97,9 +217,9 @@ def load_stackexchange_retrieval(task, max_num_queries=10**6, rank=None) -> Retr
         (
             query_ids,
             positive_ids,
-            document_ids,
-            document_texts,
-            _,
+            unique_positive_ids,
+            unique_positive_texts,
+            unique_positive_titles,
             n_positives,
         ) = limit_number_of_queries(
             query_ids=query_ids,
@@ -108,73 +228,61 @@ def load_stackexchange_retrieval(task, max_num_queries=10**6, rank=None) -> Retr
             n_pairs=n_pairs,
             unique_positive_ids=unique_positive_ids,
             unique_positive_texts=unique_positive_texts,
-            unique_positive_titles=None,
-            has_title=False,
+            unique_positive_titles=unique_positive_titles,
+            has_title=has_title,
             max_queries=max_num_queries,
         )
         
         if rank == 0:
             print(f"Queries limited in {(time.time()-start)/60:.2f} min")
-            print(f"Positives referenced by filtered pairs: {return_formatted(n_positives)}")
-            print(f"Total unique documents in corpus: {return_formatted(len(document_ids))}")
-    else:
-        # No limiting needed
-        document_ids = unique_positive_ids
-        document_texts = unique_positive_texts
-        n_positives = len(unique_positive_ids)
-        
-        if rank == 0:
-            print(
-                f"Found {return_formatted(len(unique_query_ids))} unique queries (under {max_num_queries//10**6}M limit)"
-            )
-            print(f"Total number of query-positive pairs: {return_formatted(len(query_ids))}")
-            print(f"Positives referenced by pairs (n_positives): {return_formatted(n_positives)}")
-            print(f"Total unique documents in corpus: {return_formatted(len(document_ids))}")
-
-    corpus_dict = {
-        id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
-    }
     
-    # Assertions to ensure data consistency
+    dist.barrier()
+    
     assert set(positive_ids).issubset(
-        set(document_ids)
-    ), "filtered qrels contain positive IDs not in document list"
+        set(unique_positive_ids)
+    ), "filtered qrels contain positive IDs not in corpus"
     
-    assert set(unique_positive_ids).issubset(
-        set(document_ids)
-    ), "unique positives not in document list"
+    assert set(unique_positive_ids) == set(corpus_dict.keys())
     
-    assert set(corpus_dict.keys()) == set(document_ids), "corpus_dict keys mismatch with document_ids"
-
+    if rank == 0:
+        print(f"Found {return_formatted(len(unique_query_texts))} unique queries")
+        print(f"Total number of query-positive pairs: {return_formatted(len(query_ids))}")
+        print(f"Positives referenced by pairs (n_positives): {return_formatted(n_positives)}")
+        print(f"Total unique documents in corpus: {return_formatted(len(unique_positive_ids))}")
+        print(f"Total processing time: {(time.time()-start_total)/60:.2f} min")
+    
     return RetrievalRawData(
         query_ids=query_ids,
         positive_ids=positive_ids,
-        document_texts=document_texts,
-        document_ids=document_ids,
-        document_titles=None,
+        document_texts=unique_positive_texts,
+        document_ids=unique_positive_ids,
+        document_titles=unique_positive_titles,
         unique_query_texts=unique_query_texts,
         unique_query_ids=unique_query_ids,
         corpus_dict=corpus_dict,
-        has_title=False,
+        has_title=has_title,
         n_positives=n_positives,
     )
 
 
 class StackExchangeRetrieval(AbsTask):
-    """StackExchange dataset for retrieval - title+body as query, answer as positive."""
+    """StackExchange dataset for retrieval - all 174 subjects concatenated.
+    
+    Title+body is combined into a single query field, upvoted_answer is used as positive.
+    Loads and concatenates all 174 StackExchange subject subsets.
+    """
 
     language = "en"
-
     hf_name = "flax-sentence-embeddings/stackexchange_titlebody_best_voted_answer_jsonl"
-    hf_subset = "apple"  # Default subset, can be changed
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "title_body"
+    anchor_name = "title_body"  # This field will be created by combining title + body
     positive_name = "upvoted_answer"
+    corpus_fields = {}  # No title field for answers, loader will handle has_title check
     metadata = TaskMetadata(
         type="Retrieval",
         prompt={
             "query": "Given a question, retrieve answers that best answer the question"
         },
     )
-    loader = load_stackexchange_retrieval
+    loader = load_stackexchange_all_subjects

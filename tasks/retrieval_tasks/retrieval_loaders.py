@@ -190,9 +190,17 @@ def from_one_hf_dataset(task, max_num_queries=10**6, rank=None) -> RetrievalRawD
             print(f"Queries limited in {(time.time()-start)/60:.2f} min")
 
     dist.barrier()
+
+
+    assert set(positive_ids).issubset(
+        set(unique_positive_ids)
+    ), "filtered qrels contain positive IDs not in corpus"
+
+    assert set(unique_positive_ids) == set(corpus_dict.keys())
+
     if rank == 0:
         print(
-            f"Found {return_formatted(len(unique_query_texts))} unique queries (under {max_num_queries//10**6}M limit)"
+            f"Found {return_formatted(len(unique_query_texts))} unique queries"
         )
         print(
             f"Total number of query-positive pairs: {return_formatted(len(query_ids))}"
@@ -204,11 +212,7 @@ def from_one_hf_dataset(task, max_num_queries=10**6, rank=None) -> RetrievalRawD
             f"Total unique documents in corpus: {return_formatted(len(unique_positive_ids))}"
         )
 
-    assert set(positive_ids).issubset(
-        set(unique_positive_ids)
-    ), "filtered qrels contain positive IDs not in corpus"
 
-    assert set(unique_positive_ids) == set(corpus_dict.keys())
 
     return RetrievalRawData(
         query_ids=query_ids,
@@ -429,7 +433,7 @@ def from_multiple_hf_datasets(task, max_num_queries=10**6, rank=None) -> Retriev
 
         if rank == 0:
             print(
-                f"Found {return_formatted(len(unique_query_ids))} unique queries (under {max_num_queries//10**6}M limit)"
+                f"Found {return_formatted(len(unique_query_ids))} unique queries"
             )
             print(
                 f"Total number of query-positive pairs: {return_formatted(len(query_ids))}"

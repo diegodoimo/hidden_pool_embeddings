@@ -121,7 +121,7 @@ def load_squad_retrieval(task, max_num_queries=10**6, rank=None) -> RetrievalRaw
         
         if rank == 0:
             print(
-                f"Found {return_formatted(len(unique_query_ids))} unique queries (under {max_num_queries//10**6}M limit)"
+                f"Found {return_formatted(len(unique_query_ids))} unique queries"
             )
             print(f"Total number of query-positive pairs: {return_formatted(len(query_ids))}")
             print(f"Positives referenced by pairs (n_positives): {return_formatted(n_positives)}")

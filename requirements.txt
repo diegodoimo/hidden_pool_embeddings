@@ -2,7 +2,7 @@ scikit-learn
 numpy
 scipy
 sentencepiece
-datasets
+datasets==3.6.0
 accelerate
 peft
 tokenizers
