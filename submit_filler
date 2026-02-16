@@ -1,0 +1,59 @@
+#!/bin/bash
+#SBATCH --partition=H100
+##SBATCH --nodelist=dgx004
+#SBATCH --account=lade
+#SBATCH --nodes=1
+#SBATCH --time=24:00:00            
+#SBATCH --ntasks-per-node=1       
+#SBATCH --cpus-per-task=10
+#SBATCH --mem=50G       
+#SBATCH --job-name=test
+#SBATCH --gres=gpu:H100:1
+##SBATCH --gres=gpu:A100:2
+
+
+env_path=\/orfeo/cephfs/scratch/area/ddoimo/open/hidden_pool_embeddings
+
+source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_a100
+
+module load cuda/12.8
+source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_h100
+
+
+nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
+nodes_array=($nodes)
+head_node=${nodes_array[0]}
+
+GPU_NUMBER=$(echo $CUDA_VISIBLE_DEVICES | tr ',' ' ' | wc -w) 
+export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
+export PYTHONUNBUFFERED=1
+
+
+torchrun \
+    --nnodes=$SLURM_NTASKS \
+    --node-rank=$SLURM_NODEID \
+    --nproc-per-node=$GPU_NUMBER \
+    --rdzv-id=$SLURM_PROCID \
+    --rdzv-backend=c10d \
+    --rdzv-endpoint=$head_node:0 \
+    filler.py  \
+
+
+    #--task_names 'eli5' 'squad' 'hotpotqa' 'bioasq' 'pubmedqa' \
+
+
+    #--task_names 'eli5' 'squad' 'hotpotqa' 'bioasq' 'pubmedqa' \
+
+
+
+#'eli5', 'squad', 'hotpotqa', 'bioasq', 'pubmedqa', 'fiqa2018', 'amazonqa', 'coliee', 'msmarco', 'nfcorpus', 'stackexchange', 'miracl', 'mrtydi', 'arguana', 'fever', 'scifact', 'qqp', 'stackexchange_dup_p2p', 'stackexchange_dup_s2s', 'stackoverflow_dup', 's2orc_abstract_citation', 's2orc_title_abstract', 's2orc_title_citation', 'specter', 'cnndm', 'xsum', 'sentence_compression'
+# --task_names "sts22" \
+# --task_types "nli" \
+
+
+
+#--task_types "sts"
+
+
+#"Qwen/Qwen3-Embedding-0.6B"
+#"Qwen/Qwen3-Embedding-8B"
