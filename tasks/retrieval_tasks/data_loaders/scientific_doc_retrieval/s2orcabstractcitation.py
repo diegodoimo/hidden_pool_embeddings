@@ -9,7 +9,7 @@ class S2ORCAbstractCitation(AbsTask):
     language = "en"
 
     hf_name = "sentence-transformers/s2orc"
-    hf_subset = "abstract-citation-prediction-triplet"
+    hf_subset = "abstract-citation-pair"
     split = "train"
     has_multiple_datasets = False
     anchor_name = "anchor"

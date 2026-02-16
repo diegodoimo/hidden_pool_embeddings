@@ -497,8 +497,8 @@ class HardNegativesMiner:
         # Retrieve texts from corpus_dict using IDs from qrels
         query_ids = qrels["query_id"]
         positive_ids = qrels["positive_id"]
-
-        texts = [corpus_dict[qid]["text"] for qid in query_ids]
+        assert False, "error on queries text blow"
+        query_texts = [corpus_dict[qid]["text"] for qid in query_ids]
         positive_text = [corpus_dict[pid]["text"] for pid in positive_ids]
 
         # Use (query_id, positive_id) tuples to get negatives for each qrels entry
@@ -519,7 +519,7 @@ class HardNegativesMiner:
 
             dataset = Dataset.from_dict(
                 {
-                    "query_text": texts,
+                    "query_text": query_texts,
                     "query_id": query_ids,
                     "positive_text": positive_text,
                     "positive_title": positive_title,
@@ -544,7 +544,7 @@ class HardNegativesMiner:
         else:
             dataset = Dataset.from_dict(
                 {
-                    "query_text": texts,
+                    "query_text": query_texts,
                     "query_id": query_ids,
                     "positive_text": positive_text,
                     "positive_id": positive_ids,

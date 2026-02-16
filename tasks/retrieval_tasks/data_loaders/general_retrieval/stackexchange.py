@@ -5,17 +5,8 @@ import torch.distributed as dist
 import pandas as pd
 import numpy as np
 from tasks.data_helpers import RetrievalRawData
-<<<<<<< HEAD
-import datasets
-
-print(datasets.__version__)
-data = load_dataset(
-    "flax-sentence-embeddings/stackexchange_title_best_voted_answer_jsonl", name="apple"
-)
-=======
 from utils.helpers import return_formatted
 from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
->>>>>>> 78748896896000961c5dfacbcaaef545173e7843
 
 
 # List of all 174 StackExchange subjects
@@ -47,26 +38,6 @@ STACKEXCHANGE_SUBJECTS = [
 ]
 
 
-<<<<<<< HEAD
-    # Combine title and body for query
-    query_texts = [f"{row['title']} {row['body']}" for row in dataset]
-    positive_texts = list(dataset[task.positive_name])
-    document_texts = positive_texts.copy()
-
-    # Generate sequential IDs
-    n_pairs = len(query_texts)
-    query_ids = [f"query_{i}" for i in range(n_pairs)]
-    positive_ids = [f"doc_{i}" for i in range(n_pairs)]
-    document_ids = positive_ids.copy()
-
-    corpus_dict = {
-        id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
-    }
-
-    # All documents are positives in this dataset
-    n_positives = len(document_ids)
-
-=======
 def load_stackexchange_all_subjects(task, max_num_queries=10**6, rank=None) -> RetrievalRawData:
     """Load all 174 StackExchange subjects, concatenate them, and process as a single dataset.
     
@@ -280,7 +251,6 @@ def load_stackexchange_all_subjects(task, max_num_queries=10**6, rank=None) -> R
         print(f"Total unique documents in corpus: {return_formatted(len(unique_positive_ids))}")
         print(f"Total processing time: {(time.time()-start_total)/60:.2f} min")
     
->>>>>>> 78748896896000961c5dfacbcaaef545173e7843
     return RetrievalRawData(
         query_ids=query_ids,
         positive_ids=positive_ids,
@@ -316,3 +286,4 @@ class StackExchangeRetrieval(AbsTask):
         },
     )
     loader = load_stackexchange_all_subjects
+    subtasks = STACKEXCHANGE_SUBJECTS

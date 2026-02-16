@@ -25,7 +25,7 @@ def normalize_text(
 
 
 def load_task_data(
-    task, max_num_queries=10**6
+    task, max_num_queries=10**6, substask = None
 ) -> Union[Tuple[Dataset, Dict, bool, int], ClassificationRawData]:
     """
     Unified data loading function for all task types (retrieval, STS, classification, clustering).
@@ -43,7 +43,7 @@ def load_task_data(
 
     if task_type == "Retrieval":
         # Handle all retrieval and STS tasks (STS is treated as retrieval)
-        return _load_retrieval_data(task=task, max_num_queries=max_num_queries)
+        return _load_retrieval_data(task=task, max_num_queries=max_num_queries, subtask=subtask)
     elif task_type in ["Classification", "Clustering"]:
         # Handle classification and clustering tasks
         return _load_classification_data(task)
@@ -52,7 +52,7 @@ def load_task_data(
 
 
 def _load_retrieval_data(
-    task, rank=0, max_num_queries=10**6
+    task, rank=0, max_num_queries=10**6, subtask=None
 ) -> Tuple[Dataset, Dict, bool, int]:
     """
     Load data for retrieval tasks (including STS tasks).
@@ -63,7 +63,6 @@ def _load_retrieval_data(
     # Dispatch to appropriate loader based on task configuration
 
     loader_func = getattr(task, "loader", None)
-    subtask = getattr(task, "subtasks", None)
 
     if loader_func is None:
         raise ValueError(
@@ -72,7 +71,7 @@ def _load_retrieval_data(
         )
 
     raw_data = loader_func(
-        task=task, subtask=subset, rank=rank, max_num_queries=max_num_queries
+        task=task, subtask=subtask, rank=rank, max_num_queries=max_num_queries
     )
 
     # Convert raw data to HuggingFace datasets

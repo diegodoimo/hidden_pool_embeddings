@@ -9,7 +9,7 @@ class S2ORCTitleCitation(AbsTask):
     language = "en"
 
     hf_name = "sentence-transformers/s2orc"
-    hf_subset = "title-citation-prediction-triplet"
+    hf_subset = "title-citation-pair"
     split = "train"
     has_multiple_datasets = False
     anchor_name = "anchor"

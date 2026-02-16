@@ -19,7 +19,7 @@ class AbsTask(ABC):
     qrels_fields: Dict[str, str] = None
     anchor_fields: Dict[str, str] = None
     corpus_fields: Dict[str, str] = None
-    subtask: Optional[List] = None
+    subtasks: Optional[List] = None
 
     @classmethod
     @abstractmethod
