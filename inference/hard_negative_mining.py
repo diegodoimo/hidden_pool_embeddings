@@ -52,6 +52,140 @@ class TripletStats:
             # if self.rank == 0:
             # print("Found empty entry", q_id_counts)
 
+    def merge(self, other: "TripletStats"):
+        """Accumulate stats from another TripletStats instance."""
+        self.less_than_24 += other.less_than_24
+        self.less_than_15 += other.less_than_15
+        self.less_than_7 += other.less_than_7
+        self.empty_entries += other.empty_entries
+        self.total_queries += other.total_queries
+
+    def to_dict(self):
+        """Return a JSON-serialisable dict of these stats."""
+        return {
+            "num_triples": self.total_queries,
+            "num_empty_negative_entries": self.empty_entries,
+            "num_with_7_hard_negatives": self.total_queries - self.less_than_7,
+            "num_with_15_hard_negatives": self.total_queries - self.less_than_15,
+            "num_with_24_hard_negatives": self.total_queries - self.less_than_24,
+        }
+
+
+def update_dataset_dict(
+    dataset_dict,
+    qrels,
+    negatives,
+    has_title,
+    corpus_dict,
+    query_dict,
+    subtask=None,
+):
+    """Progressively extend a dict-of-lists with data from one subtask.
+
+    Args:
+        dataset_dict: Dict of lists to update in-place. Pass ``{}`` on the first call.
+        qrels: Dataset / dict with ``query_id`` and ``positive_id`` columns.
+        negatives: Hard-negatives dict keyed by ``(query_id, positive_id)``.
+        has_title: Whether the corpus contains titles.
+        corpus_dict: Corpus mapping ``id -> {"text": ..., "title": ...}``.
+        query_dict: Query mapping ``id -> {"text": ...}``.
+        subtask: If not ``None``, a ``"subset"`` column is added with this value.
+    """
+    query_ids = qrels["query_id"]
+    positive_ids = qrels["positive_id"]
+    n = len(query_ids)
+
+    # Initialise keys on first call
+    if not dataset_dict:
+        dataset_dict["query_text"] = []
+        dataset_dict["query_id"] = []
+        dataset_dict["positive_text"] = []
+        dataset_dict["positive_id"] = []
+        dataset_dict["negative_text"] = []
+        dataset_dict["negative_id"] = []
+        if has_title:
+            dataset_dict["positive_title"] = []
+            dataset_dict["negative_title"] = []
+        if subtask is not None:
+            dataset_dict["subset"] = []
+
+    # Use generators to avoid temporary list copies
+    dataset_dict["query_text"].extend(query_dict[qid]["text"] for qid in query_ids)
+    dataset_dict["query_id"].extend(query_ids)
+    dataset_dict["positive_text"].extend(
+        corpus_dict[pid]["text"] for pid in positive_ids
+    )
+    dataset_dict["positive_id"].extend(positive_ids)
+    dataset_dict["negative_text"].extend(
+        negatives[(q, p)]["text"] for q, p in zip(query_ids, positive_ids)
+    )
+    dataset_dict["negative_id"].extend(
+        negatives[(q, p)]["id"] for q, p in zip(query_ids, positive_ids)
+    )
+    if has_title:
+        dataset_dict["positive_title"].extend(
+            corpus_dict[pid]["title"] for pid in positive_ids
+        )
+        dataset_dict["negative_title"].extend(
+            negatives[(q, p)]["title"] for q, p in zip(query_ids, positive_ids)
+        )
+    if subtask is not None:
+        dataset_dict["subset"].extend([subtask] * n)
+
+
+def save_dataset_dict_to_disk(
+    dataset_dict,
+    save_path,
+    stats,
+    model_name,
+    has_title,
+    rank,
+    per_subset_stats=None,
+):
+    """Convert *dataset_dict* to an HF ``Dataset`` and save to *save_path*.
+
+    Only rank-0 performs the I/O.  The ``Dataset`` object is deleted
+    immediately after saving to keep peak memory low (important when the
+    dict contains up to ~10 M rows).
+    """
+    if rank != 0:
+        return
+
+    features_dict = {
+        "query_text": Value("string"),
+        "query_id": Value("string"),
+        "positive_text": Value("string"),
+        "positive_id": Value("string"),
+        "negative_text": Sequence(Value("string")),
+        "negative_id": Sequence(Value("string")),
+    }
+    if has_title:
+        features_dict["positive_title"] = Value("string")
+        features_dict["negative_title"] = Sequence(Value("string"))
+    if "subset" in dataset_dict:
+        features_dict["subset"] = Value("string")
+
+    dataset = Dataset.from_dict(dataset_dict, features=Features(features_dict))
+
+    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+    dataset.save_to_disk(save_path)
+    del dataset  # free Arrow memory immediately
+
+    metadata = {
+        "num_triples": stats.total_queries,
+        "num_empty_negative_entries": stats.empty_entries,
+        "num_with_7_hard_negatives": stats.total_queries - stats.less_than_7,
+        "num_with_15_hard_negatives": stats.total_queries - stats.less_than_15,
+        "num_with_24_hard_negatives": stats.total_queries - stats.less_than_24,
+        "embedder": model_name,
+    }
+    if per_subset_stats:
+        metadata["per_subset"] = {
+            name: s.to_dict() for name, s in per_subset_stats.items()
+        }
+    with open(f"{save_path}/dataset_metadata.json", "w") as f:
+        json.dump(metadata, f, indent=2)
+
 
 class HardNegativesMiner:
 
@@ -439,13 +573,22 @@ class HardNegativesMiner:
 
             task = get_task(task_name)
             subtasks = getattr(task, "subtasks", None)
-            if subtasks is None:
-                subtask = [None]
+            has_subtasks = subtasks is not None
+            if not has_subtasks:
+                subtasks = [None]
+
+            dataset_dict = {}
+            accumulated_stats = TripletStats()
+            per_subset_stats = {} if has_subtasks else None
 
             for subtask in subtasks:
+                if self.rank == 0 and subtask is not None:
+                    print(f"\n--- subtask: {subtask} ---")
+
                 (
                     data_split,
                     corpus_dict,
+                    query_dict,
                     has_title,
                     n_positives,
                 ) = load_task_data(task, subtask)
@@ -472,33 +615,65 @@ class HardNegativesMiner:
                     has_title=has_title,
                     corpus_dict=corpus_dict,
                 )
+                stats.total_queries = len(dataset["qrels"])
+                accumulated_stats.merge(stats)
+                if has_subtasks:
+                    per_subset_stats[subtask] = stats
+
+                dist.barrier()
+                if self.rank == 0:
+                    print(
+                        f"\n\nupdating dataset dict for {task_name}"
+                        + (f" subtask {subtask}" if subtask else "")
+                    )
+
+                update_dataset_dict(
+                    dataset_dict=dataset_dict,
+                    qrels=dataset["qrels"],
+                    negatives=hard_negatives,
+                    has_title=has_title,
+                    corpus_dict=corpus_dict,
+                    query_dict=query_dict,
+                    subtask=subtask if has_subtasks else None,
+                )
+
+                # Free per-subtask objects before saving
+                del hard_negatives, dataset, data_split
 
                 dist.barrier()
                 if self.rank == 0:
                     print(f"\n\nsaving dataset {task_name}")
 
-                self.save_to_disk(
-                    qrels=dataset["qrels"],
-                    negatives=hard_negatives,
-                    has_title=has_title,
-                    stats=stats,
-                    task_name=task_name,
+                save_dataset_dict_to_disk(
+                    dataset_dict=dataset_dict,
                     save_path=save_path,
-                    corpus_dict=corpus_dict,
+                    stats=accumulated_stats,
+                    model_name=self.model_name,
+                    has_title=has_title,
+                    rank=self.rank,
+                    per_subset_stats=per_subset_stats,
                 )
 
                 torch.cuda.empty_cache()
                 print_memory_consumed(rank=self.rank)
 
+            del dataset_dict
+
     def save_to_disk(
-        self, qrels, negatives, has_title, stats, task_name, save_path, corpus_dict
+        self,
+        qrels,
+        negatives,
+        has_title,
+        stats,
+        save_path,
+        corpus_dict,
+        query_dict,
     ):
 
         # Retrieve texts from corpus_dict using IDs from qrels
         query_ids = qrels["query_id"]
         positive_ids = qrels["positive_id"]
-        assert False, "error on queries text blow"
-        query_texts = [corpus_dict[qid]["text"] for qid in query_ids]
+        query_texts = [query_dict[qid]["text"] for qid in query_ids]
         positive_text = [corpus_dict[pid]["text"] for pid in positive_ids]
 
         # Use (query_id, positive_id) tuples to get negatives for each qrels entry

@@ -177,16 +177,16 @@ def validate_and_select_tasks(task_names, task_types):
 
 def main():
     args = parse_args()
-    
+
     # Initialize PyTorch distributed (required by load_task_data)
     # Use gloo backend for CPU-only operation
     if not dist.is_initialized():
         dist.init_process_group(backend="gloo")
-    
+
     # Get rank for distributed processing
     rank = dist.get_rank()
     world_size = dist.get_world_size()
-    
+
     if rank == 0:
         print(f"Initialized distributed with {world_size} process(es)")
 
@@ -210,7 +210,9 @@ def main():
         if output_file.exists():
             with open(output_file, "r") as f:
                 stats = json.load(f)
-            print(f"Loaded existing statistics for {len(stats)} tasks from {output_file}")
+            print(
+                f"Loaded existing statistics for {len(stats)} tasks from {output_file}"
+            )
     else:
         output_file = None
 
@@ -230,40 +232,84 @@ def main():
                 print(f"\n\nPREPARING DATASET {category}: {task_name}\n")
 
             task = get_task(task_name)
-            loaded_data = load_task_data(task, max_num_queries=None)
-        except Exception as e:
-            if rank == 0:
-                print(f"Skipping {task_name} due to error: {type(e).__name__}: {str(e)}")
-            continue
+            subtasks = getattr(task, "subtasks", None)
+            has_subtasks = subtasks is not None
+            if not has_subtasks:
+                subtasks = [None]
 
-        if rank == 0:
-            if isinstance(loaded_data, tuple):
-                # Retrieval/STS task: (hf_dataset, corpus_dict, has_title, n_positives)
-                data_split, corpus_dict, has_title, n_positives = loaded_data
-                stats[task_name] = {
-                    "task_type": task_type,
-                    "category": category_name,
-                    "total_queries": len(
-                        data_split["qrels"]
-                    ),  # Usually qrels count is total queries in many contexts
+            task_stats = {
+                "task_type": task_type,
+                "category": category_name,
+                "subsets": {} if has_subtasks else None,
+            }
+
+            accumulated_stats = {
+                "total_queries": 0,
+                "unique_queries": 0,
+                "unique_positives": 0,
+                "unique_documents": 0,
+                "total_qrels": 0,
+            }
+
+            for subtask in subtasks:
+                if rank == 0 and subtask is not None:
+                    print(f"  Processing subtask: {subtask}")
+
+                loaded_data = load_task_data(
+                    task, subtask=subtask, max_num_queries=None
+                )
+
+                if not isinstance(loaded_data, tuple):
+                    if rank == 0:
+                        print(
+                            f"  Skipping non-retrieval data for {task_name}"
+                            + (f" subtask {subtask}" if subtask else "")
+                        )
+                    continue
+
+                # Retrieval/STS task: (hf_dataset, corpus_dict, query_dict, has_title, n_positives)
+                data_split, corpus_dict, query_dict, has_title, n_positives = (
+                    loaded_data
+                )
+
+                subtask_stats = {
+                    "total_queries": len(data_split["qrels"]),
                     "unique_queries": len(data_split["unique_queries"]),
-                    "unique_positives": int(n_positives),  # Convert numpy/pandas int to Python int
+                    "unique_positives": int(n_positives),
                     "unique_documents": len(data_split["corpus"]),
                     "total_qrels": len(data_split["qrels"]),
                 }
-            else:
-                # Classification/Clustering task: ClassificationRawData
-                stats[task_name] = {
-                    "task_type": task_type,
-                    "category": category_name,
-                    "total_samples": len(loaded_data.texts),
-                    "unique_labels": len(set(loaded_data.labels)) if loaded_data.labels else 0,
-                }
 
-            with open(output_file, "w") as f:
-                json.dump(stats, f, indent=2)
-                print(f"Updated statistics saved to {output_file}")
-    
+                accumulated_stats["total_queries"] += subtask_stats["total_queries"]
+                accumulated_stats["unique_queries"] += subtask_stats["unique_queries"]
+                accumulated_stats["unique_positives"] += subtask_stats[
+                    "unique_positives"
+                ]
+                accumulated_stats["unique_documents"] += subtask_stats[
+                    "unique_documents"
+                ]
+                accumulated_stats["total_qrels"] += subtask_stats["total_qrels"]
+
+                if has_subtasks:
+                    task_stats["subsets"][subtask] = subtask_stats
+
+            # Populate task_stats with aggregated values
+            task_stats.update(accumulated_stats)
+
+            stats[task_name] = task_stats
+
+            if rank == 0:
+                with open(output_file, "w") as f:
+                    json.dump(stats, f, indent=2)
+                    print(f"Updated statistics saved to {output_file}")
+
+        except Exception as e:
+            if rank == 0:
+                print(
+                    f"Skipping {task_name} due to error: {type(e).__name__}: {str(e)}"
+                )
+            continue
+
     # Clean up distributed
     if dist.is_initialized():
         dist.destroy_process_group()

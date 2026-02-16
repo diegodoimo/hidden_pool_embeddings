@@ -138,21 +138,6 @@ def from_one_hf_dataset(
         start = time.time()
         print("generating corpus dict...")
 
-    # Since documents = positives in this function, use unique positives for corpus
-    # This ensures corpus_dict has unique entries (bijective doc_id <-> document)
-    if has_title:
-        corpus_dict = {
-            id_: {"text": doc_text, "title": doc_title}
-            for id_, doc_text, doc_title in zip(
-                unique_positive_ids, unique_positive_texts, unique_positive_titles
-            )
-        }
-    else:
-        corpus_dict = {
-            id_: {"text": doc_text}
-            for id_, doc_text in zip(unique_positive_ids, unique_positive_texts)
-        }
-
     dist.barrier()
     if rank == 0:
         print(f"corpus dict built in {(time.time()-start)/60:.2f} min")
@@ -190,11 +175,29 @@ def from_one_hf_dataset(
             unique_positive_texts=unique_positive_texts,
             unique_positive_titles=unique_positive_titles,
             has_title=has_title,
-            max_queries=max_num_queries,
         )
 
         if rank == 0:
             print(f"Queries limited in {(time.time()-start)/60:.2f} min")
+
+    # Since documents = positives in this function, use unique positives for corpus
+    # This ensures corpus_dict has unique entries (bijective doc_id <-> document)
+    if has_title:
+        corpus_dict = {
+            id_: {"text": doc_text, "title": doc_title}
+            for id_, doc_text, doc_title in zip(
+                unique_positive_ids, unique_positive_texts, unique_positive_titles
+            )
+        }
+    else:
+        corpus_dict = {
+            id_: {"text": doc_text}
+            for id_, doc_text in zip(unique_positive_ids, unique_positive_texts)
+        }
+
+    query_dict = {
+        id_: {"text": text} for id_, text in zip(unique_query_ids, unique_query_texts)
+    }
 
     dist.barrier()
 
@@ -225,6 +228,7 @@ def from_one_hf_dataset(
         unique_query_texts=unique_query_texts,
         unique_query_ids=unique_query_ids,
         corpus_dict=corpus_dict,
+        query_dict=query_dict,
         has_title=has_title,
         n_positives=n_positives,
     )
@@ -388,7 +392,6 @@ def from_multiple_hf_datasets(
             unique_positive_texts=unique_positive_texts,
             unique_positive_titles=unique_positive_titles,
             has_title=has_title,
-            max_queries=max_num_queries,
         )
 
         # Add remaining corpus documents not in qrels
@@ -475,6 +478,10 @@ def from_multiple_hf_datasets(
         corpus_keys == doc_keys
     ), f"corpus_dict keys mismatch with document_ids. Missing in corpus: {doc_keys - corpus_keys}, Missing in docs: {corpus_keys - doc_keys}"
 
+    query_dict = {
+        id_: {"text": text} for id_, text in zip(unique_query_ids, unique_query_texts)
+    }
+
     return RetrievalRawData(
         query_ids=query_ids,
         positive_ids=positive_ids,
@@ -484,6 +491,7 @@ def from_multiple_hf_datasets(
         unique_query_texts=unique_query_texts,
         unique_query_ids=unique_query_ids,
         corpus_dict=corpus_dict,
+        query_dict=query_dict,
         has_title=has_title,
         n_positives=n_positives,
     )
@@ -498,7 +506,6 @@ def limit_number_of_queries(
     unique_positive_texts,
     unique_positive_titles,
     has_title,
-    max_queries=10**6,
 ):
     """Optimized version using vectorized operations.
 

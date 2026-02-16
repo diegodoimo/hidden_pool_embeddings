@@ -25,7 +25,7 @@ def normalize_text(
 
 
 def load_task_data(
-    task, max_num_queries=10**6, substask = None
+    task, max_num_queries=10**6, subtask=None
 ) -> Union[Tuple[Dataset, Dict, bool, int], ClassificationRawData]:
     """
     Unified data loading function for all task types (retrieval, STS, classification, clustering).
@@ -43,7 +43,9 @@ def load_task_data(
 
     if task_type == "Retrieval":
         # Handle all retrieval and STS tasks (STS is treated as retrieval)
-        return _load_retrieval_data(task=task, max_num_queries=max_num_queries, subtask=subtask)
+        return _load_retrieval_data(
+            task=task, max_num_queries=max_num_queries, subtask=subtask
+        )
     elif task_type in ["Classification", "Clustering"]:
         # Handle classification and clustering tasks
         return _load_classification_data(task)
@@ -98,7 +100,13 @@ def _load_retrieval_data(
         "corpus": corpus_ds,
     }
 
-    return hf_dataset, raw_data.corpus_dict, raw_data.has_title, raw_data.n_positives
+    return (
+        hf_dataset,
+        raw_data.corpus_dict,
+        raw_data.query_dict,
+        raw_data.has_title,
+        raw_data.n_positives,
+    )
 
 
 def _load_classification_data(task, rank) -> ClassificationRawData:
