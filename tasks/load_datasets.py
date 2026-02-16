@@ -55,7 +55,7 @@ def load_task_data(
 
 
 def _load_retrieval_data(
-    task, subtask=None, rank=0, max_num_queries=10**6
+    task, subtask=None, max_num_queries=10**6
 ) -> Tuple[Dataset, Dict, bool, int]:
     """
     Load data for retrieval tasks (including STS tasks).
@@ -63,7 +63,6 @@ def _load_retrieval_data(
     Args:
         task: Task object with metadata and configuration
         subtask: Optional subtask name for datasets with multiple subtasks
-        rank: Process rank for distributed training (default: 0)
         max_num_queries: Maximum number of queries to load (default: 1 million)
 
     Returns:
@@ -80,7 +79,7 @@ def _load_retrieval_data(
         )
 
     raw_data = loader_func(
-        task=task, subtask=subtask, rank=rank, max_num_queries=max_num_queries
+        task=task, subtask=subtask, max_num_queries=max_num_queries
     )
 
     # Convert raw data to HuggingFace datasets
