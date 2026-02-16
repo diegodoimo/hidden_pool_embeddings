@@ -437,6 +437,7 @@ class StackExchangeRetrieval(AbsTask):
 
     language = "en"
     hf_name = "flax-sentence-embeddings/stackexchange_titlebody_best_voted_answer_jsonl"
+    hf_subset = None  # Will be set to subtask name when loading specific subjects
     split = "train"
     has_multiple_datasets = False
     anchor_name = "title_body"  # This field will be created by combining title + body

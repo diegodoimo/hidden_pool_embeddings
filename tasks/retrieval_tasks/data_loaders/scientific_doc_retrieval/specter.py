@@ -9,10 +9,10 @@ class SPECTER(AbsTask):
     language = "en"
 
     hf_name = "sentence-transformers/specter"
+    hf_subset = "pair"
     split = "train"
     has_multiple_datasets = False
     anchor_name = "anchor"
     positive_name = "positive"
-    negative_name = "negative"
     metadata = TaskMetadata(type="Retrieval", prompt={"query": TASK_PROMPTS["SCIDOCS"]})
     loader = from_one_hf_dataset
