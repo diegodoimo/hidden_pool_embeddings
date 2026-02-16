@@ -34,11 +34,13 @@ def from_one_hf_dataset(
         start = time.time()
         print("Loading dataset...")
 
+
     subset_name = task.hf_subset
     if subtask is not None:
         assert task.hf_subset is not None
         subset_name = subtask
-
+        
+    print(subtask, subset_name)
     if subset_name:
         dataset = load_dataset(task.hf_name, name=subset_name, split=task.split)
     else:

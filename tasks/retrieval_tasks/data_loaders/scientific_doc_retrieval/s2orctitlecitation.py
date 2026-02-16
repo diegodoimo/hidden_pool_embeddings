@@ -12,9 +12,8 @@ class S2ORCTitleCitation(AbsTask):
     hf_subset = "title-citation-pair"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "anchor"
-    positive_name = "positive"
-    negative_name = "negative"
+    anchor_name = "title"
+    positive_name = "citation"
     metadata = TaskMetadata(
         type="Retrieval",
         prompt={"query": "Given a paper title, retrieve titles of cited papers"},
