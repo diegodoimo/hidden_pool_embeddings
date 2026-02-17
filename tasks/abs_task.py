@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Callable
 from dataclasses import dataclass
 
 
@@ -20,6 +20,7 @@ class AbsTask(ABC):
     anchor_fields: Dict[str, str] = None
     corpus_fields: Dict[str, str] = None
     subtasks: Optional[List] = None
+    decontaminator: Optional[Callable] = None
 
     @classmethod
     @abstractmethod

@@ -22,17 +22,22 @@ def get_mteb_arguana_texts() -> tuple[Set[str], Set[str]]:
     query texts and corpus texts for deduplication.
     """
     # Load MTEB arguana corpus and queries
-    corpus = load_dataset("mteb/arguana", name="corpus", split="corpus")
-    queries = load_dataset("mteb/arguana", name="queries", split="queries")
+    corpus = load_dataset("mteb/arguana", name="corpus", split="test")
+    corpus_dict = {id_: text for id_, text in zip(corpus["_id"], corpus["text"])}
+    queries = load_dataset("mteb/arguana", name="queries", split="test")
+    qrels = load_dataset("mteb/arguana", name="default", split="queries")
+    positive_ids = set(qrels["corpus-id"])
+
+    positves_text = {normalize_text(corpus_dict[id_]) for id_ in positive_ids}
 
     # Build sets of normalized texts
-    corpus_texts = {normalize_text(row["text"]) for row in corpus}
+    # corpus_texts = {normalize_text(row["text"]) for row in corpus}
     query_texts = {normalize_text(row["text"]) for row in queries}
 
-    return query_texts, corpus_texts
+    return query_texts, positves_text
 
 
-def clear_arguana_overlap(
+def clear_arguana_overlap_mteb(
     dataset,
     anchor_field: str,
     positive_field: str,
@@ -43,6 +48,17 @@ def clear_arguana_overlap(
     Filter BeIR/arguana-generated-queries dataset to remove examples
     that overlap with mteb/arguana evaluation set.
     """
+
+    corpus = load_dataset("mteb/arguana", name="corpus", split="test")
+    corpus_dict = dict(zip(corpus["_id"], corpus["text"]))
+    queries = load_dataset("mteb/arguana", name="queries", split="test")
+    qrels = load_dataset("mteb/arguana", name="default", split="queries")
+    positive_ids = set(qrels["corpus-id"])
+
+    mteb_corpus_texts = {normalize_text(corpus_dict[id_]) for id_ in positive_ids}
+
+    # Build sets of normalized texts
+    mteb_query_texts = {normalize_text(row["text"]) for row in queries}
 
     def is_not_overlapping(example):
         query_norm = normalize_text(example[anchor_field])
@@ -58,26 +74,28 @@ def clear_arguana_overlap(
     return filtered_dataset
 
 
-def load_arguana_dedup_retrieval(task, max_num_queries=10**6, rank=None) -> RetrievalRawData:
+def load_arguana_dedup_retrieval(
+    task, max_num_queries=10**6, rank=None
+) -> RetrievalRawData:
     """Load BeIR/arguana-generated-queries with deduplication against mteb/arguana using vectorized operations.
 
     This removes any query-positive pairs where either the query or positive text
     appears in the mteb/arguana evaluation set, preventing train-test contamination.
-    
+
     Args:
         task: Task object with dataset configuration
         max_num_queries: Maximum number of queries to keep (default: 1 million)
         rank: Distributed training rank (if None, obtained from dist.get_rank())
     """
     rank = dist.get_rank() if rank is None else rank
-    
+
     if rank == 0:
         start = time.time()
         print("Loading dataset...")
-    
+
     # Load the BeIR arguana dataset
     dataset = load_dataset(task.hf_name, split=task.split)
-    
+
     dist.barrier()
     if rank == 0:
         print(f"Dataset loaded in {(time.time()-start)/60:.2f} min")
@@ -87,7 +105,7 @@ def load_arguana_dedup_retrieval(task, max_num_queries=10**6, rank=None) -> Retr
 
     # Get MTEB arguana texts for deduplication
     mteb_query_texts, mteb_corpus_texts = get_mteb_arguana_texts()
-    
+
     dist.barrier()
     if rank == 0:
         print(
@@ -105,7 +123,7 @@ def load_arguana_dedup_retrieval(task, max_num_queries=10**6, rank=None) -> Retr
         mteb_corpus_texts,
     )
     filtered_size = len(dataset)
-    
+
     dist.barrier()
     if rank == 0:
         print(
@@ -118,56 +136,62 @@ def load_arguana_dedup_retrieval(task, max_num_queries=10**6, rank=None) -> Retr
     df = dataset.select_columns([task.anchor_name, task.positive_name]).to_pandas()
     df.columns = ["query", "positive"]
     n_pairs = len(df)
-    
+
     dist.barrier()
     if rank == 0:
         print(f"Conversion done in {(time.time()-start)/60:.2f} min")
         start = time.time()
         print("Building query-positive pairs with deduplication...")
-    
+
     # Get unique queries using pandas
     unique_query_mask = ~df["query"].duplicated(keep="first")
     unique_query_idx = unique_query_mask[unique_query_mask].index.values
     unique_query_texts = df.loc[unique_query_mask, "query"].tolist()
     unique_query_ids = [f"query_{i}" for i in unique_query_idx]
-    
+
     # Create query text to ID mapping
-    query_text_to_id = pd.Series(unique_query_ids, index=df.loc[unique_query_mask, "query"].values)
-    
+    query_text_to_id = pd.Series(
+        unique_query_ids, index=df.loc[unique_query_mask, "query"].values
+    )
+
     # Map all queries to their unique IDs
     query_ids = df["query"].map(query_text_to_id).tolist()
-    
+
     # Get unique positives
     unique_positive_mask = ~df["positive"].duplicated(keep="first")
     unique_positive_idx = unique_positive_mask[unique_positive_mask].index.values
     unique_positive_texts = df.loc[unique_positive_mask, "positive"].tolist()
     unique_positive_ids = [f"doc_{i}" for i in unique_positive_idx]
-    
+
     # Create document text to ID mapping
-    doc_text_to_id = pd.Series(unique_positive_ids, index=df.loc[unique_positive_mask, "positive"].values)
-    
+    doc_text_to_id = pd.Series(
+        unique_positive_ids, index=df.loc[unique_positive_mask, "positive"].values
+    )
+
     # Map all positives to their unique IDs
     positive_ids = df["positive"].map(doc_text_to_id).tolist()
-    
+
     dist.barrier()
     if rank == 0:
         print(f"Deduplication done in {(time.time()-start)/60:.2f} min")
-        print(f"Found {return_formatted(len(unique_query_ids))} unique queries before limiting")
+        print(
+            f"Found {return_formatted(len(unique_query_ids))} unique queries before limiting"
+        )
         print(f"Found {return_formatted(len(unique_positive_ids))} unique documents")
         start = time.time()
         print("Applying query limiting...")
-    
+
     # Apply query limiting if needed
     if max_num_queries is not None and len(unique_query_idx) > max_num_queries:
         if rank == 0:
             print(
                 f"Number of unique queries {return_formatted(len(unique_query_idx))} > {max_num_queries//10**6}M: limiting queries"
             )
-        
+
         unique_query_texts = unique_query_texts[:max_num_queries]
         unique_query_ids = unique_query_ids[:max_num_queries]
         unique_query_idx = unique_query_idx[:max_num_queries]
-        
+
         (
             query_ids,
             positive_ids,
@@ -186,39 +210,49 @@ def load_arguana_dedup_retrieval(task, max_num_queries=10**6, rank=None) -> Retr
             has_title=False,
             max_queries=max_num_queries,
         )
-        
+
         if rank == 0:
             print(f"Queries limited in {(time.time()-start)/60:.2f} min")
-            print(f"Positives referenced by filtered pairs: {return_formatted(n_positives)}")
-            print(f"Total unique documents in corpus: {return_formatted(len(document_ids))}")
+            print(
+                f"Positives referenced by filtered pairs: {return_formatted(n_positives)}"
+            )
+            print(
+                f"Total unique documents in corpus: {return_formatted(len(document_ids))}"
+            )
     else:
         # No limiting needed
         document_ids = unique_positive_ids
         document_texts = unique_positive_texts
         n_positives = len(unique_positive_ids)
-        
+
         if rank == 0:
+            print(f"Found {return_formatted(len(unique_query_ids))} unique queries")
             print(
-                f"Found {return_formatted(len(unique_query_ids))} unique queries"
+                f"Total number of query-positive pairs: {return_formatted(len(query_ids))}"
             )
-            print(f"Total number of query-positive pairs: {return_formatted(len(query_ids))}")
-            print(f"Positives referenced by pairs (n_positives): {return_formatted(n_positives)}")
-            print(f"Total unique documents in corpus: {return_formatted(len(document_ids))}")
+            print(
+                f"Positives referenced by pairs (n_positives): {return_formatted(n_positives)}"
+            )
+            print(
+                f"Total unique documents in corpus: {return_formatted(len(document_ids))}"
+            )
 
     corpus_dict = {
         id_: {"text": doc_text} for id_, doc_text in zip(document_ids, document_texts)
     }
-    
+
     # Assertions to ensure data consistency
     assert set(positive_ids).issubset(
         set(document_ids)
     ), "filtered qrels contain positive IDs not in document list"
-    
+
     assert set(unique_positive_ids).issubset(
         set(document_ids)
     ), "unique positives not in document list"
-    
-    assert set(corpus_dict.keys()) == set(document_ids), "corpus_dict keys mismatch with document_ids"
+
+    assert set(corpus_dict.keys()) == set(
+        document_ids
+    ), "corpus_dict keys mismatch with document_ids"
 
     return RetrievalRawData(
         query_ids=query_ids,
@@ -244,6 +278,6 @@ class Arguana(AbsTask):
     has_multiple_datasets = False
     anchor_name = "query"
     positive_name = "text"
-    negative_name = "negative"
     metadata = TaskMetadata(type="Retrieval", prompt={"query": TASK_PROMPTS["ArguAna"]})
     loader = load_arguana_dedup_retrieval
+    decontaminator = clear_arguana_overlap_mteb
