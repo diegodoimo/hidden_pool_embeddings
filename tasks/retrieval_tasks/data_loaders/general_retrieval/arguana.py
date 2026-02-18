@@ -22,10 +22,10 @@ def clear_arguana_overlap_mteb(
     the reference sets used for filtering.
     """
 
-    corpus = load_dataset("mteb/arguana", name="corpus", split="test")
+    corpus = load_dataset("mteb/arguana", name="corpus", split="corpus")
     corpus_dict = dict(zip(corpus["_id"], corpus["text"]))
-    queries = load_dataset("mteb/arguana", name="queries", split="test")
-    qrels = load_dataset("mteb/arguana", name="default", split="queries")
+    queries = load_dataset("mteb/arguana", name="queries", split="queries")
+    qrels = load_dataset("mteb/arguana", name="default", split="test")
     positive_ids = set(qrels["corpus-id"])
 
     mteb_corpus_texts = {normalize_text(corpus_dict[id_]) for id_ in positive_ids}
