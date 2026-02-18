@@ -11,7 +11,7 @@ class XNLIAr(AbsTask):
     hf_subset = "ar"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0
@@ -32,7 +32,7 @@ class XNLIBg(AbsTask):
     hf_subset = "bg"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0
@@ -53,7 +53,7 @@ class XNLIDe(AbsTask):
     hf_subset = "de"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0
@@ -74,7 +74,7 @@ class XNLIEl(AbsTask):
     hf_subset = "el"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0
@@ -95,7 +95,7 @@ class XNLIEs(AbsTask):
     hf_subset = "es"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0
@@ -116,7 +116,7 @@ class XNLIFr(AbsTask):
     hf_subset = "fr"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0
@@ -137,7 +137,7 @@ class XNLIHi(AbsTask):
     hf_subset = "hi"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0
@@ -158,7 +158,7 @@ class XNLIRu(AbsTask):
     hf_subset = "ru"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0
@@ -179,7 +179,7 @@ class XNLISw(AbsTask):
     hf_subset = "sw"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0
@@ -200,7 +200,7 @@ class XNLITh(AbsTask):
     hf_subset = "th"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0
@@ -221,7 +221,7 @@ class XNLITr(AbsTask):
     hf_subset = "tr"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0
@@ -242,7 +242,7 @@ class XNLIUr(AbsTask):
     hf_subset = "ur"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0
@@ -263,7 +263,7 @@ class XNLIVi(AbsTask):
     hf_subset = "vi"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0
@@ -284,7 +284,7 @@ class XNLIZh(AbsTask):
     hf_subset = "zh"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0

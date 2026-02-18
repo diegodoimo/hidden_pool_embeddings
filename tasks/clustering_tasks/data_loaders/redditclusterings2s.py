@@ -9,7 +9,7 @@ from tasks.clustering_tasks.clustering_loaders import (
 class RedditClusteringS2S(AbsTask):
     hf_name = "sentence-transformers/reddit-title-body"
     split = "train"
-    anchor_name = "title"
+    query_name = "title"
     label = "subreddit"
     metadata = TaskMetadata(
         type="Clustering", prompt={"query": TASK_PROMPTS["RedditClustering"]}

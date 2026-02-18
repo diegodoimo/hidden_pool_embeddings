@@ -8,7 +8,7 @@ class NaturalQuestions(AbsTask):
     hf_name = "sentence-transformers/natural-questions"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "query"
+    query_name = "query"
     positive_name = "answer"
     metadata = TaskMetadata(type="Retrieval", prompt={"query": TASK_PROMPTS["NQ"]})
     loader = from_one_hf_dataset

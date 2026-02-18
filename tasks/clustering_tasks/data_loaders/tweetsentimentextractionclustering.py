@@ -9,7 +9,7 @@ from tasks.clustering_tasks.clustering_loaders import (
 class TweetSentimentExtractionClustering(AbsTask):
     hf_name = "mteb/tweet_sentiment_extraction"
     split = "train"
-    anchor_name = "text"
+    query_name = "text"
     label = "label"
     metadata = TaskMetadata(
         type="Clustering", prompt={"query": TASK_PROMPTS["TweetSentimentExtractionClassification"]}

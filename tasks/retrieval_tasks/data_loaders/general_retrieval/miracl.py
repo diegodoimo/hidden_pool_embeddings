@@ -251,7 +251,7 @@ class MIRACL(AbsTask):
     hf_subset = None  # Load all available languages
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "query"
+    query_name = "query"
     positive_name = "positive_passages"
     metadata = TaskMetadata(
         type="Retrieval",

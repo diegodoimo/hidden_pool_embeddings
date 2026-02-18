@@ -12,7 +12,7 @@ class PAWSXZh(AbsTask):
     hf_subset = "zh"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "sentence1"
+    query_name = "sentence1"
     positive_name = "sentence2"
     metadata = TaskMetadata(
         type="Retrieval",

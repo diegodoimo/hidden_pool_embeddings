@@ -12,7 +12,7 @@ class S2ORCTitleCitation(AbsTask):
     hf_subset = "title-citation-pair"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "title"
+    query_name = "title"
     positive_name = "citation"
     metadata = TaskMetadata(
         type="Retrieval",

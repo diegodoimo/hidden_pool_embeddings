@@ -46,6 +46,11 @@ def from_one_hf_dataset(
     else:
         dataset = load_dataset(task.hf_name, split=task.split)
 
+    if task.decontaminator is not None:
+        dataset = task.decontaminator(dataset,
+                    task.query_name,
+                    task.positive_name,)
+
     n_pairs = len(dataset)
 
     dist.barrier()
@@ -68,7 +73,7 @@ def from_one_hf_dataset(
     # Convert Arrow -> pandas DataFrame in one shot (fast columnar conversion),
     # avoiding the slow path of dataset[col] (Python list) -> pd.Series.
 
-    cols_to_load = [task.anchor_name, task.positive_name]
+    cols_to_load = [task.query_name, task.positive_name]
     if has_title:
         cols_to_load.append(title_col)
     df = dataset.select_columns(cols_to_load).to_pandas()
@@ -76,11 +81,13 @@ def from_one_hf_dataset(
     # Keep as pandas Series — no .tolist() needed.
     # Dataset.from_dict() in dict_to_dataset() accepts Series directly,
     # so the round-trip Arrow → list → Arrow is avoided for 20M strings.
-    query_texts = df[task.anchor_name]
+    query_texts = df[task.query_name]
     positive_texts = df[task.positive_name]
 
-    # Convert Arrow -> numpy arrays directly (fastest path)
 
+
+
+    # Convert Arrow -> numpy arrays directly (fastest path)
     dist.barrier()
     if rank == 0:
         print(f"preprocessing done in {(time.time()-start)/60:.2f} min")
@@ -259,7 +266,7 @@ def from_multiple_hf_datasets(
         print("Loading datasets...")
 
     qrels = load_dataset(task.hf_name, name=task.qrels_name, split=task.split)
-    anchors_ = load_dataset(task.hf_name, name=task.anchor_name, split=task.anchor_name)
+    querys_ = load_dataset(task.hf_name, name=task.query_name, split=task.query_name)
     corpus = load_dataset(
         task.hf_name, name=task.positive_name, split=task.positive_name
     )
@@ -268,14 +275,32 @@ def from_multiple_hf_datasets(
     if rank == 0:
         print(f"Datasets loaded in {(time.time()-start)/60:.2f} min")
         start = time.time()
-        print(f"num elements in queries: {len(anchors_)//10**3}k")
+        print(f"num elements in queries: {len(querys_)//10**3}k")
         print(f"num elements in qrels: {len(qrels)//10**3}k")
         print(f"num elements in corpus: {len(corpus)//10**3}k")
-        print(f"Processing {len(anchors_)} queries...")
+        print(f"Processing {len(querys_)} queries...")
+
+    # Optional decontamination: filter qrels to remove train/eval overlap.
+    # The decontaminator receives the raw qrels HF Dataset plus the actual
+    # column names for the query-id and positive-id fields (parallel to how
+    # from_one_hf_dataset calls decontaminator(dataset, query_field, positive_field)).
+    if task.decontaminator is not None:
+        if rank == 0:
+            decon_start = time.time()
+            print("Running decontaminator on qrels...")
+        query_id_col = task.qrels_fields["query_id"]
+        positive_id_col = task.qrels_fields["positive_id"]
+        qrels = task.decontaminator(qrels, query_id_col, positive_id_col)
+        dist.barrier()
+        if rank == 0:
+            print(
+                f"Decontamination done in {(time.time()-decon_start)/60:.2f} min"
+            )
+            print(f"num elements in qrels after decontamination: {len(qrels)//10**3}k")
 
     # Build queries dict
     queries_dict = get_dict(
-        anchors_, task.anchor_fields["id"], task.anchor_fields["text"]
+        querys_, task.query_fields["id"], task.query_fields["text"]
     )
 
     dist.barrier()
@@ -301,7 +326,7 @@ def from_multiple_hf_datasets(
 
     # Convert qrels to pandas DataFrame for vectorized operations
     qrels_cols = [
-        task.qrels_fields["anchor_id"],
+        task.qrels_fields["query_id"],
         task.qrels_fields["positive_id"],
         task.qrels_fields["score"],
     ]

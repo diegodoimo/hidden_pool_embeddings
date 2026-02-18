@@ -24,7 +24,7 @@ def load_binary_classification_label_based(task, rank=0):
             - hf_name: HuggingFace dataset name
             - hf_subset: Optional subset name
             - split: Dataset split
-            - anchor_name: Text field name
+            - query_name: Text field name
             - label: Label field name
             - label_texts: Dict mapping label values to text (e.g., {0: "negative", 1: "positive"})
 
@@ -60,7 +60,7 @@ def load_binary_classification_label_based(task, rank=0):
     text_to_query_id = {}
 
     for idx, row in enumerate(dataset):
-        text = row[task.anchor_name]
+        text = row[task.query_name]
         label = row[label_field]
 
         # Get label text
@@ -149,7 +149,7 @@ def load_binary_classification_hard_negatives(task, rank=0):
     all_labels = []
 
     for row in dataset:
-        text = row[task.anchor_name]
+        text = row[task.query_name]
         label = row[label_field]
         all_texts.append(text)
         all_labels.append(label)

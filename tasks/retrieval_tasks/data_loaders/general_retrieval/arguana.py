@@ -39,14 +39,15 @@ def get_mteb_arguana_texts() -> tuple[Set[str], Set[str]]:
 
 def clear_arguana_overlap_mteb(
     dataset,
-    anchor_field: str,
+    query_field: str,
     positive_field: str,
-    mteb_query_texts: Set[str],
-    mteb_corpus_texts: Set[str],
 ):
     """
     Filter BeIR/arguana-generated-queries dataset to remove examples
     that overlap with mteb/arguana evaluation set.
+
+    Loads the MTEB arguana corpus, queries and qrels internally to build
+    the reference sets used for filtering.
     """
 
     corpus = load_dataset("mteb/arguana", name="corpus", split="test")
@@ -61,7 +62,7 @@ def clear_arguana_overlap_mteb(
     mteb_query_texts = {normalize_text(row["text"]) for row in queries}
 
     def is_not_overlapping(example):
-        query_norm = normalize_text(example[anchor_field])
+        query_norm = normalize_text(example[query_field])
         positive_norm = normalize_text(example[positive_field])
 
         # Remove if query OR positive text appears in MTEB evaluation set
@@ -115,12 +116,10 @@ def load_arguana_dedup_retrieval(
 
     # Filter out overlapping examples
     original_size = len(dataset)
-    dataset = clear_arguana_overlap(
+    dataset = clear_arguana_overlap_mteb(
         dataset,
-        task.anchor_name,
+        task.query_name,
         task.positive_name,
-        mteb_query_texts,
-        mteb_corpus_texts,
     )
     filtered_size = len(dataset)
 
@@ -133,7 +132,7 @@ def load_arguana_dedup_retrieval(
         print("Converting to pandas...")
 
     # Convert to pandas DataFrame
-    df = dataset.select_columns([task.anchor_name, task.positive_name]).to_pandas()
+    df = dataset.select_columns([task.query_name, task.positive_name]).to_pandas()
     df.columns = ["query", "positive"]
     n_pairs = len(df)
 
@@ -276,8 +275,8 @@ class Arguana(AbsTask):
     hf_name = "BeIR/arguana-generated-queries"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "query"
+    query_name = "query"
     positive_name = "text"
     metadata = TaskMetadata(type="Retrieval", prompt={"query": TASK_PROMPTS["ArguAna"]})
-    loader = load_arguana_dedup_retrieval
+    loader = from_one_hf_dataset
     decontaminator = clear_arguana_overlap_mteb

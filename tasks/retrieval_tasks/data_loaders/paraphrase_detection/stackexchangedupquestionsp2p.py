@@ -12,7 +12,7 @@ class StackExchangeDupQuestionsP2P(AbsTask):
     hf_subset = "post-post-pair"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "post1"
+    query_name = "post1"
     positive_name = "post2"
     metadata = TaskMetadata(
         type="Retrieval",

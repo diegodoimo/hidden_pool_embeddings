@@ -11,7 +11,7 @@ class CMNLI(AbsTask):
     hf_name = "sentence-transformers/cmnli"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0

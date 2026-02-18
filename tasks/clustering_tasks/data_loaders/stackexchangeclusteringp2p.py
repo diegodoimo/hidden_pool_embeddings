@@ -9,7 +9,7 @@ from tasks.clustering_tasks.clustering_loaders import (
 class StackExchangeClusteringP2P(AbsTask):
     hf_name = "flax-sentence-embeddings/stackexchange_title_body_jsonl"
     split = "train"
-    anchor_name = "body"
+    query_name = "body"
     title_name = "title"
     label = "category"
     metadata = TaskMetadata(

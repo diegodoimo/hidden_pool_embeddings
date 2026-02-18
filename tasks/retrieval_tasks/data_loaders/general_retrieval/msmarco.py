@@ -11,15 +11,15 @@ class MSMARCO(AbsTask):
     split = "train"
     has_multiple_datasets = True
     eval_split = "dev"  # MTEB evaluates on dev split
-    anchor_name = "queries"
+    query_name = "queries"
     positive_name = "corpus"
     qrels_name = "default"
     qrels_fields = {
-        "anchor_id": "query-id",
+        "query_id": "query-id",
         "positive_id": "corpus-id",
         "score": "score",
     }
-    anchor_fields = {"id": "_id", "text": "text"}
+    query_fields = {"id": "_id", "text": "text"}
     corpus_fields = {"id": "_id", "text": "text", "title": "title"}
     metadata = TaskMetadata(type="Retrieval", prompt={"query": TASK_PROMPTS["MSMARCO"]})
     loader = from_multiple_hf_datasets

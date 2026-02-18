@@ -9,7 +9,7 @@ from tasks.clustering_tasks.clustering_loaders import (
 class ArxivClusteringS2S(AbsTask):
     hf_name = "mteb/raw_arxiv"
     split = "train"
-    anchor_name = "title"
+    query_name = "title"
     label = "category"
     metadata = TaskMetadata(
         type="Clustering", prompt={"query": TASK_PROMPTS["ArxivClusteringS2S"]}

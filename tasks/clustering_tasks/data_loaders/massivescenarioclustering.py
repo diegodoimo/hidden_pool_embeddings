@@ -10,7 +10,7 @@ class MassiveScenarioClustering(AbsTask):
     hf_name = "mteb/amazon_massive_scenario"
     hf_subset = "en"
     split = "train"
-    anchor_name = "text"
+    query_name = "text"
     label = "label"
     metadata = TaskMetadata(
         type="Clustering", prompt={"query": TASK_PROMPTS["MassiveScenarioClassification"]}

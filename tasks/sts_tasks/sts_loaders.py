@@ -52,7 +52,7 @@ def load_sts_retrieval(task, max_num_queries=10**6, rank=None) -> RetrievalRawDa
     score_threshold = getattr(task, "score_threshold", 4.0)
 
     # Convert to pandas DataFrame for vectorized operations
-    cols_to_load = [task.anchor_name, task.positive_name, score_name]
+    cols_to_load = [task.query_name, task.positive_name, score_name]
     df = dataset.select_columns(cols_to_load).to_pandas()
     df.columns = ["sentence1", "sentence2", "score"]
     

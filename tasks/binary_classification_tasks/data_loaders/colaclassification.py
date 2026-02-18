@@ -11,7 +11,7 @@ class ColaClassification(AbsTask):
     hf_name = "glue"
     hf_subset = "cola"
     split = "train"
-    anchor_name = "sentence"
+    query_name = "sentence"
     label = "label"
     
     # Label texts for binary classification

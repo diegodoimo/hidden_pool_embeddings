@@ -10,7 +10,7 @@ class ImdbClassification(AbsTask):
     language = "en"
     hf_name = "mteb/imdb"
     split = "train"
-    anchor_name = "text"
+    query_name = "text"
     label = "label"
     
     # Label texts for binary classification

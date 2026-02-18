@@ -10,7 +10,7 @@ class AmazonPolarityClassification(AbsTask):
     language = "en"
     hf_name = "mteb/amazon_polarity"
     split = "train"
-    anchor_name = "text"
+    query_name = "text"
     label = "label"
     
     # Label texts for binary classification

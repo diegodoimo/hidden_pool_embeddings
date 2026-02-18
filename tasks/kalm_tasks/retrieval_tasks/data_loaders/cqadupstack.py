@@ -12,7 +12,7 @@ class CQADupStack(AbsTask):
     hf_subset = "pair"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "question"
+    query_name = "question"
     positive_name = "duplicate"
     metadata = TaskMetadata(
         type="Retrieval",

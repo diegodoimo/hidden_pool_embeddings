@@ -9,7 +9,7 @@ from tasks.clustering_tasks.clustering_loaders import (
 class MTOPIntentClustering(AbsTask):
     hf_name = "mteb/mtop_intent"
     split = "train"
-    anchor_name = "text"
+    query_name = "text"
     label = "label"
     metadata = TaskMetadata(
         type="Clustering", prompt={"query": TASK_PROMPTS["MTOPIntentClassification"]}

@@ -12,7 +12,7 @@ class S2ORCTitleAbstract(AbsTask):
     hf_subset = "title-abstract-pair"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "title"
+    query_name = "title"
     positive_name = "abstract"
     metadata = TaskMetadata(
         type="Retrieval", prompt={"query": "Given a paper title, retrieve the abstract"}

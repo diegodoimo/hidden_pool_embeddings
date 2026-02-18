@@ -9,7 +9,7 @@ from tasks.classification_tasks.classification_loaders import (
 class DBPediaClassification(AbsTask):
     hf_name = "mteb/dbpedia"
     split = "train"
-    anchor_name = "text"
+    query_name = "text"
     label = "label"
     metadata = TaskMetadata(
         type="Classification", prompt={"query": "Identify the category of wiki passages"}

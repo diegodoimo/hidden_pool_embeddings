@@ -9,7 +9,7 @@ from tasks.clustering_tasks.clustering_loaders import (
 class TwentyNewsgroupsClustering(AbsTask):
     hf_name = "SetFit/20_newsgroups"
     split = "train"
-    anchor_name = "text"
+    query_name = "text"
     label = "label"
     metadata = TaskMetadata(
         type="Clustering", prompt={"query": TASK_PROMPTS["TwentyNewsgroupsClustering"]}

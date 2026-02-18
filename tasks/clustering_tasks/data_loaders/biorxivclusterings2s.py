@@ -9,7 +9,7 @@ from tasks.clustering_tasks.clustering_loaders import (
 class BiorxivClusteringS2S(AbsTask):
     hf_name = "mteb/raw_biorxiv"
     split = "train"
-    anchor_name = "title"
+    query_name = "title"
     label = "category"
     metadata = TaskMetadata(
         type="Clustering", prompt={"query": TASK_PROMPTS["BiorxivClusteringS2S"]}

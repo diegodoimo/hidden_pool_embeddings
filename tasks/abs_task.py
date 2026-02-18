@@ -10,14 +10,14 @@ class AbsTask(ABC):
     split: str
     has_multiple_datasets: bool
 
-    anchor_name: str
+    query_name: str
     positive_name: str
     negative_name: Optional[str] = None
     title_name: str = None
     qrels_name: str = None
 
     qrels_fields: Dict[str, str] = None
-    anchor_fields: Dict[str, str] = None
+    query_fields: Dict[str, str] = None
     corpus_fields: Dict[str, str] = None
     subtasks: Optional[List] = None
     decontaminator: Optional[Callable] = None

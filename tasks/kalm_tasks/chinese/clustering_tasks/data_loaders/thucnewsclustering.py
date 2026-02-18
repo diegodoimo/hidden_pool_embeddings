@@ -15,7 +15,7 @@ class THUCNewsClustering(AbsTask):
     hf_subset = "classification"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "text"
+    query_name = "text"
     label = "label"
     metadata = TaskMetadata(
         type="Clustering",

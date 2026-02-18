@@ -54,7 +54,7 @@ def from_one_hf_dataset(task, max_num_queries=10**6) -> RetrievalRawData:
     # Convert Arrow -> pandas DataFrame in one shot (fast columnar conversion),
     # avoiding the slow path of dataset[col] (Python list) -> pd.Series.
 
-    cols_to_load = [task.anchor_name, task.positive_name]
+    cols_to_load = [task.query_name, task.positive_name]
     if has_title:
         cols_to_load.append(title_col)
     df = dataset.select_columns(cols_to_load).to_pandas()
@@ -62,17 +62,17 @@ def from_one_hf_dataset(task, max_num_queries=10**6) -> RetrievalRawData:
     # Keep as pandas Series — no .tolist() needed.
     # Dataset.from_dict() in dict_to_dataset() accepts Series directly,
     # so the round-trip Arrow → list → Arrow is avoided for 20M strings.
-    query_texts = df[task.anchor_name]
+    query_texts = df[task.query_name]
     positive_texts = df[task.positive_name]
 
     # Convert Arrow -> numpy arrays directly (fastest path)
-    # cols_to_load = [task.anchor_name, task.positive_name]
+    # cols_to_load = [task.query_name, task.positive_name]
     # if has_title:
     #     cols_to_load.append(title_col)
 
     # # Direct Arrow -> numpy conversion (no pandas intermediate)
     # arrow_table = dataset.select_columns(cols_to_load).data.table
-    # query_texts = arrow_table[task.anchor_name].to_numpy(zero_copy_only=False)
+    # query_texts = arrow_table[task.query_name].to_numpy(zero_copy_only=False)
     # positive_texts = arrow_table[task.positive_name].to_numpy(zero_copy_only=False)
 
     dist.barrier()
@@ -579,7 +579,7 @@ def from_multiple_hf_datasets(task, rank=0) -> RetrievalRawData:
     if rank == 0:
         print("Loading datasets...")
     qrels = load_dataset(task.hf_name, name=task.qrels_name, split=task.split)
-    anchors_ = load_dataset(task.hf_name, name=task.anchor_name, split=task.anchor_name)
+    anchors_ = load_dataset(task.hf_name, name=task.query_name, split=task.query_name)
     corpus = load_dataset(
         task.hf_name, name=task.positive_name, split=task.positive_name
     )
@@ -589,7 +589,7 @@ def from_multiple_hf_datasets(task, rank=0) -> RetrievalRawData:
         print(f"Mapping {len(anchors_)} queries to dict...")
         start = time.time()
     queries_dict = get_dict(
-        anchors_, task.anchor_fields["id"], task.anchor_fields["text"]
+        anchors_, task.query_fields["id"], task.query_fields["text"]
     )
 
     dist.barrier()
@@ -625,7 +625,7 @@ def from_multiple_hf_datasets(task, rank=0) -> RetrievalRawData:
     seen_positives = set()
 
     for qrel in qrels:
-        anchor_id = qrel[task.qrels_fields["anchor_id"]]
+        anchor_id = qrel[task.qrels_fields["query_id"]]
         positive_id = qrel[task.qrels_fields["positive_id"]]
         score = qrel[task.qrels_fields["score"]]
 
@@ -752,7 +752,7 @@ def from_multiple_hf_datasets_vectorized(task, rank=0) -> RetrievalRawData:
         print("Loading datasets...")
 
     qrels = load_dataset(task.hf_name, name=task.qrels_name, split=task.split)
-    anchors_ = load_dataset(task.hf_name, name=task.anchor_name, split=task.anchor_name)
+    anchors_ = load_dataset(task.hf_name, name=task.query_name, split=task.query_name)
     corpus = load_dataset(
         task.hf_name, name=task.positive_name, split=task.positive_name
     )
@@ -768,7 +768,7 @@ def from_multiple_hf_datasets_vectorized(task, rank=0) -> RetrievalRawData:
 
     # Build queries dict
     queries_dict = get_dict(
-        anchors_, task.anchor_fields["id"], task.anchor_fields["text"]
+        anchors_, task.query_fields["id"], task.query_fields["text"]
     )
 
     dist.barrier()
@@ -794,7 +794,7 @@ def from_multiple_hf_datasets_vectorized(task, rank=0) -> RetrievalRawData:
 
     # Convert qrels to pandas DataFrame for vectorized operations
     qrels_cols = [
-        task.qrels_fields["anchor_id"],
+        task.qrels_fields["query_id"],
         task.qrels_fields["positive_id"],
         task.qrels_fields["score"],
     ]

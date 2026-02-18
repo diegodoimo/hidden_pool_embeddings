@@ -10,7 +10,7 @@ class AmazonReviewsClustering(AbsTask):
     hf_name = "mteb/amazon_reviews_multi"
     hf_subset = "en"
     split = "train"
-    anchor_name = "text"
+    query_name = "text"
     label = "product_category"
     metadata = TaskMetadata(
         type="Clustering", prompt={"query": TASK_PROMPTS["AmazonReviewsClassification"]}

@@ -11,7 +11,7 @@ class SentenceCompression(AbsTask):
     hf_name = "sentence-transformers/sentence-compression"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "text"
+    query_name = "text"
     positive_name = "simplified"
     metadata = TaskMetadata(
         type="Retrieval",

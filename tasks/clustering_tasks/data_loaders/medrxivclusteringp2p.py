@@ -9,7 +9,7 @@ from tasks.clustering_tasks.clustering_loaders import (
 class MedrxivClusteringP2P(AbsTask):
     hf_name = "mteb/raw_medrxiv"
     split = "train"
-    anchor_name = "abstract"
+    query_name = "abstract"
     title_name = "title"
     label = "category"
     metadata = TaskMetadata(

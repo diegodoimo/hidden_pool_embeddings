@@ -11,7 +11,7 @@ class SimCLUE(AbsTask):
     hf_name = "sentence-transformers/simclue"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "sentence1"
+    query_name = "sentence1"
     positive_name = "sentence2"
     score_name = "score"
     metadata = TaskMetadata(

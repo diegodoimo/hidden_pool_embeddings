@@ -12,7 +12,7 @@ class SPECTER(AbsTask):
     hf_subset = "pair"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "anchor"
+    query_name = "anchor"
     positive_name = "positive"
     metadata = TaskMetadata(type="Retrieval", prompt={"query": TASK_PROMPTS["SCIDOCS"]})
     loader = from_one_hf_dataset

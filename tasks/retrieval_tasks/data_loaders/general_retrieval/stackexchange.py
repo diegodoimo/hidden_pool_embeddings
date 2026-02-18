@@ -418,7 +418,7 @@ STACKEXCHANGE_SUBJECTS = [
 
 #     # Combine title and body into a single query field
 #     def combine_title_body(example):
-#         example[task.anchor_name] = example["title"] + " " + example["body"]
+#         example[task.query_name] = example["title"] + " " + example["body"]
 #         return example
 
 #     combined_dataset = combined_dataset.map(
@@ -448,7 +448,7 @@ STACKEXCHANGE_SUBJECTS = [
 
 #     # Convert to pandas DataFrame
 #     has_title = task.corpus_fields.get("title", None) is not None
-#     cols_to_load = [task.anchor_name, task.positive_name]
+#     cols_to_load = [task.query_name, task.positive_name]
 #     if has_title:
 #         title_col = task.corpus_fields.get("title", None)
 #         if title_col in combined_dataset.column_names:
@@ -459,7 +459,7 @@ STACKEXCHANGE_SUBJECTS = [
 #     df = combined_dataset.select_columns(cols_to_load).to_pandas()
 
 #     # Keep as pandas Series
-#     query_texts = df[task.anchor_name]
+#     query_texts = df[task.query_name]
 #     positive_texts = df[task.positive_name]
 
 #     dist.barrier()
@@ -618,7 +618,7 @@ class StackExchangeRetrieval(AbsTask):
     hf_subset = None  # Will be set to subtask name when loading specific subjects
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "title_body"  # This field will be created by combining title + body
+    query_name = "title_body"  # This field will be created by combining title + body
     positive_name = "upvoted_answer"
     corpus_fields = {}  # No title field for answers, loader will handle has_title check
     metadata = TaskMetadata(

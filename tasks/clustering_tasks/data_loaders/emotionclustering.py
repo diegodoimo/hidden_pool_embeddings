@@ -9,7 +9,7 @@ from tasks.clustering_tasks.clustering_loaders import (
 class EmotionClustering(AbsTask):
     hf_name = "mteb/emotion"
     split = "train"
-    anchor_name = "text"
+    query_name = "text"
     label = "label"
     metadata = TaskMetadata(
         type="Clustering", prompt={"query": TASK_PROMPTS["EmotionClassification"]}

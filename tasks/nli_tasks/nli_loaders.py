@@ -57,7 +57,7 @@ def load_nli_retrieval(task, max_num_queries=10**6, rank=None) -> RetrievalRawDa
     contradiction_label = getattr(task, "contradiction_label", 2)
 
     # Convert to pandas DataFrame for vectorized operations
-    cols_to_load = [task.anchor_name, task.positive_name, task.label_name]
+    cols_to_load = [task.query_name, task.positive_name, task.label_name]
     df = dataset.select_columns(cols_to_load).to_pandas()
     df.columns = ["premise", "hypothesis", "label"]
     
@@ -276,7 +276,7 @@ def load_all_nli_retrieval(task, max_num_queries=10**6, rank=None) -> RetrievalR
     )
     
     # Convert to pandas DataFrame
-    cols_to_load = [task.anchor_name, task.positive_name]
+    cols_to_load = [task.query_name, task.positive_name]
     if has_negatives:
         cols_to_load.append(task.negative_name)
     

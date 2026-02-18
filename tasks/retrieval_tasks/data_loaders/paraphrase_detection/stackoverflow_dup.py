@@ -176,7 +176,7 @@ class StackOverflowDupQuestions(AbsTask):
     hf_name = "mteb/stackoverflowdupquestions-reranking"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "query"
+    query_name = "query"
     positive_name = "positive"
     metadata = TaskMetadata(
         type="Retrieval", prompt={"query": TASK_PROMPTS["StackOverflowDupQuestions"]}

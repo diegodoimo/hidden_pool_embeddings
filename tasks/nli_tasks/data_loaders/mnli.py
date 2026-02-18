@@ -11,7 +11,7 @@ class MNLI(AbsTask):
     hf_name = "nyu-mll/multi_nli"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0  # 0 = entailment in MNLI

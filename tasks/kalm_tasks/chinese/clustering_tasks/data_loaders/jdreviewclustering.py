@@ -14,7 +14,7 @@ class JDReviewClustering(AbsTask):
     hf_name = "sentence-transformers/jdreview"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "text"
+    query_name = "text"
     label = "label"
     metadata = TaskMetadata(
         type="Clustering",

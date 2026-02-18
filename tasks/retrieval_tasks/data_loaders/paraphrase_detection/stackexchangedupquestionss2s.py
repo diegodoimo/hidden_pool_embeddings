@@ -12,7 +12,7 @@ class StackExchangeDupQuestionsS2S(AbsTask):
     hf_subset = "title-title-pair"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "title1"
+    query_name = "title1"
     positive_name = "title2"
     metadata = TaskMetadata(
         type="Retrieval",

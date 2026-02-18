@@ -24,7 +24,7 @@ def load_clustering_standard(task, rank=0):
 
     dataset = load_dataset(task.hf_name, name=task.hf_subset, split=task.split)
 
-    texts = list(dataset[task.anchor_name])
+    texts = list(dataset[task.query_name])
     labels = list(dataset[label_field])
     ids = [f"doc_{i}" for i in range(len(texts))]
 
@@ -67,7 +67,7 @@ def load_clustering_sampling(task, rank=0, num_hard_negatives=24):
     all_clusters = []
 
     for row in dataset:
-        text = row[task.anchor_name]
+        text = row[task.query_name]
         cluster = row[label_field]
         all_texts.append(text)
         all_clusters.append(cluster)

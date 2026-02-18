@@ -12,7 +12,7 @@ class LCSTS(AbsTask):
     hf_subset = "pair"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "text"
+    query_name = "text"
     positive_name = "summary"
     metadata = TaskMetadata(
         type="Retrieval",

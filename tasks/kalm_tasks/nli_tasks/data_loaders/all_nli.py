@@ -9,7 +9,7 @@ class ALL_NLI(AbsTask):
     hf_subset = "triplet"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "anchor"
+    query_name = "anchor"
     positive_name = "positive"
     negative_name = "negative"
     metadata = TaskMetadata(

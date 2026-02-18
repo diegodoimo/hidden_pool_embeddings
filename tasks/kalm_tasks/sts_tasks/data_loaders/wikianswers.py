@@ -10,7 +10,7 @@ class WikiAnswers(AbsTask):
     hf_name = "sentence-transformers/wikianswers"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "sentence1"
+    query_name = "sentence1"
     positive_name = "sentence2"
     score_name = "score"
     metadata = TaskMetadata(

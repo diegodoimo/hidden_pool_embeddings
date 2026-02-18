@@ -11,7 +11,7 @@ class BioASQ(AbsTask):
     hf_name = "BeIR/bioasq-generated-queries"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "query"
+    query_name = "query"
     positive_name = "text"
     negative_name = "negative"
     metadata = TaskMetadata(

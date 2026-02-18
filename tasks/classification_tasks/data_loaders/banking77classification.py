@@ -9,7 +9,7 @@ from tasks.classification_tasks.classification_loaders import (
 class Banking77Classification(AbsTask):
     hf_name = "mteb/banking77"
     split = "train"
-    anchor_name = "text"
+    query_name = "text"
     label = "label"
     metadata = TaskMetadata(
         type="Classification", prompt={"query": TASK_PROMPTS["Banking77Classification"]}

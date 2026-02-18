@@ -12,7 +12,7 @@ class S2ORCAbstractCitation(AbsTask):
     hf_subset = "abstract-citation-pair"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "abstract"
+    query_name = "abstract"
     positive_name = "citation"
     metadata = TaskMetadata(
         type="Retrieval",

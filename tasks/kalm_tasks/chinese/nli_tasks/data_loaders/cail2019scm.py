@@ -11,7 +11,7 @@ class CAIL2019SCM(AbsTask):
     hf_name = "sentence-transformers/cail2019-scm"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "premise"
+    query_name = "premise"
     positive_name = "hypothesis"
     label_name = "label"
     entailment_label = 0

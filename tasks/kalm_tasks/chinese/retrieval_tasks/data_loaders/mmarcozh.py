@@ -12,7 +12,7 @@ class MMarcoZh(AbsTask):
     hf_subset = "zh"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "query"
+    query_name = "query"
     positive_name = "text"
     metadata = TaskMetadata(
         type="Retrieval",

@@ -11,7 +11,7 @@ class AmazonQA(AbsTask):
     hf_name = "sentence-transformers/amazon-qa"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "query"
+    query_name = "query"
     positive_name = "answer"
     metadata = TaskMetadata(
         type="Retrieval",

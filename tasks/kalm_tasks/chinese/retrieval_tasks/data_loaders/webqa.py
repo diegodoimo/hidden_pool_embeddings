@@ -12,7 +12,7 @@ class WebQA(AbsTask):
     hf_subset = "pair"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "question"
+    query_name = "question"
     positive_name = "answer"
     metadata = TaskMetadata(
         type="Retrieval",

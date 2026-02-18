@@ -11,7 +11,7 @@ class AmazonCounterfactualClassification(AbsTask):
     hf_name = "mteb/amazon_counterfactual"
     hf_subset = "en"
     split = "train"
-    anchor_name = "text"
+    query_name = "text"
     label = "label"
     
     # Label texts for binary classification

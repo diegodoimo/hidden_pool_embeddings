@@ -11,7 +11,7 @@ class COLIEE(AbsTask):
     hf_name = "sentence-transformers/coliee"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "anchor"
+    query_name = "anchor"
     positive_name = "positive"
     negative_name = "negative"
     metadata = TaskMetadata(

@@ -191,7 +191,7 @@ class PubMedQA(AbsTask):
     hf_subset = "pqa_labeled"
     split = "train"
     has_multiple_datasets = False
-    anchor_name = "question"
+    query_name = "question"
     positive_name = "context"
     metadata = TaskMetadata(
         type="Retrieval",
