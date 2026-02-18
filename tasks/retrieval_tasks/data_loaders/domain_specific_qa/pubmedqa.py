@@ -3,6 +3,9 @@ from datasets import Dataset
 from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 
 
+PUBMEDQA_SUBTASKS = ["pqa_artificial", "pqa_labeled", "pqa_unlabeled"]
+
+
 def pubmedqa_preprocessor(dataset, query_name: str, positive_name: str) -> Dataset:
     """Flatten PubMedQA's nested context field into a plain string column.
 
@@ -43,7 +46,6 @@ class PubMedQA(AbsTask):
     language = "en"
 
     hf_name = "qiaojin/PubMedQA"
-    hf_subset = "pqa_labeled"
     split = "train"
     has_multiple_datasets = False
     query_name = "question"
@@ -56,3 +58,4 @@ class PubMedQA(AbsTask):
     )
     loader = from_one_hf_dataset
     preprocessor = pubmedqa_preprocessor
+    subtasks = PUBMEDQA_SUBTASKS
