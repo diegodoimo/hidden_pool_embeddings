@@ -300,7 +300,7 @@ def from_one_hf_dataset(
 
 
 def from_multiple_hf_datasets(
-    task, max_num_queries=10**6, rank=None
+    task, max_num_queries=10**6, rank=None, subtask=None
 ) -> RetrievalRawData:
     """
     Load data from multiple HuggingFace datasets (queries, corpus, qrels) using vectorized operations.
@@ -310,22 +310,35 @@ def from_multiple_hf_datasets(
     - Documents are unique with positives first
     - n_positives indicates how many positives are at the beginning
 
+    When ``subtask`` is provided, the HF subset names are constructed by
+    prefixing the subtask to the base names (e.g. subtask="arabic" with
+    query_name="queries" → HF subset "arabic-queries").
+
     Args:
         task: Task object with dataset configuration
         max_num_queries: Maximum number of queries to keep (default: 1 million)
         rank: Distributed training rank (if None, obtained from dist.get_rank())
+        subtask: Optional subtask prefix for constructing HF subset names
     """
     rank = dist.get_rank() if rank is None else rank
+
+    # Resolve HF subset names, optionally prefixed by subtask
+    if subtask is not None:
+        query_subset = f"{subtask}-{task.query_name}"
+        corpus_subset = f"{subtask}-{task.positive_name}"
+        qrels_subset = f"{subtask}-{task.qrels_name}"
+    else:
+        query_subset = task.query_name
+        corpus_subset = task.positive_name
+        qrels_subset = task.qrels_name
 
     if rank == 0:
         start = time.time()
         print("Loading datasets...")
 
-    qrels = load_dataset(task.hf_name, name=task.qrels_name, split=task.split)
-    querys_ = load_dataset(task.hf_name, name=task.query_name, split=task.query_name)
-    corpus = load_dataset(
-        task.hf_name, name=task.positive_name, split=task.positive_name
-    )
+    qrels = load_dataset(task.hf_name, name=qrels_subset, split=task.split)
+    querys_ = load_dataset(task.hf_name, name=query_subset, split=query_subset)
+    corpus = load_dataset(task.hf_name, name=corpus_subset, split=corpus_subset)
 
     dist.barrier()
     if rank == 0:
