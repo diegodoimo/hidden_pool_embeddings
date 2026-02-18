@@ -2,13 +2,16 @@ import datasets
 from datasets import load_dataset
 from typing import Set
 
-# lang = "bn"  # or any of the 16 languages
-# miracl = datasets.load_dataset(
-#     "miracl/miracl", lang, trust_remote_code=True, split="train"
-# )
-# miracl["query"][0]
-# miracl["positive_passages"][0]
-# miracl["negative_passages"][0]
+lang = "bn"  # or any of the 16 languages
+miracl = datasets.load_dataset(
+    "miracl/miracl", lang, trust_remote_code=True, split="train"
+)
+miracl["query"][0]
+miracl["positive_passages"][0]
+miracl["negative_passages"][0]
+
+
+miracl["negative_passages"]
 
 
 dataset = load_dataset("BeIR/arguana-generated-queries", split="train")

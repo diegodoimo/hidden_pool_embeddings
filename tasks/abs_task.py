@@ -21,6 +21,7 @@ class AbsTask(ABC):
     corpus_fields: Dict[str, str] = None
     subtasks: Optional[List] = None
     decontaminator: Optional[Callable] = None
+    preprocessor: Optional[Callable] = None
 
     @classmethod
     @abstractmethod
