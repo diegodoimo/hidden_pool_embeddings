@@ -2,6 +2,10 @@ import datasets
 from datasets import load_dataset
 from typing import Set
 
+print(datasets.config.HF_DATASETS_CACHE)
+print(datasets.__version__)
+dataset = load_dataset("rajpurkar/squad_v2")
+
 lang = "bn"  # or any of the 16 languages
 
 
