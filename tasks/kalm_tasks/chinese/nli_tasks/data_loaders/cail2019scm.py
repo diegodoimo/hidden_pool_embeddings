@@ -1,6 +1,7 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
-from tasks.nli_tasks.nli_loaders import load_nli_retrieval
+from tasks.nli_tasks.nli_loaders import nli_preprocessor
+from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 
 
 class CAIL2019SCM(AbsTask):
@@ -13,12 +14,10 @@ class CAIL2019SCM(AbsTask):
     has_multiple_datasets = False
     query_name = "premise"
     positive_name = "hypothesis"
-    label_name = "label"
-    entailment_label = 0
+    negative_name = "negative"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a legal case, retrieve similar legal cases"
-        },
+        prompt={"query": "Given a legal case, retrieve similar legal cases"},
     )
-    loader = load_nli_retrieval
+    preprocessor = nli_preprocessor
+    loader = from_one_hf_dataset

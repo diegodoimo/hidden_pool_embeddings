@@ -1,6 +1,6 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
-from tasks.nli_tasks.nli_loaders import load_all_nli_retrieval
+from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 
 
 class ALL_NLI(AbsTask):
@@ -15,4 +15,4 @@ class ALL_NLI(AbsTask):
     metadata = TaskMetadata(
         type="Retrieval", prompt={"query": "Retrieve semantically similar text"}
     )
-    loader = load_all_nli_retrieval
+    loader = from_one_hf_dataset

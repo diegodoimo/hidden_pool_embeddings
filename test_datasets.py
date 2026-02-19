@@ -5,9 +5,11 @@ from typing import Set
 lang = "bn"  # or any of the 16 languages
 
 
-miracl = datasets.load_dataset("mteb/mrtidy", trust_remote_code=True, split="train")
+miracl = datasets.load_dataset("qiaojin/PubMedQA", "pqa_unlabeled")
 
-
+dataset = load_dataset(
+    "qiaojin/PubMedQA", name="pqa_unlabeled", split="train", trust_remote_code=False
+)
 miracl = datasets.load_dataset(
     "miracl/miracl", lang, trust_remote_code=True, split="train"
 )

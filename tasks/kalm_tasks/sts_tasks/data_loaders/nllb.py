@@ -1,6 +1,7 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
-from tasks.sts_tasks.sts_loaders import load_sts_retrieval
+from tasks.sts_tasks.sts_loaders import sts_preprocessor
+from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 
 
 class NLLB(AbsTask):
@@ -14,11 +15,9 @@ class NLLB(AbsTask):
     has_multiple_datasets = False
     query_name = "sentence1"
     positive_name = "sentence2"
-    score_name = "score"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a sentence, retrieve semantically similar sentences"
-        },
+        prompt={"query": "Given a sentence, retrieve semantically similar sentences"},
     )
-    loader = load_sts_retrieval
+    preprocessor = sts_preprocessor
+    loader = from_one_hf_dataset

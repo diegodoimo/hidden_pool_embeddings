@@ -1,6 +1,7 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
-from tasks.sts_tasks.sts_loaders import load_sts_retrieval
+from tasks.sts_tasks.sts_loaders import sts_preprocessor
+from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 
 
 class STSBenchmark(AbsTask):
@@ -16,6 +17,8 @@ class STSBenchmark(AbsTask):
     has_multiple_datasets = False
     query_name = "sentence1"
     positive_name = "sentence2"
-    score_name = "score"
-    metadata = TaskMetadata(type="Retrieval", prompt={"query": TASK_PROMPTS["STSBenchmark"]})
-    loader = load_sts_retrieval
+    metadata = TaskMetadata(
+        type="Retrieval", prompt={"query": TASK_PROMPTS["STSBenchmark"]}
+    )
+    preprocessor = sts_preprocessor
+    loader = from_one_hf_dataset

@@ -5,9 +5,6 @@ from .nli_tasks import *
 from .retrieval_tasks import *
 from .sts_tasks import *
 
-# My custom tasks
-from .my_tasks.nli_tasks import *
-
 
 NAME_TO_TASK = {
     # MTEB-style retrieval tasks
@@ -38,21 +35,8 @@ NAME_TO_TASK = {
     "snli": SNLI,
     "mnli": MNLI,
     "anli": ANLI,
-    # XNLI tasks (multilingual NLI)
-    "xnli_ar": XNLIAr,
-    "xnli_bg": XNLIBg,
-    "xnli_de": XNLIDe,
-    "xnli_el": XNLIEl,
-    "xnli_es": XNLIEs,
-    "xnli_fr": XNLIFr,
-    "xnli_hi": XNLIHi,
-    "xnli_ru": XNLIRu,
-    "xnli_sw": XNLISw,
-    "xnli_th": XNLITh,
-    "xnli_tr": XNLITr,
-    "xnli_ur": XNLIUr,
-    "xnli_vi": XNLIVi,
-    "xnli_zh": XNLIZh,
+    # XNLI task (multilingual NLI, each language as a subtask)
+    "xnli": XNLI,
     # QA tasks with custom loaders
     "squad": SQuAD,
     "stackexchange": StackExchangeRetrieval,
