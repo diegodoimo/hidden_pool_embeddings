@@ -7,7 +7,7 @@ class ALL_NLI(AbsTask):
     language = "en"
     hf_name = "sentence-transformers/all-nli"
     hf_subset = "triplet"
-    split = "train"
+    split = "train+dev"
     has_multiple_datasets = False
     query_name = "anchor"
     positive_name = "positive"

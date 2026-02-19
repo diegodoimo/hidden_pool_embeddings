@@ -19,6 +19,7 @@ class AbsTask(ABC):
     qrels_fields: Dict[str, str] = None
     query_fields: Dict[str, str] = None
     corpus_fields: Dict[str, str] = None
+    
     subtasks: Optional[List] = None
     decontaminator: Optional[Callable] = None
     preprocessor: Optional[Callable] = None

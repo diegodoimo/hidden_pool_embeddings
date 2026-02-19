@@ -13,7 +13,7 @@ class ANLI(AbsTask):
     language = "en"
 
     hf_name = "facebook/anli"
-    split = "train_r1+train_r2+train_r3"  # Use all three rounds jointly
+    split = "train_r1+train_r2+train_r3+dev_r1+dev_r2+dev_r3"
     has_multiple_datasets = False
     query_name = "premise"
     positive_name = "hypothesis"

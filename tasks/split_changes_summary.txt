@@ -1,0 +1,111 @@
+Split changes: include validation/dev data in training
+=====================================================
+
+Rule: add validation/dev splits to training data for all benchmarks.
+For mteb/* datasets, only do so if a test split also exists.
+
+16 files changed
+-----------------
+
+NLI Tasks (4 files)
+  tasks/nli_tasks/data_loaders/snli.py
+    stanfordnlp/snli                    train -> train+validation
+
+  tasks/nli_tasks/data_loaders/mnli.py
+    nyu-mll/multi_nli                   train -> train+validation_matched+validation_mismatched
+
+  tasks/nli_tasks/data_loaders/anli.py
+    facebook/anli                       train_r1+train_r2+train_r3 -> train_r1+train_r2+train_r3+dev_r1+dev_r2+dev_r3
+
+  tasks/nli_tasks/data_loaders/xnli.py
+    mteb/xnli                           train -> train+validation  (mteb, has test)
+
+STS Tasks (1 file)
+  tasks/sts_tasks/data_loaders/stsbenchmark.py
+    mteb/stsbenchmark-sts               train -> train+validation  (mteb, has test)
+
+Retrieval Tasks (10 files)
+  tasks/retrieval_tasks/data_loaders/open_domain_qa/squad.py
+    rajpurkar/squad                     train -> train+validation
+
+  tasks/retrieval_tasks/data_loaders/summarization/cnndm.py
+    abisee/cnn_dailymail                train -> train+validation
+
+  tasks/retrieval_tasks/data_loaders/summarization/xsum.py
+    EdinburghNLP/xsum                   train -> train+validation
+
+  tasks/retrieval_tasks/data_loaders/general_retrieval/miracl.py
+    miracl/miracl                       train -> train+dev
+
+  tasks/retrieval_tasks/data_loaders/general_retrieval/mrtydi.py
+    castorini/mr-tydi                   train -> train+dev
+
+  tasks/retrieval_tasks/data_loaders/open_domain_qa/hotpotqa.py
+    mteb/hotpotqa                       train -> train+dev  (qrels; mteb, has test)
+
+  tasks/retrieval_tasks/data_loaders/domain_specific_qa/fiqa2018.py
+    mteb/fiqa                           train -> train+dev  (qrels; mteb, has test)
+
+  tasks/retrieval_tasks/data_loaders/fact_verification/fever.py
+    mteb/fever                          train -> train+dev  (qrels; mteb, has test)
+
+  tasks/retrieval_tasks/data_loaders/general_retrieval/msmarco.py
+    mteb/msmarco                        train -> train+dev  (qrels; mteb, has test)
+
+  tasks/retrieval_tasks/data_loaders/general_retrieval/nfcorpus.py
+    mteb/nfcorpus                       train -> train+dev  (qrels; mteb, has test)
+
+Kalm Tasks (1 file)
+  tasks/kalm_tasks/nli_tasks/data_loaders/all_nli.py
+    sentence-transformers/all-nli       train -> train+dev
+
+Unchanged (no validation/dev available, or mteb without test split)
+-------------------------------------------------------------------
+
+mteb without test split:
+  mteb/msmarco-v2                       only dev/dev2, no test -> kept as train
+
+No validation/dev split exists:
+  mteb/sts12-sts                        train + test only (no validation)
+  mteb/sts22-crosslingual-sts           train + test only (no validation)
+  mteb/scifact                          train + test only (no dev)
+  mteb/stackoverflowdupquestions-reranking  train + test only (no dev)
+  stanfordnlp/snli                      (changed above)
+  rajpurkar/squad                       (changed above)
+  qiaojin/PubMedQA                     train only per subset
+  BeIR/arguana-generated-queries        train only
+  BeIR/bioasq-generated-queries         train only
+  sentence-transformers/natural-questions  train only
+  sentence-transformers/eli5            train only
+  sentence-transformers/trivia-qa       train only
+  sentence-transformers/paq             train only
+  sentence-transformers/amazon-qa       train only
+  sentence-transformers/coliee          train only (gated)
+  sentence-transformers/quora-duplicates  train only
+  sentence-transformers/stackexchange-duplicates  train only
+  sentence-transformers/specter         train only
+  sentence-transformers/s2orc           train only
+  sentence-transformers/sentence-compression  train only
+  sentence-transformers/contractnli     train only (gated)
+  sentence-transformers/simcse-nli      train only (gated)
+  sentence-transformers/nllb            train only (gated)
+  sentence-transformers/paws-x          train only (gated)
+  sentence-transformers/wikianswers     train only (gated)
+  sentence-transformers/arxiv_qa        train only
+  sentence-transformers/aya-dataset     train only
+  sentence-transformers/cc-news         train only
+  sentence-transformers/codefeedback    train only
+  sentence-transformers/cqadupstack     train only
+  sentence-transformers/dbpedia-entity  train only
+  sentence-transformers/esci            train only
+  sentence-transformers/expertqa        train only
+  sentence-transformers/gooaq           train only
+  sentence-transformers/medi2bge        train only
+  sentence-transformers/mldr            train only
+  sentence-transformers/openorca        train only
+  sentence-transformers/rag-dataset-12000  train only
+  sentence-transformers/searchqa        train only
+  sentence-transformers/trec-covid      train only
+  sentence-transformers/webgpt_comparisons  train only
+  sentence-transformers/yahoo_answers   train only
+  flax-sentence-embeddings/stackexchange_titlebody_best_voted_answer_jsonl  train only

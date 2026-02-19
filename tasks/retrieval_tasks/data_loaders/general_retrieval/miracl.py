@@ -77,6 +77,10 @@ class MIRACL(AbsTask):
     Each language is loaded as a separate subtask.
     Set hf_subset to a specific language code to load only that language,
     or leave as None to load all languages via subtasks.
+
+    Uses only the train split to avoid contamination with MTEB evaluation:
+    MIRACLRetrievalHardNegatives is evaluated on the dev split, which
+    corresponds to the dev data of the original miracl/miracl dataset.
     """
 
     language = "multilingual"

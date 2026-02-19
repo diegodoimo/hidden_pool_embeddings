@@ -10,7 +10,7 @@ class SNLI(AbsTask):
     language = "en"
 
     hf_name = "stanfordnlp/snli"
-    split = "train"
+    split = "train+validation"
     has_multiple_datasets = False
     query_name = "premise"
     positive_name = "hypothesis"

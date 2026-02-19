@@ -35,7 +35,6 @@ NAME_TO_TASK = {
     "snli": SNLI,
     "mnli": MNLI,
     "anli": ANLI,
-    # XNLI task (multilingual NLI, each language as a subtask)
     "xnli": XNLI,
     # QA tasks with custom loaders
     "squad": SQuAD,
@@ -89,21 +88,7 @@ NLI_TASKS = [
     "snli",
     "mnli",
     "anli",
-    # XNLI multilingual tasks
-    "xnli_ar",
-    "xnli_bg",
-    "xnli_de",
-    "xnli_el",
-    "xnli_es",
-    "xnli_fr",
-    "xnli_hi",
-    "xnli_ru",
-    "xnli_sw",
-    "xnli_th",
-    "xnli_tr",
-    "xnli_ur",
-    "xnli_vi",
-    "xnli_zh",
+    "xnli",
 ]
 
 # STS tasks are semantic textual similarity tasks

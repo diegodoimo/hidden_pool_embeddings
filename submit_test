@@ -5,10 +5,10 @@
 #SBATCH --nodes=1
 #SBATCH --time=24:00:00            
 #SBATCH --ntasks-per-node=1       
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=24
 #SBATCH --mem=100G       
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:2
+##SBATCH --gres=gpu:H100:2
 
 
 env_path=\/orfeo/cephfs/scratch/area/ddoimo/open/hidden_pool_embeddings
@@ -28,16 +28,29 @@ export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
 export PYTHONUNBUFFERED=1
 
 
-torchrun \
-    --nnodes=$SLURM_NTASKS \
-    --node-rank=$SLURM_NODEID \
-    --nproc-per-node=$GPU_NUMBER \
-    --rdzv-id=$SLURM_PROCID \
-    --rdzv-backend=c10d \
-    --rdzv-endpoint=$head_node:0 \
-    eval_model_with_ddp.py  \
-    --model_name_or_path "Qwen/Qwen3-Embedding-0.6B" \
+# torchrun \
+#     --nnodes=$SLURM_NTASKS \
+#     --node-rank=$SLURM_NODEID \
+#     --nproc-per-node=$GPU_NUMBER \
+#     --rdzv-id=$SLURM_PROCID \
+#     --rdzv-backend=c10d \
+#     --rdzv-endpoint=$head_node:0 \
+python extract_mteb_test_datasets.py  
+    #--benchmark
+    #--model_name_or_path "Qwen/Qwen3-Embedding-0.6B" \
     #--model_name_or_path google/embeddinggemma-300m \
+
+
+# torchrun \
+#     --nnodes=$SLURM_NTASKS \
+#     --node-rank=$SLURM_NODEID \
+#     --nproc-per-node=$GPU_NUMBER \
+#     --rdzv-id=$SLURM_PROCID \
+#     --rdzv-backend=c10d \
+#     --rdzv-endpoint=$head_node:0 \
+#     eval_model_with_ddp.py  \
+#     --model_name_or_path "Qwen/Qwen3-Embedding-0.6B" \
+#     #--model_name_or_path google/embeddinggemma-300m \
 
 
 # test model

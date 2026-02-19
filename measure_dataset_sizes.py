@@ -226,7 +226,11 @@ def main():
 
         try:
             _, category = get_category_path(task_name, args.path)
-            task_type, category_name = category.split("/")
+            if "/" in category:
+                task_type, category_name = category.split("/", 1)
+            else:
+                task_type = category
+                category_name = category
 
             if rank == 0:
                 print(f"\n\nPREPARING DATASET {category}: {task_name}\n")

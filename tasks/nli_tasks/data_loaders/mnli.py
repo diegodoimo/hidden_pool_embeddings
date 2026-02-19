@@ -10,7 +10,7 @@ class MNLI(AbsTask):
     language = "en"
 
     hf_name = "nyu-mll/multi_nli"
-    split = "train"
+    split = "train+validation_matched+validation_mismatched"
     has_multiple_datasets = False
     query_name = "premise"
     positive_name = "hypothesis"

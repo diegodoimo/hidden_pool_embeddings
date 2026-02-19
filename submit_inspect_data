@@ -34,8 +34,9 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     measure_dataset_sizes.py  \
-    --task_types retrieval \
+    --task_types retrieval nli sts \
     --filename dataset_stats.json \
+    #--task_types retrieval \
     #--force_recompute \
     #--task_names "paq" \
 
