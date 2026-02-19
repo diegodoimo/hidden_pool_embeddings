@@ -3,6 +3,7 @@ Shared loader functions for retrieval tasks.
 These loaders are used by multiple retrieval tasks.
 """
 
+import datasets as _datasets
 from datasets import load_dataset
 from typing import List, Optional
 import time
@@ -11,6 +12,51 @@ import pandas as pd
 import numpy as np
 from tasks.data_helpers import RetrievalRawData, get_dict
 from utils.helpers import return_formatted
+
+_datasets.config.HF_DATASETS_TIMEOUT = 120
+
+
+def load_from_parquet(hf_name, subset_name, split):
+    """Load a HuggingFace dataset directly from its parquet files.
+
+    Bypasses the datasets library's feature-schema parsing, which fails on
+    datasets that were serialised with the deprecated 'List' feature type.
+    Tries several common HuggingFace Hub parquet directory layouts.
+    """
+    from huggingface_hub import HfFileSystem
+    from datasets import Dataset as _Dataset
+
+    fs = HfFileSystem()
+    base = f"datasets/{hf_name}"
+
+    candidates = []
+    if subset_name:
+        candidates += [
+            f"{base}/{subset_name}/{split}-*.parquet",
+            f"{base}/data/{subset_name}/{split}-*.parquet",
+            f"{base}/{subset_name}/*.parquet",
+        ]
+    candidates += [
+        f"{base}/data/{split}-*.parquet",
+        f"{base}/{split}-*.parquet",
+        f"{base}/data/*.parquet",
+    ]
+
+    files = []
+    for pattern in candidates:
+        files = fs.glob(pattern)
+        if files:
+            break
+
+    if not files:
+        raise FileNotFoundError(
+            f"No parquet files found for {hf_name!r} "
+            f"(subset={subset_name!r}, split={split!r})"
+        )
+
+    dfs = [pd.read_parquet(fs.open(f)) for f in sorted(files)]
+    df = pd.concat(dfs, ignore_index=True)
+    return _Dataset.from_pandas(df, preserve_index=False)
 
 
 def deduplicate(texts, prefix="query", titles=None):
@@ -63,10 +109,15 @@ def from_one_hf_dataset(
         assert task.hf_subset is None
         subset_name = subtask
 
-    if subset_name:
-        dataset = load_dataset(task.hf_name, name=subset_name, split=task.split)
+    load_fn = getattr(task, "load_fn", None)
+    if load_fn is not None:
+        dataset = load_fn(task.hf_name, subset_name, task.split)
     else:
-        dataset = load_dataset(task.hf_name, split=task.split)
+        trust_remote_code = getattr(task, "trust_remote_code", False)
+        if subset_name:
+            dataset = load_dataset(task.hf_name, name=subset_name, split=task.split, trust_remote_code=trust_remote_code)
+        else:
+            dataset = load_dataset(task.hf_name, split=task.split, trust_remote_code=trust_remote_code)
 
     if task.preprocessor is not None:
         dataset = task.preprocessor(
@@ -132,6 +183,7 @@ def from_one_hf_dataset(
     # so the round-trip Arrow → list → Arrow is avoided for 20M strings.
     query_texts = df[task.query_name]
     positive_texts = df[task.positive_name]
+    titles = None
     if has_title:
         titles = df[title_col]
 
@@ -337,8 +389,10 @@ def from_multiple_hf_datasets(
         print("Loading datasets...")
 
     qrels = load_dataset(task.hf_name, name=qrels_subset, split=task.split)
-    querys_ = load_dataset(task.hf_name, name=query_subset, split=query_subset)
-    corpus = load_dataset(task.hf_name, name=corpus_subset, split=corpus_subset)
+    # Use the base field name as the split (not the full subset name), because
+    # hyphens in split names (e.g. "arabic-queries") are invalid in datasets.
+    querys_ = load_dataset(task.hf_name, name=query_subset, split=task.query_name)
+    corpus = load_dataset(task.hf_name, name=corpus_subset, split=task.positive_name)
 
     dist.barrier()
     if rank == 0:

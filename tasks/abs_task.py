@@ -22,6 +22,8 @@ class AbsTask(ABC):
     subtasks: Optional[List] = None
     decontaminator: Optional[Callable] = None
     preprocessor: Optional[Callable] = None
+    trust_remote_code: bool = False
+    load_fn: Optional[Callable] = None  # optional override for dataset loading
 
     @classmethod
     @abstractmethod

@@ -3,6 +3,7 @@ from datasets import Dataset
 from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 
 
+# yo (Yoruba) and de (German) are MIRACL+ additions with no train split.
 MIRACL_LANGUAGES = [
     "ar",
     "bn",
@@ -20,8 +21,6 @@ MIRACL_LANGUAGES = [
     "te",
     "th",
     "zh",
-    "yo",
-    "de",
 ]
 
 
@@ -97,5 +96,6 @@ class MIRACL(AbsTask):
             "query": "Given a question, retrieve relevant passages that answer the question"
         },
     )
+    trust_remote_code = True
     loader = from_one_hf_dataset
     preprocessor = miracl_preprocessor
