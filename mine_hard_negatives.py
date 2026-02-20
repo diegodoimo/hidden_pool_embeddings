@@ -44,7 +44,6 @@ def parse_args():
         "--task_types",
         type=str,
         nargs="+",
-        choices=["retrieval", "sts", "nli", "classification", "clustering", "all"],
         default=None,
         help="Select task types to mine hard negatives for. Can specify multiple types. Ignored if --task_names is provided.",
     )

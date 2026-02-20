@@ -1,6 +1,6 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from datasets import Dataset
-from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
+from tasks.retrieval_loaders import from_one_hf_dataset
 
 
 PUBMEDQA_SUBTASKS = ["pqa_artificial", "pqa_labeled", "pqa_unlabeled"]

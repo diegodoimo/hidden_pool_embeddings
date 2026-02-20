@@ -1,6 +1,6 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
-from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
+from tasks.retrieval_loaders import from_one_hf_dataset
 
 
 class CMRC2018(AbsTask):

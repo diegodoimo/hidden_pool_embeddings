@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 from tasks.data_helpers import RetrievalRawData
 from utils.helpers import return_formatted
-from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
+from tasks.retrieval_loaders import from_one_hf_dataset
 
 
 # List of all 174 StackExchange subjects hallucinated

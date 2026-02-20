@@ -320,7 +320,7 @@ class HardNegativesMiner:
             prompt_type=PromptType.document,
             max_length=self.max_length,
         )
-        if corpus_dataset.removed_ids > 0:
+        if len(corpus_dataset.removed_ids) > 0:
             positives_to_remove = positive_ids.intersection(
                 set(corpus_dataset.removed_ids)
             )

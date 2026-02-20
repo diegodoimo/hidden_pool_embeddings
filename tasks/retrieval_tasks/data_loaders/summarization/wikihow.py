@@ -1,5 +1,5 @@
 from tasks.abs_task import AbsTask, TaskMetadata
-from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
+from tasks.retrieval_loaders import from_one_hf_dataset
 
 
 class WikiHow(AbsTask):
@@ -8,7 +8,7 @@ class WikiHow(AbsTask):
     language = "en"
 
     hf_name = "gursi26/wikihow-cleaned"
-    split = "train+validation"
+    split = "train"
     has_multiple_datasets = False
     query_name = "summary"
     positive_name = "text"

@@ -1,6 +1,6 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
-from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
+from tasks.retrieval_loaders import from_one_hf_dataset
 
 
 class YahooAnswers(AbsTask):
@@ -8,11 +8,11 @@ class YahooAnswers(AbsTask):
 
     language = "en"
 
-    hf_name = "sentence-transformers/yahoo_answers"
+    hf_name = "sentence-transformers/yahoo-answers"
     hf_subset = "title-answer-pair"
     split = "train"
     has_multiple_datasets = False
-    query_name = "question"
+    query_name = "title"
     positive_name = "answer"
     metadata = TaskMetadata(
         type="Retrieval",

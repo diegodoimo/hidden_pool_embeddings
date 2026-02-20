@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=28
 #SBATCH --mem=100G       
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:1
+#SBATCH --gres=gpu:H100:2
 ##SBATCH --gres=gpu:A100:2
 
 

@@ -10,7 +10,7 @@ import pandas as pd
 from datasets import Dataset
 
 # Re-export from_one_hf_dataset so task files can import from here if desired.
-from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset  # noqa: F401
+from tasks.retrieval_loaders import from_one_hf_dataset  # noqa: F401
 
 
 def make_nli_preprocessor(label_name="label", entailment_label=0):
