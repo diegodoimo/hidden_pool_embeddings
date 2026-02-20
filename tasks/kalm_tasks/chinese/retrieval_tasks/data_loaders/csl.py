@@ -16,8 +16,6 @@ class CSL(AbsTask):
     positive_name = "text"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a query, retrieve relevant scientific literature"
-        },
+        prompt={"query": "Given a query, retrieve relevant scientific literature"},
     )
     loader = from_one_hf_dataset

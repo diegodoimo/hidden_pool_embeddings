@@ -16,8 +16,6 @@ class WebCPM(AbsTask):
     positive_name = "answer"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a query, retrieve relevant web passages"
-        },
+        prompt={"query": "Given a query, retrieve relevant web passages"},
     )
     loader = from_one_hf_dataset

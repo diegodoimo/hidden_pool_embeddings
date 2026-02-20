@@ -16,8 +16,6 @@ class AdvertiseGen(AbsTask):
     positive_name = "answer"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a query, retrieve relevant advertising content"
-        },
+        prompt={"query": "Given a query, retrieve relevant advertising content"},
     )
     loader = from_one_hf_dataset

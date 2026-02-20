@@ -16,8 +16,6 @@ class MLDR(AbsTask):
     positive_name = "text"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a query, retrieve relevant documents"
-        },
+        prompt={"query": "Given a query, retrieve relevant documents"},
     )
     loader = from_one_hf_dataset

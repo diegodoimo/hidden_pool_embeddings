@@ -16,8 +16,6 @@ class UMETRIPQA(AbsTask):
     positive_name = "answer"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a travel question, retrieve relevant answers"
-        },
+        prompt={"query": "Given a travel question, retrieve relevant answers"},
     )
     loader = from_one_hf_dataset

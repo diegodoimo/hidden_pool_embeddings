@@ -16,8 +16,6 @@ class LawZhidao(AbsTask):
     positive_name = "answer"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a legal question, retrieve relevant legal answers"
-        },
+        prompt={"query": "Given a legal question, retrieve relevant legal answers"},
     )
     loader = from_one_hf_dataset

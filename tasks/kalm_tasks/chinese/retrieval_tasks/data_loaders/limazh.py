@@ -16,8 +16,6 @@ class LIMAZH(AbsTask):
     positive_name = "answer"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a query, retrieve relevant responses"
-        },
+        prompt={"query": "Given a query, retrieve relevant responses"},
     )
     loader = from_one_hf_dataset

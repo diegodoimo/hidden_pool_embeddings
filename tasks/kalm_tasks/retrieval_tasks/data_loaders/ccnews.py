@@ -16,8 +16,6 @@ class CCNews(AbsTask):
     positive_name = "answer"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a query, retrieve relevant news passages"
-        },
+        prompt={"query": "Given a query, retrieve relevant news passages"},
     )
     loader = from_one_hf_dataset

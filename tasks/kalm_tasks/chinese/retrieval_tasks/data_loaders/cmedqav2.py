@@ -16,8 +16,6 @@ class CMedQAV2(AbsTask):
     positive_name = "answer"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a medical question, retrieve relevant medical answers"
-        },
+        prompt={"query": "Given a medical question, retrieve relevant medical answers"},
     )
     loader = from_one_hf_dataset

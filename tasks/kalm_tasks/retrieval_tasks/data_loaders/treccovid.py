@@ -38,7 +38,9 @@ def clear_treccovid_overlap_mteb(
     def is_not_overlapping(example):
         query_norm = normalize_text(example[query_field])
         positive_norm = normalize_text(example[positive_field])
-        return not (query_norm in mteb_query_texts or positive_norm in mteb_corpus_texts)
+        return not (
+            query_norm in mteb_query_texts or positive_norm in mteb_corpus_texts
+        )
 
     return dataset.filter(is_not_overlapping)
 

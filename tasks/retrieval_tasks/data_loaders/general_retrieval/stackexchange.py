@@ -358,6 +358,7 @@ STACKEXCHANGE_SUBJECTS = [
     "writers",
 ]
 
+
 class StackExchangeRetrieval(AbsTask):
     """StackExchange dataset for retrieval - all 174 subjects concatenated.
 

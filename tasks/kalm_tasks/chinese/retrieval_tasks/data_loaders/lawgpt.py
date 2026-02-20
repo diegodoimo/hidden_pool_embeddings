@@ -16,8 +16,6 @@ class LawGPT(AbsTask):
     positive_name = "answer"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a legal question, retrieve relevant legal information"
-        },
+        prompt={"query": "Given a legal question, retrieve relevant legal information"},
     )
     loader = from_one_hf_dataset

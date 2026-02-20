@@ -16,8 +16,6 @@ class MultiCPR(AbsTask):
     positive_name = "product"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a query, retrieve relevant products"
-        },
+        prompt={"query": "Given a query, retrieve relevant products"},
     )
     loader = from_one_hf_dataset

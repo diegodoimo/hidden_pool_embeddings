@@ -16,8 +16,6 @@ class THUCNews(AbsTask):
     positive_name = "text"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a query, retrieve relevant news articles"
-        },
+        prompt={"query": "Given a query, retrieve relevant news articles"},
     )
     loader = from_one_hf_dataset

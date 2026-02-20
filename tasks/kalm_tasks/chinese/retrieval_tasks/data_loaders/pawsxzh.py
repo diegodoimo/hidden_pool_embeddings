@@ -16,8 +16,6 @@ class PAWSXZh(AbsTask):
     positive_name = "sentence2"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a sentence, retrieve paraphrased sentences"
-        },
+        prompt={"query": "Given a sentence, retrieve paraphrased sentences"},
     )
     loader = from_one_hf_dataset

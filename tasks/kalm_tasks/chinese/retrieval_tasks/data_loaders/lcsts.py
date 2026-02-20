@@ -16,8 +16,6 @@ class LCSTS(AbsTask):
     positive_name = "summary"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a text, retrieve its summary"
-        },
+        prompt={"query": "Given a text, retrieve its summary"},
     )
     loader = from_one_hf_dataset

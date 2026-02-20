@@ -16,8 +16,6 @@ class RAGDataset12000(AbsTask):
     positive_name = "answer"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a query, retrieve relevant passages"
-        },
+        prompt={"query": "Given a query, retrieve relevant passages"},
     )
     loader = from_one_hf_dataset

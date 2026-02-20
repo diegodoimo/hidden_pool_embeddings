@@ -16,8 +16,6 @@ class T2Ranking(AbsTask):
     positive_name = "text"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a query, retrieve relevant texts"
-        },
+        prompt={"query": "Given a query, retrieve relevant texts"},
     )
     loader = from_one_hf_dataset

@@ -16,8 +16,6 @@ class WebQA(AbsTask):
     positive_name = "answer"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a web question, retrieve relevant web passages"
-        },
+        prompt={"query": "Given a web question, retrieve relevant web passages"},
     )
     loader = from_one_hf_dataset
