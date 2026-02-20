@@ -32,10 +32,26 @@ def _load_hf_dataset(hf_name, config_name, split, revision=None):
 
     splits = [s.strip() for s in split.split("+")]
     base = f"hf://datasets/{hf_name}@{revision}"
+    # Some HF parquet conversions use a directory layout
+    # (e.g. config/train/0000.parquet) while others use a flat layout
+    # (e.g. config/dataset-train.parquet).  Provide both patterns so that
+    # at least one resolves for every subset.
     if config_name:
-        data_files = {s: f"{base}/{config_name}/{s}/*.parquet" for s in splits}
+        data_files = {
+            s: [
+                f"{base}/{config_name}/{s}/*.parquet",
+                f"{base}/{config_name}/*-{s}.parquet",
+            ]
+            for s in splits
+        }
     else:
-        data_files = {s: f"{base}/{s}/*.parquet" for s in splits}
+        data_files = {
+            s: [
+                f"{base}/{s}/*.parquet",
+                f"{base}/*-{s}.parquet",
+            ]
+            for s in splits
+        }
     return load_dataset("parquet", data_files=data_files, split=split)
 
 
@@ -152,6 +168,15 @@ def from_one_hf_dataset(
     # Keep as pandas Series — no .tolist() needed.
     # Dataset.from_dict() in dict_to_dataset() accepts Series directly,
     # so the round-trip Arrow → list → Arrow is avoided for 20M strings.
+
+    # Drop rows where query or positive text is null (e.g. wikihow)
+    null_mask = df[task.query_name].isna() | df[task.positive_name].isna()
+    if null_mask.any():
+        n_null = null_mask.sum()
+        if rank == 0:
+            print(f"Dropping {n_null} rows with null query or positive text")
+        df = df[~null_mask].reset_index(drop=True)
+
     query_texts = df[task.query_name]
     positive_texts = df[task.positive_name]
     titles = None
@@ -363,8 +388,12 @@ def from_multiple_hf_datasets(
     qrels = _load_hf_dataset(task.hf_name, qrels_subset, task.split, revision=revision)
     # Use the base field name as the split (not the full subset name), because
     # hyphens in split names (e.g. "arabic-queries") are invalid in datasets.
-    querys_ = _load_hf_dataset(task.hf_name, query_subset, task.query_name, revision=revision)
-    corpus = _load_hf_dataset(task.hf_name, corpus_subset, task.positive_name, revision=revision)
+    querys_ = _load_hf_dataset(
+        task.hf_name, query_subset, task.query_name, revision=revision
+    )
+    corpus = _load_hf_dataset(
+        task.hf_name, corpus_subset, task.positive_name, revision=revision
+    )
 
     dist.barrier()
     if rank == 0:
@@ -394,8 +423,15 @@ def from_multiple_hf_datasets(
     # Build queries dict
     queries_dict = get_dict(querys_, task.query_fields["id"], task.query_fields["text"])
 
+    # Drop entries with null text (e.g. wikihow)
+    null_query_ids = [k for k, v in queries_dict.items() if not v.get("text")]
+    for k in null_query_ids:
+        del queries_dict[k]
+
     dist.barrier()
     if rank == 0:
+        if null_query_ids:
+            print(f"Dropped {len(null_query_ids)} queries with null text")
         print(f"Queries processed in {(time.time()-start)/60:.2f} min")
         start = time.time()
         print(f"Processing {len(corpus)} docs...")
@@ -409,8 +445,15 @@ def from_multiple_hf_datasets(
         task.corpus_fields.get("title", None),
     )
 
+    # Drop entries with null text (e.g. wikihow)
+    null_corpus_ids = [k for k, v in corpus_dict.items() if not v.get("text")]
+    for k in null_corpus_ids:
+        del corpus_dict[k]
+
     dist.barrier()
     if rank == 0:
+        if null_corpus_ids:
+            print(f"Dropped {len(null_corpus_ids)} corpus docs with null text")
         print(f"Corpus processed in {(time.time()-start)/60:.2f} min")
         start = time.time()
         print("Processing qrels with vectorized operations...")
