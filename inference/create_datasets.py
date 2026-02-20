@@ -228,7 +228,7 @@ def create_dataset(
     new_ds = dataset.map(input_to_dict, batched=True, batch_size=10000)
 
     if rank == 0:
-        print(f"prompt constructed in {(time.time()-start)/60}min")
+        print(f"prompt constructed in {(time.time()-start)/60:.2f}min")
         start = time.time()
 
     all_removed_long_ids = []
@@ -248,7 +248,7 @@ def create_dataset(
     )
 
     if rank == 0:
-        print(f"dataset filtered in {(time.time()-start)/60}min")
+        print(f"dataset filtered in {(time.time()-start)/60:.2f}min")
     # Store removed IDs as an attribute on the dataset
     new_ds.removed_long = all_removed_long_ids
     new_ds.removed_empty = all_removed_empty_ids

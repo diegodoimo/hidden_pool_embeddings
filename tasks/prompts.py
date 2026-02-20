@@ -66,10 +66,7 @@ QWEN3_PROMPTS = {
     "CMedQAv2": "Given a Chinese community medical question, retrieve replies that best answer the question",
     "Ocnli": "Retrieve semantically similar text.",
     "Cmnli": "Retrieve semantically similar text.",
-    "ArguAna": {
-        "query": "Given a claim, find documents that refute the claim",
-        "passage": "Given a claim, find documents that refute the claim"
-    },
+    "ArguAna": "Given a claim, find documents that refute the claim",
     "ClimateFEVER": "Given a claim about climate change, retrieve documents that support or refute the claim",
     "ClimateFEVERHardNegatives": "Given a claim about climate change, retrieve documents that support or refute the claim",
     "DBPedia": "Given a query, retrieve relevant entity descriptions from DBPedia",
@@ -271,14 +268,8 @@ QWEN3_PROMPTS = {
     "MIRACLRetrievalHardNegatives": "Retrieval relevant passage for the given query",
     "BIOSSES": "Retrieve semantically similar text",
     "CQADupstackRetrieval": "Given a question, retrieve detailed question descriptions from Stackexchange that are duplicates to the given question",
-    "CQADupstackGamingRetrieval": {
-        "query": "Given a question, retrieve detailed question descriptions from Stackexchange that are duplicates to the given question",
-        "passage": "Given a question, retrieve detailed question descriptions from Stackexchange that are duplicates to the given question"
-    },
-    "CQADupstackUnixRetrieval": {
-        "query": "Given a question, retrieve detailed question descriptions from Stackexchange that are duplicates to the given question",
-        "passage": "Given a question, retrieve detailed question descriptions from Stackexchange that are duplicates to the given question"
-    },
+    "CQADupstackGamingRetrieval": "Given a question, retrieve detailed question descriptions from Stackexchange that are duplicates to the given question",
+    "CQADupstackUnixRetrieval": "Given a question, retrieve detailed question descriptions from Stackexchange that are duplicates to the given question",
     "STS16": "Retrieve semantically similar text",
     "SummEval": "Retrieve semantically similar text",
     "ATEC": "Retrieve semantically similar text"

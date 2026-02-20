@@ -107,6 +107,9 @@ def from_one_hf_dataset(
         )
     n_pairs = len(dataset)
 
+    if n_pairs > 10**5:
+        verbose = True
+    
     dist.barrier()
     if rank == 0:
         print(f"Dataset loaded in {(time.time()-start)/60:.2f} min")

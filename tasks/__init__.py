@@ -137,19 +137,19 @@ CLUSTERING_TASKS = [
 # Datasets sorted by total size (unique_queries + unique_documents), shortest first
 # as they appear in dataset_list.txt
 DATASETS_BY_SIZE = [
-    "sts12",  #      2,712
-    "sts22",  #      3,062
-    "scifact",  #      5,992
-    "stsbenchmark",  #      6,420
-    "nfcorpus",  #      6,547
-    "arguana",  #     28,728
-    "fiqa2018",  #     63,638
-    "squad",  #    118,846
-    "triviaqa",  #    137,483
-    "anli",  #    164,019
-    "qqp",  #    172,242
-    "naturalquestions",  #    175,446
-    "miracl",  #    227,090
+    # "sts12",  #      2,712
+    # "sts22",  #      3,062
+    # "scifact",  #      5,992
+    # "stsbenchmark",  #      6,420
+    # "nfcorpus",  #      6,547
+    # "arguana",  #     28,728
+    # "fiqa2018",  #     63,638
+    # "squad",  #    118,846
+    # "triviaqa",  #    137,483
+    # "anli",  #    164,019
+    # "qqp",  #    172,242
+    # "naturalquestions",  #    175,446
+    #"miracl",  #    227,090  NOT DONE
     "specter",  #    241,084
     "sentence_compression",  #    356,409
     "stackoverflow_dup",  #    373,863
