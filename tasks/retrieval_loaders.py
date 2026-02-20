@@ -419,6 +419,7 @@ def from_multiple_hf_datasets(
         if rank == 0:
             print(f"Decontamination done in {(time.time()-decon_start)/60:.2f} min")
             print(f"num elements in qrels after decontamination: {len(qrels)//10**3}k")
+            start = time.time()
 
     # Build queries dict
     queries_dict = get_dict(querys_, task.query_fields["id"], task.query_fields["text"])
