@@ -13,7 +13,7 @@ class STSBenchmark(AbsTask):
     language = "en"
 
     hf_name = "mteb/stsbenchmark-sts"
-    split = "train"  # Use train to avoid MTEB test contamination
+    split = "train+validation"
     has_multiple_datasets = False
     query_name = "sentence1"
     positive_name = "sentence2"

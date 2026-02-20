@@ -2,7 +2,7 @@ from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
 from tasks.clustering_tasks.clustering_loaders import (
     load_clustering_sampling,
-    load_clustering_hard_negatives
+    load_clustering_hard_negatives,
 )
 
 
@@ -12,13 +12,12 @@ class RedditClusteringP2P(AbsTask):
     split = "train"
     query_name = "body"
     title_name = "title"
-    label_name = "subreddit"
+    label = "subreddit"
     metadata = TaskMetadata(
         type="Clustering", prompt={"query": TASK_PROMPTS["RedditClusteringP2P"]}
     )
 
-
-# ===== CLASSIFICATION TASKS =====
+    # ===== CLASSIFICATION TASKS =====
     # Use sampling strategy by default
     use_hard_negative_mining = False
 
@@ -33,4 +32,3 @@ class RedditClusteringP2P(AbsTask):
     def validate_config(cls) -> None:
         """Validate task configuration."""
         pass
-

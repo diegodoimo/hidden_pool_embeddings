@@ -8,7 +8,7 @@ class XSum(AbsTask):
     language = "en"
 
     hf_name = "EdinburghNLP/xsum"
-    split = "train"
+    split = "train+validation"
     has_multiple_datasets = False
     query_name = "summary"
     positive_name = "document"

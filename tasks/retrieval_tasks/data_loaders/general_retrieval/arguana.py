@@ -57,6 +57,7 @@ class Arguana(AbsTask):
     has_multiple_datasets = False
     query_name = "query"
     positive_name = "text"
+    corpus_fields = {"title": "title"}
     metadata = TaskMetadata(type="Retrieval", prompt={"query": TASK_PROMPTS["ArguAna"]})
     loader = from_one_hf_dataset
     decontaminator = clear_arguana_overlap_mteb

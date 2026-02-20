@@ -9,7 +9,7 @@ class CNNDM(AbsTask):
 
     hf_name = "abisee/cnn_dailymail"
     hf_subset = "3.0.0"
-    split = "train"
+    split = "train+validation"
     has_multiple_datasets = False
     query_name = "highlights"
     positive_name = "article"

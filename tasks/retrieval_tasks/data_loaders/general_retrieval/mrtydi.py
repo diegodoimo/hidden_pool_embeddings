@@ -75,7 +75,7 @@ class MrTyDi(AbsTask):
 
     hf_name = "castorini/mr-tydi"
     hf_subset = None
-    split = "train"
+    split = "train+dev"
     has_multiple_datasets = False
     query_name = "query"
     positive_name = "positive_passages"

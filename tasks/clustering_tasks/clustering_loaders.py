@@ -1,190 +1,313 @@
 """
-Clustering-specific loader functions.
-These loaders handle text clustering tasks.
+Shared loader functions for clustering tasks.
+
+Clustering datasets are structurally identical to multi-way classification
+datasets: each sample has a text and a cluster/group label.  The loaders
+below follow the same pattern as the classification loaders.
+
+  * **Sampling** (``load_clustering_sampling``):
+    Returns ``ClassificationRawData`` – the training loop can build
+    (anchor, positive, negative) tuples on-the-fly using the labels.
+
+  * **Hard-negative mining** (``load_clustering_hard_negatives``):
+    Returns ``RetrievalRawData`` with the full retrieval-style structure.
+    Positive pairs connect texts that belong to the same cluster; the
+    ``corpus_dict`` entries carry a ``"label"`` key so the miner can
+    restrict negative candidates to texts from **different** clusters.
+
+These loaders also support an optional ``title_name`` attribute (used by
+P2P clustering variants such as ArxivClusteringP2P, BiorxivClusteringP2P,
+etc.).  When a title is available it is stored alongside the text in
+``corpus_dict`` and ``document_titles``.
 """
 
+import datasets as _datasets
 from datasets import load_dataset
-from typing import List, Optional
-import random
-from collections import defaultdict
-
+import time
+import torch.distributed as dist
+import pandas as pd
+import numpy as np
 from tasks.data_helpers import RetrievalRawData, ClassificationRawData
+from utils.helpers import return_formatted
+
+_datasets.config.HF_DATASETS_TIMEOUT = 120
 
 
-def load_clustering_standard(task, rank=0):
+# ---------------------------------------------------------------------------
+#  Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_label_col(task):
+    """Return the dataset column name that holds the label.
+
+    Clustering tasks commonly use ``task.label`` (e.g. ``"category"``),
+    but ``RedditClusteringP2P`` uses ``task.label_name``.  Fall back to
+    ``"label"`` if neither attribute is set.
     """
-    Standard loader for clustering tasks (legacy - simple format).
-    Loads data from a single HuggingFace dataset with texts and labels.
+    col = getattr(task, "label_name", None) or getattr(task, "label", None) or "label"
+    return col
 
-    Returns ClassificationRawData format.
-    Used by tasks that still need simple clustering format.
+
+def _load_and_prepare(task, rank=None):
+    """Load the HF dataset and return a tidy DataFrame.
+
+    Returns
+    -------
+    df : pd.DataFrame
+        Columns: ``text``, ``label`` (original), ``label_id`` (int).
+        Optionally ``title`` if the task defines ``title_name``.
+    label_encoder : dict
+        Mapping ``original_label_value → int``.
+    rank : int
     """
-    # Get label field name - could be "label", "label_name", or other custom field
-    label_field = getattr(task, "label_name", None) or getattr(task, "label", "label")
-
-    dataset = load_dataset(task.hf_name, name=task.hf_subset, split=task.split)
-
-    texts = list(dataset[task.query_name])
-    labels = list(dataset[label_field])
-    ids = [f"doc_{i}" for i in range(len(texts))]
+    rank = dist.get_rank() if rank is None else rank
 
     if rank == 0:
-        print(f"Loaded {len(texts)} samples for {task.metadata.type} task")
+        start = time.time()
+        print("Loading dataset...")
 
-    return ClassificationRawData(texts=texts, labels=labels, ids=ids)
+    trust_remote_code = getattr(task, "trust_remote_code", False)
+    hf_subset = getattr(task, "hf_subset", None)
 
-
-def load_clustering_sampling(task, rank=0, num_hard_negatives=24):
-    """
-    Load clustering datasets with in-batch sampling strategy.
-
-    For each query:
-    - A random sample from the same cluster is used as its positive passage
-    - num_hard_negatives samples from other clusters are selected as hard negatives
-
-    Args:
-        task: Task object with standard attributes
-        rank: Process rank for logging
-        num_hard_negatives: Number of hard negatives from other clusters (default: 24)
-
-    Returns:
-        RetrievalRawData with sampled positives and negatives in corpus
-
-    Used by: Clustering tasks
-    """
-    # Load dataset
-    if hasattr(task, "hf_subset") and task.hf_subset:
-        dataset = load_dataset(task.hf_name, name=task.hf_subset, split=task.split)
+    if hf_subset:
+        dataset = load_dataset(
+            task.hf_name,
+            name=hf_subset,
+            split=task.split,
+            trust_remote_code=trust_remote_code,
+        )
     else:
-        dataset = load_dataset(task.hf_name, split=task.split)
+        dataset = load_dataset(
+            task.hf_name,
+            split=task.split,
+            trust_remote_code=trust_remote_code,
+        )
 
-    # Get label field name (clusters are represented as labels)
-    label_field = getattr(task, "label_name", None) or getattr(task, "label", "label")
+    label_col = _get_label_col(task)
+    text_col = task.query_name
+    title_col = getattr(task, "title_name", None)
 
-    # Group texts by cluster/label
-    cluster_to_texts = defaultdict(list)
-    all_texts = []
-    all_clusters = []
+    cols = [text_col, label_col]
+    if title_col and title_col in dataset.column_names:
+        cols.append(title_col)
+    else:
+        title_col = None
 
-    for row in dataset:
-        text = row[task.query_name]
-        cluster = row[label_field]
-        all_texts.append(text)
-        all_clusters.append(cluster)
-        cluster_to_texts[cluster].append(text)
+    df = dataset.select_columns(cols).to_pandas()
+    df.rename(columns={text_col: "text", label_col: "label"}, inplace=True)
+    if title_col:
+        df.rename(columns={title_col: "title"}, inplace=True)
 
-    # Get all unique clusters
-    unique_clusters = sorted(cluster_to_texts.keys())
+    # Drop rows with missing text / label
+    df.dropna(subset=["text", "label"], inplace=True)
+    df.reset_index(drop=True, inplace=True)
+
+    # Encode labels to consecutive integers
+    unique_labels = sorted(df["label"].unique(), key=str)
+    label_encoder = {lbl: idx for idx, lbl in enumerate(unique_labels)}
+    df["label_id"] = df["label"].map(label_encoder).astype(int)
+
+    dist.barrier()
+    if rank == 0:
+        print(f"Dataset loaded in {(time.time()-start)/60:.2f} min")
+        print(
+            f"  {return_formatted(len(df))} samples, "
+            f"{len(unique_labels)} unique clusters/labels"
+        )
+
+    return df, label_encoder, rank
+
+
+def _build_positive_pairs(df, max_num_queries=10**6, rank=0):
+    """For every row, pick one same-label partner as a positive.
+
+    Returns arrays of *indices* into ``df`` (query_idx, positive_idx).
+    At most ``max_num_queries`` pairs are returned.
+    """
+    rng = np.random.default_rng(42)
+
+    groups = df.groupby("label_id").apply(
+        lambda g: g.index.values, include_groups=False
+    )
+
+    query_indices = []
+    positive_indices = []
+
+    for label_id, members in groups.items():
+        if len(members) < 2:
+            continue  # Skip clusters with a single element
+        for idx in members:
+            partner = idx
+            while partner == idx:
+                partner = rng.choice(members)
+            query_indices.append(idx)
+            positive_indices.append(partner)
+
+    query_indices = np.array(query_indices)
+    positive_indices = np.array(positive_indices)
+
+    if max_num_queries is not None and len(query_indices) > max_num_queries:
+        if rank == 0:
+            print(
+                f"Limiting pairs from {return_formatted(len(query_indices))} "
+                f"to {return_formatted(max_num_queries)}"
+            )
+        sel = rng.choice(len(query_indices), size=max_num_queries, replace=False)
+        sel.sort()
+        query_indices = query_indices[sel]
+        positive_indices = positive_indices[sel]
+
+    return query_indices, positive_indices
+
+
+# ---------------------------------------------------------------------------
+#  Public loaders
+# ---------------------------------------------------------------------------
+
+
+def load_clustering_sampling(task, rank=None, **kwargs) -> ClassificationRawData:
+    """Return texts + integer labels for on-the-fly contrastive sampling.
+
+    The training loop should use the labels to build (anchor, positive,
+    negative) tuples where positives share the label and negatives do not.
+    """
+    df, label_encoder, rank = _load_and_prepare(task, rank)
+
+    has_title = "title" in df.columns
+    texts = df["text"].tolist()
+    if has_title:
+        titles = df["title"].tolist()
+        texts = [
+            f"{title}. {text}" if title else text for title, text in zip(titles, texts)
+        ]
+
+    ids = [f"text_{i}" for i in range(len(df))]
 
     if rank == 0:
-        print(f"Found {len(unique_clusters)} clusters in clustering task")
-        for cluster in unique_clusters:
-            print(f"  Cluster {cluster}: {len(cluster_to_texts[cluster])} samples")
+        print(
+            f"ClassificationRawData ready: {return_formatted(len(texts))} texts, "
+            f"{len(label_encoder)} clusters"
+        )
 
-    # Build query-positive pairs
-    query_texts = []
-    query_ids = []
-    positive_texts = []
-    positive_ids = []
+    return ClassificationRawData(
+        texts=texts,
+        labels=df["label_id"].tolist(),
+        ids=ids,
+    )
 
-    # Create text-to-id mapping for corpus
-    text_to_id = {}
-    for idx, text in enumerate(all_texts):
-        if text not in text_to_id:
-            text_to_id[text] = f"doc_{len(text_to_id)}"
 
-    # Create unique query mapping
-    unique_query_texts = []
-    unique_query_ids = []
-    text_to_query_id = {}
+def load_clustering_hard_negatives(
+    task, max_num_queries=10**6, rank=None, **kwargs
+) -> RetrievalRawData:
+    """Produce ``RetrievalRawData`` for the hard-negative mining pipeline.
 
-    # For each text, create a query-positive pair
-    for text, cluster in zip(all_texts, all_clusters):
-        # Get texts with same cluster
-        same_cluster_texts = [t for t in cluster_to_texts[cluster] if t != text]
+    * Every unique text becomes both a *query* and a *document*.
+    * Positive pairs connect two texts that belong to the **same cluster**.
+    * ``corpus_dict`` entries carry a ``"label"`` key so the miner can
+      restrict negative candidates to texts from a **different** cluster.
+    * Titles (if present) are stored in ``document_titles`` and
+      ``corpus_dict`` entries for P2P clustering variants.
 
-        # If there are other texts in same cluster, pick one as positive
-        # Otherwise, use the text itself as positive
-        if same_cluster_texts:
-            positive_text = random.choice(same_cluster_texts)
-        else:
-            positive_text = text
+    The resulting structure is intentionally identical to what retrieval
+    loaders return, so ``HardNegativesMiner`` works unchanged.
+    """
+    df, label_encoder, rank = _load_and_prepare(task, rank)
 
-        # Create unique query ID
-        if text not in text_to_query_id:
-            query_id = f"query_{len(unique_query_ids)}"
-            text_to_query_id[text] = query_id
-            unique_query_ids.append(query_id)
-            unique_query_texts.append(text)
-        else:
-            query_id = text_to_query_id[text]
+    if rank == 0:
+        start = time.time()
+        print("Building positive pairs & corpus...")
 
-        query_texts.append(text)
-        query_ids.append(query_id)
-        positive_texts.append(positive_text)
-        positive_ids.append(text_to_id[positive_text])
+    has_title = "title" in df.columns
 
-    # Build corpus: includes all texts
-    # During hard negative mining, the system will select hard negatives from other clusters
-    document_texts = list(text_to_id.keys())
-    document_ids = list(text_to_id.values())
+    # --- Deduplicate texts ---------------------------------------------------
+    if has_title:
+        dedup_key = df["text"] + " ||| " + df["title"]
+    else:
+        dedup_key = df["text"]
 
-    corpus_dict = {
-        doc_id: {"text": doc_text}
-        for doc_id, doc_text in zip(document_ids, document_texts)
+    first_mask = ~dedup_key.duplicated(keep="first")
+    first_idx = first_mask[first_mask].index.values
+
+    unique_ids = [f"text_{i}" for i in first_idx]
+    unique_texts = df["text"].iloc[first_idx].reset_index(drop=True)
+    unique_labels = df["label_id"].iloc[first_idx].reset_index(drop=True)
+    unique_titles = (
+        df["title"].iloc[first_idx].reset_index(drop=True) if has_title else None
+    )
+
+    n_unique = len(unique_ids)
+    if rank == 0:
+        print(
+            f"  {return_formatted(n_unique)} unique texts "
+            f"(from {return_formatted(len(df))} rows)"
+        )
+
+    # --- Build positive pairs ------------------------------------------------
+    dedup_df = df.iloc[first_idx].reset_index(drop=True)
+    query_idx, positive_idx = _build_positive_pairs(
+        dedup_df,
+        max_num_queries=max_num_queries,
+        rank=rank,
+    )
+
+    query_ids = [unique_ids[i] for i in query_idx]
+    positive_ids = [unique_ids[i] for i in positive_idx]
+
+    if rank == 0:
+        print(f"  {return_formatted(len(query_ids))} query→positive pairs")
+
+    # --- Unique queries ------------------------------------------------------
+    unique_query_mask = np.zeros(n_unique, dtype=bool)
+    unique_query_mask[query_idx] = True
+    unique_query_ids = [unique_ids[i] for i in np.nonzero(unique_query_mask)[0]]
+    unique_query_texts = unique_texts.iloc[np.nonzero(unique_query_mask)[0]].tolist()
+
+    # --- Corpus (all unique texts) -------------------------------------------
+    document_ids = unique_ids
+    document_texts = unique_texts.tolist()
+    document_titles = unique_titles.tolist() if has_title else None
+
+    referenced_positive_set = set(positive_ids)
+    n_positives = len(referenced_positive_set)
+
+    # --- corpus_dict with label info -----------------------------------------
+    if has_title:
+        corpus_dict = {
+            uid: {"text": txt, "title": ttl, "label": int(lbl)}
+            for uid, txt, ttl, lbl in zip(
+                unique_ids, document_texts, document_titles, unique_labels
+            )
+        }
+    else:
+        corpus_dict = {
+            uid: {"text": txt, "label": int(lbl)}
+            for uid, txt, lbl in zip(unique_ids, document_texts, unique_labels)
+        }
+
+    query_dict = {
+        uid: {"text": corpus_dict[uid]["text"], "label": corpus_dict[uid]["label"]}
+        for uid in unique_query_ids
     }
 
-    # Build unique positives
-    unique_positive_texts = []
-    unique_positive_ids = []
-    seen_positive_ids = set()
-
-    for pos_id in positive_ids:
-        if pos_id not in seen_positive_ids:
-            seen_positive_ids.add(pos_id)
-            unique_positive_ids.append(pos_id)
-            unique_positive_texts.append(corpus_dict[pos_id]["text"])
-
+    dist.barrier()
     if rank == 0:
-        print(f"Loaded {len(query_ids)} query-positive pairs for clustering")
-        print(f"Corpus size: {len(document_texts)} unique texts")
-        print(f"Hard negatives will be mined from corpus during training")
+        print(f"Corpus & pairs built in {(time.time()-start)/60:.2f} min")
+        print(f"  {return_formatted(len(unique_query_ids))} unique queries")
+        print(f"  {return_formatted(len(document_ids))} documents in corpus")
+        print(f"  {return_formatted(n_positives)} documents referenced as positives")
+        print(f"  {len(label_encoder)} unique clusters")
 
     return RetrievalRawData(
         query_ids=query_ids,
         positive_ids=positive_ids,
-        positive_titles=None,
         document_texts=document_texts,
         document_ids=document_ids,
-        document_titles=None,
+        document_titles=document_titles,
         unique_query_texts=unique_query_texts,
         unique_query_ids=unique_query_ids,
-        unique_positive_texts=unique_positive_texts,
-        unique_positive_ids=unique_positive_ids,
-        unique_positive_titles=None,
         corpus_dict=corpus_dict,
-        has_title=False,
-        documents_are_positives=False,
+        query_dict=query_dict,
+        has_title=has_title,
+        n_positives=n_positives,
     )
-
-
-def load_clustering_hard_negatives(task, rank=0):
-    """
-    Load clustering datasets for hard negative mining.
-
-    Similar to retrieval tasks, this loader creates a corpus of all texts,
-    allowing for hard negative mining. Each text is a query, and texts in
-    the same cluster are treated as positives for each other.
-
-    This is an alias for the sampling version since they both support hard negative mining.
-
-    Args:
-        task: Task object with standard attributes
-        rank: Process rank for logging
-
-    Returns:
-        RetrievalRawData with all texts as corpus for mining
-
-    Used by: Clustering tasks when use_hard_negative_mining=True
-    """
-    return load_clustering_sampling(task, rank=rank)

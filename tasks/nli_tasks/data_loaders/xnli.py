@@ -33,7 +33,7 @@ class XNLI(AbsTask):
 
     hf_name = "mteb/xnli"
     hf_subset = None
-    split = "train"
+    split = "train+validation"
     has_multiple_datasets = False
     query_name = "premise"
     positive_name = "hypothesis"

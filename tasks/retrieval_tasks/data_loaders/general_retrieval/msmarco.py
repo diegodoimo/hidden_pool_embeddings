@@ -8,7 +8,7 @@ class MSMARCO(AbsTask):
 
     language = "en"
     hf_name = "mteb/msmarco"
-    split = "train"
+    split = "train+dev"
     has_multiple_datasets = True
     eval_split = "dev"  # MTEB evaluates on dev split
     query_name = "queries"

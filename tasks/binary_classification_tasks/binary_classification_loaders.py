@@ -1,242 +1,259 @@
 """
-Binary classification-specific loader functions.
-These loaders handle binary text classification tasks.
+Shared loader functions for binary classification tasks.
+
+Binary classification datasets have exactly two labels (0 and 1).  The loaders
+here mirror the multi-way classification ones but add a convenience:
+``label_texts`` (defined on each task) can optionally be prepended to the text
+to enrich the training signal.
+
+  * **Label-based / sampling** (``load_binary_classification_label_based``):
+    Returns ``ClassificationRawData`` for on-the-fly contrastive pair creation.
+
+  * **Hard-negative mining** (``load_binary_classification_hard_negatives``):
+    Returns ``RetrievalRawData`` using the same conventions as retrieval
+    loaders.  Positive pairs link texts that share the same binary label;
+    ``corpus_dict`` entries carry a ``"label"`` key so the miner can
+    restrict negative candidates to texts with the **opposite** label.
 """
 
+import datasets as _datasets
 from datasets import load_dataset
-from typing import List, Optional, Dict
-import random
-from collections import defaultdict
-
+import time
+import torch.distributed as dist
+import pandas as pd
+import numpy as np
 from tasks.data_helpers import RetrievalRawData, ClassificationRawData
+from utils.helpers import return_formatted
+
+_datasets.config.HF_DATASETS_TIMEOUT = 120
 
 
-def load_binary_classification_label_based(task, rank=0):
+# ---------------------------------------------------------------------------
+#  Internal helpers (reuse the classification pattern)
+# ---------------------------------------------------------------------------
+
+
+def _load_and_prepare(task, rank=None):
+    """Load the HF dataset and return a pandas DataFrame with
+    ``text``, ``label`` (int 0/1) columns.
+
+    Returns
+    -------
+    df : pd.DataFrame
+        Columns: ``text``, ``label`` (int, 0 or 1).
+    rank : int
     """
-    Load binary classification datasets using label text as positives/negatives.
-
-    For binary classification, each input is treated as a query, its label text
-    (e.g., "toxic") as the positive passage, and the other class's label text
-    (e.g., "not toxic") as one hard negative.
-
-    Args:
-        task: Task object with attributes:
-            - hf_name: HuggingFace dataset name
-            - hf_subset: Optional subset name
-            - split: Dataset split
-            - query_name: Text field name
-            - label: Label field name
-            - label_texts: Dict mapping label values to text (e.g., {0: "negative", 1: "positive"})
-
-    Returns:
-        RetrievalRawData with label texts as corpus
-
-    Used by: Binary classification tasks when use_label_based=True
-    """
-    # Load dataset
-    if hasattr(task, "hf_subset") and task.hf_subset:
-        dataset = load_dataset(task.hf_name, name=task.hf_subset, split=task.split)
-    else:
-        dataset = load_dataset(task.hf_name, split=task.split)
-
-    # Get label field name
-    label_field = getattr(task, "label_name", None) or getattr(task, "label", "label")
-
-    # Get label texts
-    if not hasattr(task, "label_texts"):
-        raise ValueError(
-            f"Task {task.__class__.__name__} must define 'label_texts' dict for label-based loading"
-        )
-
-    label_texts = task.label_texts
-
-    # Build query-positive pairs
-    query_ids = []
-    positive_ids = []
-
-    # Create unique query mapping
-    unique_query_texts = []
-    unique_query_ids = []
-    text_to_query_id = {}
-
-    for idx, row in enumerate(dataset):
-        text = row[task.query_name]
-        label = row[label_field]
-
-        # Get label text
-        if label not in label_texts:
-            if rank == 0:
-                print(f"Warning: Label {label} not in label_texts, skipping")
-            continue
-
-        positive_text = label_texts[label]
-
-        # Create unique query ID if not seen
-        if text not in text_to_query_id:
-            query_id = f"query_{len(unique_query_ids)}"
-            text_to_query_id[text] = query_id
-            unique_query_ids.append(query_id)
-            unique_query_texts.append(text)
-        else:
-            query_id = text_to_query_id[text]
-
-        query_ids.append(query_id)
-        positive_ids.append(f"label_{label}")
-
-    # Build corpus: all label texts
-    document_texts = list(label_texts.values())
-    document_ids = [f"label_{label}" for label in label_texts.keys()]
-
-    corpus_dict = {
-        doc_id: {"text": doc_text}
-        for doc_id, doc_text in zip(document_ids, document_texts)
-    }
-
-    # Build unique positives (all label texts)
-    unique_positive_texts = list(label_texts.values())
-    unique_positive_ids = [f"label_{label}" for label in label_texts.keys()]
+    rank = dist.get_rank() if rank is None else rank
 
     if rank == 0:
-        print(f"Loaded {len(query_ids)} query-positive pairs for binary classification")
-        print(f"Label texts: {label_texts}")
+        start = time.time()
+        print("Loading dataset...")
 
-    return RetrievalRawData(
-        query_ids=query_ids,
-        positive_ids=positive_ids,
-        positive_titles=None,
-        document_texts=document_texts,
-        document_ids=document_ids,
-        document_titles=None,
-        unique_query_texts=unique_query_texts,
-        unique_query_ids=unique_query_ids,
-        unique_positive_texts=unique_positive_texts,
-        unique_positive_ids=unique_positive_ids,
-        unique_positive_titles=None,
-        corpus_dict=corpus_dict,
-        has_title=False,
-        documents_are_positives=False,
-    )
+    trust_remote_code = getattr(task, "trust_remote_code", False)
+    hf_subset = getattr(task, "hf_subset", None)
 
-
-def load_binary_classification_hard_negatives(task, rank=0):
-    """
-    Load binary classification datasets for hard negative mining.
-
-    Similar to retrieval tasks, this loader creates a corpus of all texts,
-    allowing for hard negative mining. Each text is a query, and texts with
-    the same label are treated as positives for each other.
-
-    Args:
-        task: Task object with standard attributes
-
-    Returns:
-        RetrievalRawData with all texts as corpus for mining
-
-    Used by: Binary classification tasks when use_hard_negative_mining=True
-    """
-    # Load dataset
-    if hasattr(task, "hf_subset") and task.hf_subset:
-        dataset = load_dataset(task.hf_name, name=task.hf_subset, split=task.split)
+    if hf_subset:
+        dataset = load_dataset(
+            task.hf_name,
+            name=hf_subset,
+            split=task.split,
+            trust_remote_code=trust_remote_code,
+        )
     else:
-        dataset = load_dataset(task.hf_name, split=task.split)
+        dataset = load_dataset(
+            task.hf_name,
+            split=task.split,
+            trust_remote_code=trust_remote_code,
+        )
 
-    # Get label field name
-    label_field = getattr(task, "label_name", None) or getattr(task, "label", "label")
+    label_col = getattr(task, "label", "label")
+    text_col = task.query_name
 
-    # Group texts by label
-    label_to_texts = defaultdict(list)
-    all_texts = []
-    all_labels = []
+    df = dataset.select_columns([text_col, label_col]).to_pandas()
+    df.rename(columns={text_col: "text", label_col: "label"}, inplace=True)
 
-    for row in dataset:
-        text = row[task.query_name]
-        label = row[label_field]
-        all_texts.append(text)
-        all_labels.append(label)
-        label_to_texts[label].append(text)
+    # Ensure binary labels
+    df.dropna(subset=["text", "label"], inplace=True)
+    df["label"] = df["label"].astype(int)
+    df.reset_index(drop=True, inplace=True)
 
-    # Build query-positive pairs
-    # For each text, select a random text with the same label as positive
-    query_texts = []
-    query_ids = []
-    positive_texts = []
-    positive_ids = []
+    assert (
+        df["label"].isin([0, 1]).all()
+    ), f"Expected binary labels (0/1), got unique values: {df['label'].unique()}"
 
-    # Create text-to-id mapping for corpus
-    text_to_id = {}
-    for idx, text in enumerate(all_texts):
-        if text not in text_to_id:
-            text_to_id[text] = f"doc_{len(text_to_id)}"
+    dist.barrier()
+    if rank == 0:
+        print(f"Dataset loaded in {(time.time()-start)/60:.2f} min")
+        n0 = (df["label"] == 0).sum()
+        n1 = (df["label"] == 1).sum()
+        print(
+            f"  {return_formatted(len(df))} samples  "
+            f"(label-0: {return_formatted(n0)}, label-1: {return_formatted(n1)})"
+        )
 
-    # Create unique query mapping
-    unique_query_texts = []
-    unique_query_ids = []
-    text_to_query_id = {}
+    return df, rank
 
-    for idx, (text, label) in enumerate(zip(all_texts, all_labels)):
-        # Get texts with same label
-        same_label_texts = [t for t in label_to_texts[label] if t != text]
 
-        # If there are other texts with same label, pick one as positive
-        # Otherwise, use the text itself as positive
-        if same_label_texts:
-            positive_text = random.choice(same_label_texts)
-        else:
-            positive_text = text
+def _build_positive_pairs(df, max_num_queries=10**6, rank=0):
+    """For every row, pick one same-label partner as a positive.
 
-        # Create unique query ID
-        if text not in text_to_query_id:
-            query_id = f"query_{len(unique_query_ids)}"
-            text_to_query_id[text] = query_id
-            unique_query_ids.append(query_id)
-            unique_query_texts.append(text)
-        else:
-            query_id = text_to_query_id[text]
+    Returns arrays of *indices* into ``df`` (query_idx, positive_idx).
+    At most ``max_num_queries`` pairs are returned.
+    """
+    rng = np.random.default_rng(42)
 
-        query_texts.append(text)
-        query_ids.append(query_id)
-        positive_texts.append(positive_text)
-        positive_ids.append(text_to_id[positive_text])
+    groups = {lbl: df.index[df["label"] == lbl].values for lbl in [0, 1]}
 
-    # Build corpus: all unique texts
-    document_texts = list(text_to_id.keys())
-    document_ids = list(text_to_id.values())
+    query_indices = []
+    positive_indices = []
 
-    corpus_dict = {
-        doc_id: {"text": doc_text}
-        for doc_id, doc_text in zip(document_ids, document_texts)
-    }
+    for lbl, members in groups.items():
+        if len(members) < 2:
+            continue
+        for idx in members:
+            partner = idx
+            while partner == idx:
+                partner = rng.choice(members)
+            query_indices.append(idx)
+            positive_indices.append(partner)
 
-    # Build unique positives
-    unique_positive_texts = []
-    unique_positive_ids = []
-    seen_positive_ids = set()
+    query_indices = np.array(query_indices)
+    positive_indices = np.array(positive_indices)
 
-    for pos_id in positive_ids:
-        if pos_id not in seen_positive_ids:
-            seen_positive_ids.add(pos_id)
-            unique_positive_ids.append(pos_id)
-            unique_positive_texts.append(corpus_dict[pos_id]["text"])
+    if max_num_queries is not None and len(query_indices) > max_num_queries:
+        if rank == 0:
+            print(
+                f"Limiting pairs from {return_formatted(len(query_indices))} "
+                f"to {return_formatted(max_num_queries)}"
+            )
+        sel = rng.choice(len(query_indices), size=max_num_queries, replace=False)
+        sel.sort()
+        query_indices = query_indices[sel]
+        positive_indices = positive_indices[sel]
+
+    return query_indices, positive_indices
+
+
+# ---------------------------------------------------------------------------
+#  Public loaders
+# ---------------------------------------------------------------------------
+
+
+def load_binary_classification_label_based(
+    task, rank=None, **kwargs
+) -> ClassificationRawData:
+    """Return texts + binary labels for on-the-fly contrastive sampling.
+
+    The training loop is expected to create (anchor, positive, negative)
+    tuples itself, using the labels to guarantee that negatives have the
+    *opposite* label.
+    """
+    df, rank = _load_and_prepare(task, rank)
+
+    ids = [f"text_{i}" for i in range(len(df))]
 
     if rank == 0:
         print(
-            f"Loaded {len(query_ids)} query-positive pairs for binary classification with hard negative mining"
+            f"ClassificationRawData ready: {return_formatted(len(df))} texts, "
+            f"2 labels (binary)"
         )
-        print(f"Corpus size: {len(document_texts)} unique texts")
+
+    return ClassificationRawData(
+        texts=df["text"].tolist(),
+        labels=df["label"].tolist(),
+        ids=ids,
+    )
+
+
+def load_binary_classification_hard_negatives(
+    task, max_num_queries=10**6, rank=None, **kwargs
+) -> RetrievalRawData:
+    """Produce ``RetrievalRawData`` for the hard-negative mining pipeline.
+
+    * Every unique text becomes both a *query* and a *document*.
+    * Positive pairs connect two texts that share the same binary label.
+    * ``corpus_dict`` entries carry a ``"label"`` key (0 or 1) so the
+      miner can restrict negative candidates to texts with the
+      **opposite** label.
+    """
+    df, rank = _load_and_prepare(task, rank)
+
+    if rank == 0:
+        start = time.time()
+        print("Building positive pairs & corpus...")
+
+    # --- Deduplicate texts ---------------------------------------------------
+    first_mask = ~df["text"].duplicated(keep="first")
+    first_idx = first_mask[first_mask].index.values
+
+    unique_ids = [f"text_{i}" for i in first_idx]
+    unique_texts = df["text"].iloc[first_idx].reset_index(drop=True)
+    unique_labels = df["label"].iloc[first_idx].reset_index(drop=True)
+
+    n_unique = len(unique_ids)
+    if rank == 0:
+        print(
+            f"  {return_formatted(n_unique)} unique texts "
+            f"(from {return_formatted(len(df))} rows)"
+        )
+
+    # --- Build positive pairs ------------------------------------------------
+    dedup_df = df.iloc[first_idx].reset_index(drop=True)
+    query_idx, positive_idx = _build_positive_pairs(
+        dedup_df,
+        max_num_queries=max_num_queries,
+        rank=rank,
+    )
+
+    query_ids = [unique_ids[i] for i in query_idx]
+    positive_ids = [unique_ids[i] for i in positive_idx]
+
+    if rank == 0:
+        print(f"  {return_formatted(len(query_ids))} query→positive pairs")
+
+    # --- Unique queries ------------------------------------------------------
+    unique_query_mask = np.zeros(n_unique, dtype=bool)
+    unique_query_mask[query_idx] = True
+    unique_query_ids = [unique_ids[i] for i in np.nonzero(unique_query_mask)[0]]
+    unique_query_texts = unique_texts.iloc[np.nonzero(unique_query_mask)[0]].tolist()
+
+    # --- Corpus (all unique texts) -------------------------------------------
+    document_ids = unique_ids
+    document_texts = unique_texts.tolist()
+    document_titles = None
+    has_title = False
+
+    referenced_positive_set = set(positive_ids)
+    n_positives = len(referenced_positive_set)
+
+    # --- corpus_dict with label info -----------------------------------------
+    corpus_dict = {
+        uid: {"text": txt, "label": int(lbl)}
+        for uid, txt, lbl in zip(unique_ids, document_texts, unique_labels)
+    }
+
+    query_dict = {
+        uid: {"text": corpus_dict[uid]["text"], "label": corpus_dict[uid]["label"]}
+        for uid in unique_query_ids
+    }
+
+    dist.barrier()
+    if rank == 0:
+        print(f"Corpus & pairs built in {(time.time()-start)/60:.2f} min")
+        print(f"  {return_formatted(len(unique_query_ids))} unique queries")
+        print(f"  {return_formatted(len(document_ids))} documents in corpus")
+        print(f"  {return_formatted(n_positives)} documents referenced as positives")
 
     return RetrievalRawData(
         query_ids=query_ids,
         positive_ids=positive_ids,
-        positive_titles=None,
         document_texts=document_texts,
         document_ids=document_ids,
-        document_titles=None,
+        document_titles=document_titles,
         unique_query_texts=unique_query_texts,
         unique_query_ids=unique_query_ids,
-        unique_positive_texts=unique_positive_texts,
-        unique_positive_ids=unique_positive_ids,
-        unique_positive_titles=None,
         corpus_dict=corpus_dict,
-        has_title=False,
-        documents_are_positives=False,
+        query_dict=query_dict,
+        has_title=has_title,
+        n_positives=n_positives,
     )

@@ -47,8 +47,15 @@ def load_task_data(
         return _load_retrieval_data(
             task=task, max_num_queries=max_num_queries, subtask=subtask
         )
-    elif task_type in ["Classification", "Clustering"]:
-        # Handle classification and clustering tasks
+    elif task_type in ["Classification", "BinaryClassification", "Clustering"]:
+        # Handle classification, binary classification and clustering tasks.
+        # When the task uses hard-negative mining its loader returns
+        # RetrievalRawData, so we route it through the retrieval pipeline.
+        use_hn = getattr(task, "use_hard_negative_mining", False)
+        if use_hn:
+            return _load_retrieval_data(
+                task=task, max_num_queries=max_num_queries, subtask=subtask
+            )
         return _load_classification_data(task)
     else:
         raise ValueError(f"Unknown task type: {task_type}")
@@ -117,9 +124,9 @@ def _load_retrieval_data(
     )
 
 
-def _load_classification_data(task, rank) -> ClassificationRawData:
+def _load_classification_data(task) -> ClassificationRawData:
     """
-    Load data for classification and clustering tasks.
+    Load data for classification and clustering tasks (sampling mode).
 
     Returns:
         ClassificationRawData with texts, labels, and ids
@@ -133,8 +140,8 @@ def _load_classification_data(task, rank) -> ClassificationRawData:
             "Please define a loader for this task."
         )
 
-    # Call the loader function
-    return loader_func(task, rank)
+    # Call the loader function (sampling loaders accept task + rank)
+    return loader_func(task)
 
 
 # Helper function for building corpus dictionaries (used by loaders)

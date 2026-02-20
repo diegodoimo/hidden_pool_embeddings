@@ -16,49 +16,6 @@ from utils.helpers import return_formatted
 _datasets.config.HF_DATASETS_TIMEOUT = 120
 
 
-def load_from_parquet(hf_name, subset_name, split):
-    """Load a HuggingFace dataset directly from its parquet files.
-
-    Bypasses the datasets library's feature-schema parsing, which fails on
-    datasets that were serialised with the deprecated 'List' feature type.
-    Tries several common HuggingFace Hub parquet directory layouts.
-    """
-    from huggingface_hub import HfFileSystem
-    from datasets import Dataset as _Dataset
-
-    fs = HfFileSystem()
-    base = f"datasets/{hf_name}"
-
-    candidates = []
-    if subset_name:
-        candidates += [
-            f"{base}/{subset_name}/{split}-*.parquet",
-            f"{base}/data/{subset_name}/{split}-*.parquet",
-            f"{base}/{subset_name}/*.parquet",
-        ]
-    candidates += [
-        f"{base}/data/{split}-*.parquet",
-        f"{base}/{split}-*.parquet",
-        f"{base}/data/*.parquet",
-    ]
-
-    files = []
-    for pattern in candidates:
-        files = fs.glob(pattern)
-        if files:
-            break
-
-    if not files:
-        raise FileNotFoundError(
-            f"No parquet files found for {hf_name!r} "
-            f"(subset={subset_name!r}, split={split!r})"
-        )
-
-    dfs = [pd.read_parquet(fs.open(f)) for f in sorted(files)]
-    df = pd.concat(dfs, ignore_index=True)
-    return _Dataset.from_pandas(df, preserve_index=False)
-
-
 def deduplicate(texts, prefix="query", titles=None):
 
     # Fast deduplication via pandas C-optimized hash tables.
@@ -109,15 +66,11 @@ def from_one_hf_dataset(
         assert task.hf_subset is None
         subset_name = subtask
 
-    load_fn = getattr(task, "load_fn", None)
-    if load_fn is not None:
-        dataset = load_fn(task.hf_name, subset_name, task.split)
+    trust_remote_code = getattr(task, "trust_remote_code", False)
+    if subset_name:
+        dataset = load_dataset(task.hf_name, name=subset_name, split=task.split, trust_remote_code=trust_remote_code)
     else:
-        trust_remote_code = getattr(task, "trust_remote_code", False)
-        if subset_name:
-            dataset = load_dataset(task.hf_name, name=subset_name, split=task.split, trust_remote_code=trust_remote_code)
-        else:
-            dataset = load_dataset(task.hf_name, split=task.split, trust_remote_code=trust_remote_code)
+        dataset = load_dataset(task.hf_name, split=task.split, trust_remote_code=trust_remote_code)
 
     if task.preprocessor is not None:
         dataset = task.preprocessor(

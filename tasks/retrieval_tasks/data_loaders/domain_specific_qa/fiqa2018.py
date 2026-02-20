@@ -9,7 +9,7 @@ class FiQA2018(AbsTask):
     language = "en"
 
     hf_name = "mteb/fiqa"
-    split = "train"
+    split = "train+dev"
     has_multiple_datasets = True
     eval_split = "test"  # MTEB evaluates on test split
     query_name = "queries"
@@ -21,7 +21,7 @@ class FiQA2018(AbsTask):
         "score": "score",
     }
     query_fields = {"id": "_id", "text": "text"}
-    corpus_fields = {"id": "_id", "text": "text"}
+    corpus_fields = {"id": "_id", "text": "text", "title": "title"}
     metadata = TaskMetadata(
         type="Retrieval", prompt={"query": TASK_PROMPTS["FiQA2018"]}
     )

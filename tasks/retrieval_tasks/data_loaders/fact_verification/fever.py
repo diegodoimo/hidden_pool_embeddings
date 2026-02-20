@@ -8,7 +8,7 @@ class FEVER(AbsTask):
 
     language = "en"
     hf_name = "mteb/fever"
-    split = "train"
+    split = "train+dev"
     has_multiple_datasets = True
     eval_split = "test"  # MTEB evaluates on test split
     query_name = "queries"

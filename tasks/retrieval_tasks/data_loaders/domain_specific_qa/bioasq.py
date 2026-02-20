@@ -14,6 +14,7 @@ class BioASQ(AbsTask):
     query_name = "query"
     positive_name = "text"
     negative_name = "negative"
+    corpus_fields = {"title": "title"}
     metadata = TaskMetadata(
         type="Retrieval",
         prompt={
