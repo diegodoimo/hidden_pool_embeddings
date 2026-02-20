@@ -14,6 +14,8 @@ OPEN_DOMAIN_QA = [
     "eli5",
     "squad",
     "hotpotqa",
+    "gooaq",
+    "yahooanswers",
 ]
 
 DOMAIN_SPECIFIC_QA = [
@@ -56,6 +58,7 @@ SUMMARIZATION = [
     "cnndm",
     "xsum",
     "sentence_compression",
+    "wikihow",
 ]
 
 # ============================================================================

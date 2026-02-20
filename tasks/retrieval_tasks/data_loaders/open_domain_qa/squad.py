@@ -14,7 +14,6 @@ class SQuAD(AbsTask):
     has_multiple_datasets = False
     query_name = "question"
     positive_name = "context"
-    corpus_fields = None
     metadata = TaskMetadata(
         type="Retrieval",
         prompt={

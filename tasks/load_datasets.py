@@ -76,6 +76,8 @@ def _load_retrieval_data(
         tuple of (hf_dataset, corpus_dict, has_title, n_positives)
     """
     # Dispatch to appropriate loader based on task configuration
+    rank = dist.get_rank()
+
 
     loader_func = getattr(task, "loader", None)
 
@@ -88,8 +90,11 @@ def _load_retrieval_data(
     raw_data = loader_func(task=task, subtask=subtask, max_num_queries=max_num_queries)
 
     # Convert raw data to HuggingFace datasets
-    # Create qrels dataset with query_id and positive_id pairs
 
+
+    if rank == 0:
+        print(f"Building qrels dataset")
+    # Create qrels dataset with query_id and positive_id pairs
     qrels_ds = create_qrels_dataset(
         query_ids=raw_data.query_ids,
         positive_ids=raw_data.positive_ids,
@@ -97,11 +102,15 @@ def _load_retrieval_data(
     # Free source lists right after Arrow conversion to reduce peak memory
     del raw_data.query_ids, raw_data.positive_ids
 
+    if rank == 0:
+        print(f"Building queries dataset")
     unique_queries_ds = dict_to_dataset(
         texts=raw_data.unique_query_texts, ids=raw_data.unique_query_ids
     )
     del raw_data.unique_query_texts, raw_data.unique_query_ids
 
+    if rank == 0:
+        print(f"Building document dataset")
     corpus_ds = dict_to_dataset(
         texts=raw_data.document_texts,
         ids=raw_data.document_ids,

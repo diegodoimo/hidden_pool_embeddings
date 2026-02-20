@@ -372,7 +372,7 @@ class StackExchangeRetrieval(AbsTask):
     has_multiple_datasets = False
     query_name = "title_body"  # This field will be created by combining title + body
     positive_name = "upvoted_answer"
-    corpus_fields = {}  # No title field for answers, loader will handle has_title check
+    revision = "refs/convert/parquet"
     metadata = TaskMetadata(
         type="Retrieval",
         prompt={

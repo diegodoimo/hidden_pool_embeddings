@@ -3,7 +3,7 @@ import os
 import torch
 import torch.distributed as dist
 
-from matplotlib import category
+#from matplotlib import category
 from tasks import (
     NAME_TO_TASK,
     BINARY_CLASSIFICATION_TASKS,
@@ -259,9 +259,17 @@ def main():
                 if rank == 0 and subtask is not None:
                     print(f"  Processing subtask: {subtask}")
 
-                loaded_data = load_task_data(
-                    task, subtask=subtask, max_num_queries=None
-                )
+                try:
+                    loaded_data = load_task_data(
+                        task, subtask=subtask, max_num_queries=None
+                    )
+                except Exception as e:
+                    if rank == 0:
+                        print(
+                            f"  Skipping subtask {subtask} due to error: "
+                            f"{type(e).__name__}: {str(e)}"
+                        )
+                    continue
 
                 if not isinstance(loaded_data, tuple):
                     if rank == 0:
@@ -297,9 +305,12 @@ def main():
                 if has_subtasks:
                     task_stats["subsets"][subtask] = subtask_stats
 
-            # Populate task_stats with aggregated values
-            task_stats.update(accumulated_stats)
+            if accumulated_stats["total_queries"] == 0:
+                if rank == 0:
+                    print(f"Skipping {task_name}: no data was successfully loaded")
+                continue
 
+            task_stats.update(accumulated_stats)
             stats[task_name] = task_stats
 
             if rank == 0:

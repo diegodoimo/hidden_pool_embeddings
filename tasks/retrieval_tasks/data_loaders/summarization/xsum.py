@@ -12,7 +12,6 @@ class XSum(AbsTask):
     has_multiple_datasets = False
     query_name = "summary"
     positive_name = "document"
-    corpus_fields = None
     metadata = TaskMetadata(
         type="Retrieval",
         prompt={"query": "Given a summary, retrieve the original document"},

@@ -16,6 +16,29 @@ from utils.helpers import return_formatted
 _datasets.config.HF_DATASETS_TIMEOUT = 120
 
 
+def _load_hf_dataset(hf_name, config_name, split, revision=None):
+    """Load a HuggingFace dataset, falling back to direct parquet loading when a
+    revision is specified (needed for script-based datasets on datasets>=4.0).
+
+    When *revision* is set (e.g. ``"refs/convert/parquet"``), the standard
+    ``load_dataset(name=...)`` call cannot resolve configs because the parquet
+    branch lacks the original loading-script metadata.  We instead construct
+    ``hf://`` URLs pointing at the parquet files and load them directly.
+    """
+    if revision is None:
+        if config_name:
+            return load_dataset(hf_name, name=config_name, split=split)
+        return load_dataset(hf_name, split=split)
+
+    splits = [s.strip() for s in split.split("+")]
+    base = f"hf://datasets/{hf_name}@{revision}"
+    if config_name:
+        data_files = {s: f"{base}/{config_name}/{s}/*.parquet" for s in splits}
+    else:
+        data_files = {s: f"{base}/{s}/*.parquet" for s in splits}
+    return load_dataset("parquet", data_files=data_files, split=split)
+
+
 def deduplicate(texts, prefix="query", titles=None):
 
     # Fast deduplication via pandas C-optimized hash tables.
@@ -66,11 +89,8 @@ def from_one_hf_dataset(
         assert task.hf_subset is None
         subset_name = subtask
 
-    trust_remote_code = getattr(task, "trust_remote_code", False)
-    if subset_name:
-        dataset = load_dataset(task.hf_name, name=subset_name, split=task.split, trust_remote_code=trust_remote_code)
-    else:
-        dataset = load_dataset(task.hf_name, split=task.split, trust_remote_code=trust_remote_code)
+    revision = getattr(task, "revision", None)
+    dataset = _load_hf_dataset(task.hf_name, subset_name, task.split, revision=revision)
 
     if task.preprocessor is not None:
         dataset = task.preprocessor(
@@ -94,15 +114,10 @@ def from_one_hf_dataset(
         print(f"num elements in dataset: {return_formatted(n_pairs)}")
         print("building dataframes")
 
-    # Check if titles exist in dataset
-    has_corpus_fields = task.corpus_fields is not None
-    has_title = has_corpus_fields and task.corpus_fields.get("title", None) is not None
-    title_col = None
-    if has_title:
-        title_col = task.corpus_fields.get("title", None)
-        if title_col not in dataset.column_names:
-            has_title = False
-            title_col = None
+    # title_name is the canonical attribute for single-dataset tasks,
+    # parallel to query_name / positive_name.
+    title_col = getattr(task, "title_name", None)
+    has_title = title_col is not None and title_col in dataset.column_names
 
     # Check for negatives to include in corpus
     has_negatives = task.negative_name is not None
@@ -341,11 +356,12 @@ def from_multiple_hf_datasets(
         start = time.time()
         print("Loading datasets...")
 
-    qrels = load_dataset(task.hf_name, name=qrels_subset, split=task.split)
+    revision = getattr(task, "revision", None)
+    qrels = _load_hf_dataset(task.hf_name, qrels_subset, task.split, revision=revision)
     # Use the base field name as the split (not the full subset name), because
     # hyphens in split names (e.g. "arabic-queries") are invalid in datasets.
-    querys_ = load_dataset(task.hf_name, name=query_subset, split=task.query_name)
-    corpus = load_dataset(task.hf_name, name=corpus_subset, split=task.positive_name)
+    querys_ = _load_hf_dataset(task.hf_name, query_subset, task.query_name, revision=revision)
+    corpus = _load_hf_dataset(task.hf_name, corpus_subset, task.positive_name, revision=revision)
 
     dist.barrier()
     if rank == 0:

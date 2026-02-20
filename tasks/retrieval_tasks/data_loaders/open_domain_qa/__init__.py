@@ -6,6 +6,8 @@ from .paq import PAQ
 from .eli5 import ELI5
 from .squad import SQuAD
 from .hotpotqa import HotpotQA
+from .gooaq import GooAQ
+from .yahooanswers import YahooAnswers
 
 __all__ = [
     "NaturalQuestions",
@@ -14,4 +16,6 @@ __all__ = [
     "ELI5",
     "SQuAD",
     "HotpotQA",
+    "GooAQ",
+    "YahooAnswers",
 ]
