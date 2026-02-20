@@ -1,7 +1,7 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
 from datasets import load_dataset
-from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
+from tasks.retrieval_loaders import from_one_hf_dataset
 
 
 def normalize_text(text: str) -> str:
@@ -28,7 +28,9 @@ def clear_arguana_overlap_mteb(
     qrels = load_dataset("mteb/arguana", name="default", split="test")
     positive_ids = set(qrels["corpus-id"])
 
-    mteb_corpus_texts = {normalize_text(corpus_dict[id_]) for id_ in positive_ids if id_ in corpus_dict}
+    mteb_corpus_texts = {
+        normalize_text(corpus_dict[id_]) for id_ in positive_ids if id_ in corpus_dict
+    }
 
     # Build sets of normalized texts
     mteb_query_texts = {normalize_text(row["text"]) for row in queries}

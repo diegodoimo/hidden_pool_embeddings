@@ -1,6 +1,6 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
-from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
+from tasks.retrieval_loaders import from_one_hf_dataset
 
 
 class LawZhidao(AbsTask):
@@ -16,8 +16,6 @@ class LawZhidao(AbsTask):
     positive_name = "answer"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a legal question, retrieve relevant legal answers"
-        },
+        prompt={"query": "Given a legal question, retrieve relevant legal answers"},
     )
     loader = from_one_hf_dataset

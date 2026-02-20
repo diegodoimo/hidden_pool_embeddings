@@ -1,6 +1,6 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
-from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
+from tasks.retrieval_loaders import from_one_hf_dataset
 from datasets import load_dataset
 
 
@@ -38,7 +38,9 @@ def clear_treccovid_overlap_mteb(
     def is_not_overlapping(example):
         query_norm = normalize_text(example[query_field])
         positive_norm = normalize_text(example[positive_field])
-        return not (query_norm in mteb_query_texts or positive_norm in mteb_corpus_texts)
+        return not (
+            query_norm in mteb_query_texts or positive_norm in mteb_corpus_texts
+        )
 
     return dataset.filter(is_not_overlapping)
 

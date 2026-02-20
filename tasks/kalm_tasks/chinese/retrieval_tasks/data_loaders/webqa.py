@@ -1,6 +1,6 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
-from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
+from tasks.retrieval_loaders import from_one_hf_dataset
 
 
 class WebQA(AbsTask):
@@ -16,8 +16,6 @@ class WebQA(AbsTask):
     positive_name = "answer"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a web question, retrieve relevant web passages"
-        },
+        prompt={"query": "Given a web question, retrieve relevant web passages"},
     )
     loader = from_one_hf_dataset

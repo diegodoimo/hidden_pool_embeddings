@@ -1,7 +1,7 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
-from tasks.sts_tasks.sts_loaders import sts_preprocessor
-from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
+from tasks.sts_tasks.sts_helpers import sts_preprocessor
+from tasks.retrieval_loaders import from_one_hf_dataset
 
 
 class Quora(AbsTask):

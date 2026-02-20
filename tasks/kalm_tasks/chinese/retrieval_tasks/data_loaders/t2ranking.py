@@ -1,6 +1,6 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
-from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
+from tasks.retrieval_loaders import from_one_hf_dataset
 
 
 class T2Ranking(AbsTask):
@@ -16,8 +16,6 @@ class T2Ranking(AbsTask):
     positive_name = "text"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a query, retrieve relevant texts"
-        },
+        prompt={"query": "Given a query, retrieve relevant texts"},
     )
     loader = from_one_hf_dataset

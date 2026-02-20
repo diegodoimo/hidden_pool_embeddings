@@ -1,6 +1,6 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
-from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
+from tasks.retrieval_loaders import from_one_hf_dataset
 from datasets import load_dataset
 
 
@@ -62,9 +62,7 @@ class CQADupStack(AbsTask):
     positive_name = "duplicate"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a question, retrieve duplicate questions"
-        },
+        prompt={"query": "Given a question, retrieve duplicate questions"},
     )
     loader = from_one_hf_dataset
     decontaminator = clear_cqadupstack_overlap_mteb

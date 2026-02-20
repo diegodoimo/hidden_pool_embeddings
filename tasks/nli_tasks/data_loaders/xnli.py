@@ -1,6 +1,6 @@
 from tasks.abs_task import AbsTask, TaskMetadata
-from tasks.nli_tasks.nli_loaders import nli_preprocessor
-from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
+from tasks.nli_tasks.nli_helpers import nli_preprocessor
+from tasks.retrieval_loaders import from_one_hf_dataset
 
 
 XNLI_LANGUAGES = [

@@ -130,10 +130,15 @@ def _remove_long_sequences(rows, tokenizer, max_length):
         removed_long_ids = []
         removed_long_indices = np.array([], dtype=int)
 
-    # Final keep mask
+    # Final keep mask: start from the character-length heuristic, then
+    # re-add items that needed tokenization but turned out to be within
+    # the token limit (their char length exceeded max_length but token
+    # count did not).
     keep_mask = valid_text_mask & definitely_valid
-    if len(removed_long_indices) > 0:
-        keep_mask[removed_long_indices] = False
+    if prompts_to_check:
+        check_indices = np.where(needs_tokenization)[0]
+        within_limit = check_indices[~too_long_mask]
+        keep_mask[within_limit] = True
 
     return keep_mask.tolist(), removed_long_ids, removed_empty_ids
 
@@ -205,10 +210,10 @@ def create_dataset(
     """
     rank = dist.get_rank()
     if "text" not in dataset.column_names:
-        raise ValueError(f"Column 'text' not found in dataset")
+        raise ValueError("Column 'text' not found in dataset")
 
     if isinstance(dataset["text"][0], list):
-        raise ValueError(f"Can't handle queries type queries for conversation")
+        raise ValueError("Can't handle queries type queries for conversation")
 
     start = time.time()
 

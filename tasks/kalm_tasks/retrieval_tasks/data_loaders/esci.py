@@ -1,6 +1,6 @@
 from tasks.abs_task import AbsTask, TaskMetadata
 from tasks.prompts import QWEN3_PROMPTS as TASK_PROMPTS
-from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
+from tasks.retrieval_loaders import from_one_hf_dataset
 
 
 class ESCI(AbsTask):
@@ -16,8 +16,6 @@ class ESCI(AbsTask):
     positive_name = "product"
     metadata = TaskMetadata(
         type="Retrieval",
-        prompt={
-            "query": "Given a product search query, retrieve relevant products"
-        },
+        prompt={"query": "Given a product search query, retrieve relevant products"},
     )
     loader = from_one_hf_dataset
