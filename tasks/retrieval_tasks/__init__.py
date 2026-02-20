@@ -12,6 +12,8 @@ from .data_loaders.open_domain_qa import (
     ELI5,
     SQuAD,
     HotpotQA,
+    GooAQ,
+    YahooAnswers,
 )
 
 # Domain-Specific QA
@@ -60,6 +62,7 @@ from .data_loaders.summarization import (
     CNNDM,
     XSum,
     SentenceCompression,
+    WikiHow,
 )
 
 __all__ = [
@@ -70,6 +73,8 @@ __all__ = [
     "ELI5",
     "SQuAD",
     "HotpotQA",
+    "GooAQ",
+    "YahooAnswers",
     # Domain-Specific QA
     "BioASQ",
     "PubMedQA",
@@ -100,4 +105,5 @@ __all__ = [
     "CNNDM",
     "XSum",
     "SentenceCompression",
+    "WikiHow",
 ]

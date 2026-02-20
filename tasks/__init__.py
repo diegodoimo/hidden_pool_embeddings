@@ -43,9 +43,12 @@ NAME_TO_TASK = {
     "miracl": MIRACL,
     "pubmedqa": PubMedQA,
     "amazonqa": AmazonQA,
+    "gooaq": GooAQ,
+    "yahooanswers": YahooAnswers,
     # Summarization tasks
     "xsum": XSum,
     "cnndm": CNNDM,
+    "wikihow": WikiHow,
     # Reranking tasks
     "stackoverflow_dup": StackOverflowDupQuestions,
     # STS tasks

@@ -80,9 +80,9 @@ class MrTyDi(AbsTask):
     query_name = "query"
     positive_name = "positive_passages"
     negative_name = "negative"
-    corpus_fields = {"title": "title"}
+    title_name = "title"
     subtasks = MRTYDI_SUBTASKS
-    trust_remote_code = True
+    revision = "refs/convert/parquet"
     metadata = TaskMetadata(
         type="Retrieval",
         prompt={

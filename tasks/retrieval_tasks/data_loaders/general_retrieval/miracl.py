@@ -4,19 +4,18 @@ from tasks.retrieval_tasks.retrieval_loaders import from_one_hf_dataset
 
 
 # yo (Yoruba) and de (German) are MIRACL+ additions with no train split.
+# en, fr, ru excluded: their parquet conversions are missing from
+# refs/convert/parquet (too large for automatic conversion).
 MIRACL_LANGUAGES = [
     "ar",
     "bn",
-    "en",
     "es",
     "fa",
     "fi",
-    "fr",
     "hi",
     "id",
     "ja",
     "ko",
-    "ru",
     "sw",
     "te",
     "th",
@@ -92,7 +91,7 @@ class MIRACL(AbsTask):
     query_name = "query"
     positive_name = "positive_passages"
     negative_name = "negative"
-    corpus_fields = {"title": "title"}
+    title_name = "title"
     subtasks = MIRACL_LANGUAGES
     metadata = TaskMetadata(
         type="Retrieval",
@@ -100,6 +99,6 @@ class MIRACL(AbsTask):
             "query": "Given a question, retrieve relevant passages that answer the question"
         },
     )
-    trust_remote_code = True
+    revision = "refs/convert/parquet"
     loader = from_one_hf_dataset
     preprocessor = miracl_preprocessor

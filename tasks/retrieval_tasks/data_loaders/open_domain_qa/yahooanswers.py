@@ -9,7 +9,7 @@ class YahooAnswers(AbsTask):
     language = "en"
 
     hf_name = "sentence-transformers/yahoo_answers"
-    hf_subset = "pair"
+    hf_subset = "title-answer-pair"
     split = "train"
     has_multiple_datasets = False
     query_name = "question"
