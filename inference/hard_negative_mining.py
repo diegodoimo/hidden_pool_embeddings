@@ -22,13 +22,58 @@ import json
 from utils.helpers import print_memory_consumed, return_formatted
 
 
-def estimate_chunk_size(query_embeddings, max_chunk=5 * 10**4):
+def estimate_chunk_sizes(query_embeddings, max_corpus_chunk=5 * 10**4):
+    """Estimate corpus and query chunk sizes to stay within GPU memory.
+
+    When the full query set fits comfortably, *query_chunk_size* equals
+    *N_queries* (i.e. no query chunking).  For very large query sets the
+    function picks a smaller *query_chunk_size* so that the similarity
+    matrix ``[query_chunk, corpus_chunk]`` stays within the memory budget.
+
+    Handles both GPU-resident and CPU-resident query embeddings.
+
+    Returns:
+        (corpus_chunk_size, query_chunk_size)
+    """
     free_mem, _ = torch.cuda.mem_get_info()
-    bytes_per_number = query_embeddings.element_size()
-    bytes_per_doc = query_embeddings.shape[1] * bytes_per_number
-    bytes_per_sim_column = query_embeddings.shape[0] * bytes_per_number
-    chunk = int(0.8 * free_mem // (bytes_per_doc + bytes_per_sim_column))
-    return max(1000, min(chunk, max_chunk))
+    N_queries = query_embeddings.shape[0]
+    elem_size = query_embeddings.element_size()
+    dim = query_embeddings.shape[1]
+
+    bytes_per_doc = dim * elem_size  # one corpus embedding vector
+    budget = int(0.7 * free_mem)
+    queries_on_cpu = not query_embeddings.is_cuda
+
+    if queries_on_cpu:
+        # Query embeddings are NOT on GPU, so GPU budget is only for:
+        #   corpus_chunk embeddings  +  query_slice on GPU  +  score matrix
+        corpus_chunk = min(max_corpus_chunk, 5 * 10**4)
+        corpus_bytes = corpus_chunk * bytes_per_doc
+        remaining = budget - corpus_bytes
+        # Each query row costs: dim * elem_size (embedding slice) + corpus_chunk * elem_size (score row)
+        bytes_per_query_row = (dim + corpus_chunk) * elem_size
+        query_chunk = remaining // max(1, bytes_per_query_row)
+        query_chunk = max(10**4, min(int(query_chunk), N_queries))
+        return corpus_chunk, query_chunk
+
+    # --- queries on GPU ---------------------------------------------------
+    bytes_per_sim_col = N_queries * elem_size  # one column of the full sim matrix
+
+    # try without query chunking first
+    corpus_chunk = budget // max(1, bytes_per_doc + bytes_per_sim_col)
+    corpus_chunk = max(1000, min(int(corpus_chunk), max_corpus_chunk))
+
+    total_needed = N_queries * corpus_chunk * elem_size + corpus_chunk * bytes_per_doc
+    if total_needed <= budget:
+        return corpus_chunk, N_queries
+
+    # need query chunking
+    corpus_chunk = min(max_corpus_chunk, 10**4)
+    remaining = budget - corpus_chunk * bytes_per_doc
+    query_chunk = remaining // max(1, corpus_chunk * elem_size)
+    query_chunk = max(10**4, min(int(query_chunk), N_queries))
+
+    return corpus_chunk, query_chunk
 
 
 @dataclass
@@ -381,16 +426,37 @@ class HardNegativesMiner:
             collate_fn=collate_fn,
         )
 
+        # Decide whether query embeddings should live on CPU.
+        # After all_gather every GPU holds ALL query embeddings; if the
+        # gathered tensor + top-k bookkeeping would exceed 50 % of free
+        # GPU memory, we stream embeddings to CPU during encoding and
+        # keep them there throughout the search.
+        n_queries = len(dataset["unique_queries"])
+        if hasattr(model, "module"):
+            hidden_size = model.module.config.hidden_size
+        else:
+            hidden_size = model.config.hidden_size
+        query_emb_bytes = n_queries * hidden_size * 4  # float32
+        topk_bytes = n_queries * top_k * 12  # float32 scores + int64 indices
+        free_mem, _ = torch.cuda.mem_get_info()
+        stream_to_cpu = (query_emb_bytes + topk_bytes) > 0.5 * free_mem
+
         dist.barrier()
         if self.rank == 0:
             start = time.time()
             print("\nbuilding query embeddings")
-
+            if stream_to_cpu:
+                print(
+                    f"CPU mode: query embeddings ({query_emb_bytes / 2**30:.1f} GB) + "
+                    f"top-k ({topk_bytes / 2**30:.1f} GB) exceed 50% of free GPU "
+                    f"memory ({free_mem / 2**30:.1f} GB) — streaming to CPU"
+                )
         query_embeddings = encode(
             model,
             queries_loader,
             prompt_type=PromptType.query,
             world_size=self.world_size,
+            stream_to_cpu=stream_to_cpu,
         )
 
         dist.barrier()
@@ -408,9 +474,14 @@ class HardNegativesMiner:
             print_memory_consumed(rank=self.rank)
 
         dist.barrier()
-        chunk_size = estimate_chunk_size(query_embeddings)
+        chunk_size, query_chunk_size = estimate_chunk_sizes(query_embeddings)
         if self.rank == 0:
             print("\nBuilding document embeddings and computing query-positive scores")
+            if query_chunk_size < query_embeddings.shape[0]:
+                print(
+                    f"Query chunking enabled: processing {return_formatted(query_embeddings.shape[0])} "
+                    f"queries in chunks of {return_formatted(query_chunk_size)}"
+                )
 
         start = time.time()
         top_scores, top_indices, query_positive_scores = search(
@@ -427,6 +498,7 @@ class HardNegativesMiner:
             top_k=top_k,
             batch_size=batch_size,
             chunk_size=chunk_size,
+            query_chunk_size=query_chunk_size,
         )
 
         del query_embeddings
@@ -489,7 +561,7 @@ class HardNegativesMiner:
             len(query_positive_scores) == total_queries
         ), f"Positive score mismatch {len(query_positive_scores)} {total_queries}"
 
-        upper_thresholds_relevent_docs = min(150, int(0.1 * len(corpus_ids)))
+        upper_thresholds_relevent_docs = min(100, int(0.1 * len(corpus_ids)))
 
         stats = TripletStats()
         hard_negatives = {}

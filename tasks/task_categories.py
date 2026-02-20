@@ -195,10 +195,10 @@ for task in CLUSTERING_TASKS:
 def get_task_category(task_name: str) -> str:
     """
     Get the category for a given task name.
-    
+
     Args:
         task_name: Name of the task (lowercase)
-    
+
     Returns:
         Category path (e.g., "retrieval/open_domain_qa", "nli", "sts"), or None if unknown
     """
@@ -208,21 +208,21 @@ def get_task_category(task_name: str) -> str:
 def get_category_path(task_name: str, base_path: str) -> str:
     """
     Get the full path for saving a task's dataset, organized by category.
-    
+
     Args:
         task_name: Name of the task
         base_path: Base path for datasets (e.g., "./results/datasets_negatives/model_name")
-    
+
     Returns:
         Full path including category subfolder(s) if applicable, otherwise base path with task name
-    
+
     Examples:
         >>> get_category_path("msmarco", "./results/datasets_negatives/qwen3_8b")
         "./results/datasets_negatives/qwen3_8b/retrieval/general_retrieval/msmarco"
-        
+
         >>> get_category_path("snli", "./results/datasets_negatives/qwen3_8b")
         "./results/datasets_negatives/qwen3_8b/nli/snli"
-        
+
         >>> get_category_path("xnli_ar", "./results/datasets_negatives/qwen3_8b")
         "./results/datasets_negatives/qwen3_8b/nli/xnli/xnli_ar"
     """

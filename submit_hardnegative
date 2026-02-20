@@ -39,7 +39,8 @@ torchrun \
     mine_hard_negatives.py  \
     --model_name_or_path "Qwen/Qwen3-Embedding-0.6B" \
     --batch_size 128 \
-    --task_names "stackexchange" \
+    --task_types "sorted"  \
+    #--task_names "stackexchange" \
 
     #--task_names 'eli5' 'squad' 'hotpotqa' 'bioasq' 'pubmedqa' \
 

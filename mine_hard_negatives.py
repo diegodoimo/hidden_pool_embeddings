@@ -14,6 +14,7 @@ from tasks import (
     NLI_TASKS,
     STS_TASKS,
     CLUSTERING_TASKS,
+    DATASETS_BY_SIZE,
     get_task,
 )
 from tasks.task_categories import (
@@ -123,6 +124,9 @@ def filter_tasks_by_type(task_types):
 
     if "clustering" in task_types:
         selected_tasks.extend(CLUSTERING_TASKS)
+
+    if "sorted" in task_types:
+        selected_tasks.extend(DATASETS_BY_SIZE)
 
     # Remove duplicates while preserving order
     seen = set()
