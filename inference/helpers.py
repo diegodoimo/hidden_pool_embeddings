@@ -67,40 +67,6 @@ def last_token_pool(last_hidden_states, attention_mask):
         ]
 
 
-# class CUDAPrefetcher:
-#     """Prefetches batches to GPU using a separate CUDA stream,
-#     overlapping H2D transfer with forward-pass compute."""
-
-#     def __init__(self, loader, device):
-#         self.loader = loader
-#         self.device = device
-#         self.stream = torch.cuda.Stream(device=device)
-
-#     def __iter__(self):
-#         loader_iter = iter(self.loader)
-#         # preload the first batch
-#         self._next_batch = self._preload(loader_iter)
-#         while self._next_batch is not None:
-#             # wait for the prefetch stream to finish the transfer
-#             torch.cuda.current_stream(self.device).wait_stream(self.stream)
-#             batch = self._next_batch
-#             # mark tensors so the default stream knows about the dependency
-#             for v in batch.values():
-#                 v.record_stream(torch.cuda.current_stream(self.device))
-#             # start loading the next batch in the background
-#             self._next_batch = self._preload(loader_iter)
-#             yield batch
-
-#     def _preload(self, loader_iter):
-#         try:
-#             batch = next(loader_iter)
-#         except StopIteration:
-#             return None
-#         with torch.cuda.stream(self.stream):
-#             batch = {k: v.to(self.device, non_blocking=True) for k, v in batch.items()}
-#         return batch
-
-
 def abs_task_preprocessing(task, eval_split):
 
     subsets_to_run = None
@@ -240,11 +206,11 @@ def search(
     print(f"chunk size {rank}: {n_iters}")
 
     for i, chunk_idx in enumerate(range(0, N_corpus, chunk_size)):
-        
+
         dist.barrier()
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
-        #t0 = time.time()
+        # t0 = time.time()
 
         if (i + 1) % interval == 0:
             print(rank)
@@ -256,7 +222,6 @@ def search(
             # print(
             #     f"Time loading: {time_loading/60:.2f}min, Time encoding: {time_encoding/60:.2f}min, Time sim+topk: {time_sim/60:.2f}min, Total: {(time_loading+time_encoding+time_sim)/60:.2f}min"
             # )
-            
 
         # Compute embeddings on-the-fly
         subcorpus = corpus_dataset.select(
@@ -275,8 +240,8 @@ def search(
             collate_fn=collate_fn,
         )
 
-        #torch.cuda.synchronize()
-        #t01 = time.time()
+        # torch.cuda.synchronize()
+        # t01 = time.time()
 
         local_corpus_chunk, local_indices = encode(
             model,
@@ -286,8 +251,8 @@ def search(
             divided_by_chunks=True,
         )
 
-        #torch.cuda.synchronize()
-        #t1 = time.time()
+        # torch.cuda.synchronize()
+        # t1 = time.time()
 
         # Compute global indices for this chunk
         global_indices = local_indices + chunk_idx
@@ -328,8 +293,8 @@ def search(
             del scores
 
         del local_corpus_chunk, local_indices
-        #torch.cuda.synchronize()
-        #t11 = time.time()
+        # torch.cuda.synchronize()
+        # t11 = time.time()
 
         # time_loading = t01 - t0
         # time_encoding += t1 - t01
@@ -345,7 +310,9 @@ def search(
     if rank == 0:
         print("\nGathering top scores top indices from all GPUs...")
 
-    print(f"{rank}: {top_scores.shape} {top_indices.shape} {query_positive_scores.shape}")
+    print(
+        f"{rank}: {top_scores.shape} {top_indices.shape} {query_positive_scores.shape}"
+    )
 
     dist.barrier()
     torch.cuda.synchronize()
@@ -403,7 +370,6 @@ def search(
             )
             top_indices = torch.gather(all_indices, 1, top_indices)
 
-   
     dist.barrier()
     torch.cuda.synchronize()
     # Gather query-positive scores from all GPUs
@@ -507,7 +473,6 @@ def update_query_positive_score(
         query_positive_scores[batch_qrels] = extracted_scores
 
     return query_positive_scores
-
 
 
 @torch.inference_mode()

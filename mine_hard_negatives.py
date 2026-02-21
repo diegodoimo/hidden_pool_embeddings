@@ -177,7 +177,9 @@ def main():
     dist.init_process_group(
         "nccl",
         device_id=LOCAL_RANK,
-        timeout=timedelta(seconds=30),  # Reduce from default 600s to 60s
+        timeout=timedelta(
+            seconds=1800
+        ),  # 30 min — large datasets need time for encoding + search
     )
     torch.cuda.set_device(dist.get_rank())
 
