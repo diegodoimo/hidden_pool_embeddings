@@ -234,21 +234,24 @@ def search(
     time_encoding = 0
     time_sim = 0
 
+    start = time.time()
     for i, chunk_idx in enumerate(range(0, N_corpus, chunk_size)):
-
+        
+        dist.barrier()
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
-        t0 = time.time()
+        #t0 = time.time()
 
-        if (i + 1) % interval == 0 and rank == 0:
-            # if rank == 0:
-            print(
-                f"processed {return_formatted(chunk_idx)}/{return_formatted(N_corpus)} samples in {(time.time()-start)/60} mins"
-            )
-            print(
-                f"Time loading: {time_loading/60:.2f}min, Time encoding: {time_encoding/60:.2f}min, Time sim+topk: {time_sim/60:.2f}min, Total: {(time_loading+time_encoding+time_sim)/60:.2f}min"
-            )
-            print_memory_consumed(rank=rank)
+        if (i + 1) % interval == 0:
+            if rank == 0:
+                print(
+                    f"processed {return_formatted(chunk_idx)}/{return_formatted(N_corpus)} samples in {(time.time()-start)/60:.2f} mins"
+                )
+                print_memory_consumed(rank=rank)
+            # print(
+            #     f"Time loading: {time_loading/60:.2f}min, Time encoding: {time_encoding/60:.2f}min, Time sim+topk: {time_sim/60:.2f}min, Total: {(time_loading+time_encoding+time_sim)/60:.2f}min"
+            # )
+            
 
         # Compute embeddings on-the-fly
         subcorpus = corpus_dataset.select(
@@ -267,8 +270,8 @@ def search(
             collate_fn=collate_fn,
         )
 
-        torch.cuda.synchronize()
-        t01 = time.time()
+        #torch.cuda.synchronize()
+        #t01 = time.time()
 
         local_corpus_chunk, local_indices = encode(
             model,
@@ -278,8 +281,8 @@ def search(
             divided_by_chunks=True,
         )
 
-        torch.cuda.synchronize()
-        t1 = time.time()
+        #torch.cuda.synchronize()
+        #t1 = time.time()
 
         # Compute global indices for this chunk
         global_indices = local_indices + chunk_idx
@@ -320,16 +323,22 @@ def search(
             del scores
 
         del local_corpus_chunk, local_indices
-        torch.cuda.synchronize()
-        t11 = time.time()
+        #torch.cuda.synchronize()
+        #t11 = time.time()
 
-        time_loading = t01 - t0
-        time_encoding += t1 - t01
-        time_sim += t11 - t1
+        # time_loading = t01 - t0
+        # time_encoding += t1 - t01
+        # time_sim += t11 - t1
 
     dist.barrier()
     torch.cuda.synchronize()
+    if rank == 0:
+        print("\nGathering top scores top indices from all GPUs...")
 
+    print(f"{rank}: {top_scores.shape} {top_indices.shape} {query_positive_scores.shape}")
+
+    dist.barrier()
+    torch.cuda.synchronize()
     # Distributed merging for top-k results
     if world_size > 1:
         if queries_on_cpu:
@@ -381,6 +390,9 @@ def search(
             )
             top_indices = torch.gather(all_indices, 1, top_indices)
 
+   
+    dist.barrier()
+    torch.cuda.synchronize()
     # Gather query-positive scores from all GPUs
     if rank == 0:
         print("\nGathering query-positive scores from all GPUs...")
@@ -483,228 +495,6 @@ def update_query_positive_score(
 
     return query_positive_scores
 
-
-def search2(
-    model,
-    query_embeddings,
-    corpus_dataset,
-    collate_fn,
-    n_positives,
-    qrels_query_ids,
-    qrels_positive_ids,
-    unique_query_ids,
-    unique_query_id_to_idx,
-    corpus_ids,
-    top_k=100,
-    batch_size=64,
-    chunk_size=10**4,
-    print_every=10**5,
-):
-    """
-    Search for top-k documents and compute query-positive scores.
-
-    Args:
-        model: The embedding model
-        query_embeddings: Pre-computed query embeddings [N_queries, embedding_dim]
-        corpus_dataset: The corpus dataset to search
-        collate_fn: Collation function for batching
-        n_positives: Number of positive documents at the start of corpus
-        qrels_query_ids: List of query IDs from qrels (with repetitions)
-        qrels_positive_ids: List of positive IDs from qrels (with repetitions)
-        unique_query_ids: List of unique query IDs
-        unique_query_id_to_idx: Dict mapping query ID to index in query_embeddings
-        corpus_ids: List of corpus document IDs
-        top_k: Number of top documents to retrieve
-        batch_size: Batch size for encoding
-        chunk_size: Chunk size for corpus processing
-        print_every: Print progress every N documents
-
-    Returns:
-        tuple: (top_scores, top_indices, query_positive_scores)
-    """
-    world_size = dist.get_world_size()
-    rank = dist.get_rank()
-
-    N_queries = query_embeddings.shape[0]
-    N_corpus = len(corpus_dataset)
-
-    top_scores = torch.full(
-        (N_queries, top_k), -float("inf"), device=query_embeddings.device
-    )
-    top_indices = torch.full(
-        (N_queries, top_k), -1, dtype=torch.long, device=query_embeddings.device
-    )
-
-    # Vectorized preparation for query-positive score extraction
-    # Build mapping from corpus_id to corpus_index (only for positives)
-    corpus_id_to_idx = {pid: idx for idx, pid in enumerate(corpus_ids[:n_positives])}
-
-    # Vectorized mapping: convert qrels_positive_ids to corpus indices
-    qrels_positive_ids_array = np.array(qrels_positive_ids)
-    qrels_query_ids_array = np.array(qrels_query_ids)
-
-    # Map positive IDs to corpus indices (vectorized)
-    corpus_indices = np.array(
-        [corpus_id_to_idx.get(pid, -1) for pid in qrels_positive_ids]
-    )
-    # Filter out entries where positive is not found or is beyond n_positives
-    valid_mask = corpus_indices >= 0
-
-    # Store the mapping information for later use
-    qrels_corpus_indices = corpus_indices[valid_mask]
-    qrels_query_indices = np.array(
-        [unique_query_id_to_idx[qid] for qid in qrels_query_ids_array[valid_mask]]
-    )
-    qrels_indices_filtered = np.where(valid_mask)[0]
-
-    # Initialize query-positive scores array
-    query_positive_scores = torch.zeros(
-        len(qrels_query_ids), device=query_embeddings.device
-    )
-
-    interval = print_every // chunk_size + 1
-    dist.barrier()
-    start = time.time()
-    if rank == 0:
-        print(f"Using chunk_size: {chunk_size}")
-        print(
-            f"Will extract query-positive scores for {len(qrels_query_ids)} qrels pairs"
-        )
-
-    for i, chunk_idx in enumerate(range(0, N_corpus, chunk_size)):
-
-        dist.barrier()
-        torch.cuda.empty_cache()
-
-        if (i + 1) % interval == 0 and rank == 0:
-            print(
-                f"processed {chunk_idx//10**3}k/{N_corpus//10**3}k samples in {(time.time()-start)/60} mins"
-            )
-
-        # Compute embeddings on-the-fly
-        subcorpus = corpus_dataset.select(
-            range(chunk_idx, min(chunk_idx + chunk_size, N_corpus))
-        )
-
-        sampler_corpus = LenghtSortedSampler(subcorpus)
-        corpus_loader = DataLoader(
-            subcorpus,
-            sampler=sampler_corpus,
-            batch_size=batch_size,
-            num_workers=16,
-            pin_memory=True,
-            collate_fn=collate_fn,
-        )
-
-        local_corpus_chunk, local_indices = encode(
-            model,
-            corpus_loader,
-            prompt_type=PromptType.document,
-            world_size=world_size,
-            divided_by_chunks=True,
-        )
-
-        # Compute global indices for this chunk
-        global_indices = local_indices + chunk_idx
-
-        # Compute similarity scores for all query-document pairs in this chunk
-        scores = torch.matmul(query_embeddings, local_corpus_chunk.T)
-
-        # Extract query-positive scores only if this chunk contains positives
-        if chunk_idx < n_positives:
-            # Convert to numpy for efficient indexing
-            global_indices_np = global_indices.cpu().numpy()
-
-            # Find which qrels entries have their positive in this chunk
-            # Vectorized: check if qrels_corpus_indices are in current chunk's global_indices
-            in_chunk_mask = np.isin(qrels_corpus_indices, global_indices_np)
-
-            if in_chunk_mask.any():
-                # Get the qrels entries that need processing in this chunk
-                chunk_qrels_indices = qrels_indices_filtered[in_chunk_mask]
-                chunk_corpus_indices = qrels_corpus_indices[in_chunk_mask]
-                chunk_query_indices = qrels_query_indices[in_chunk_mask]
-
-                # Find local indices within the chunk for these corpus indices
-                # Build a mapping from global_idx to local_idx for this chunk
-                global_to_local = {
-                    global_idx.item(): local_idx
-                    for local_idx, global_idx in enumerate(global_indices)
-                }
-                local_indices_in_chunk = np.array(
-                    [global_to_local[corpus_idx] for corpus_idx in chunk_corpus_indices]
-                )
-
-                # Vectorized extraction: gather scores using advanced indexing
-                # scores[chunk_query_indices, local_indices_in_chunk] gives us all the scores we need
-                extracted_scores = scores[chunk_query_indices, local_indices_in_chunk]
-                query_positive_scores[chunk_qrels_indices] = extracted_scores
-
-        chunk_top_scores, chunk_top_indices = torch.topk(
-            scores,
-            k=min(top_k, scores.shape[1]),
-            dim=1,
-            largest=True,
-        )
-
-        chunk_absolute_indices = local_indices[chunk_top_indices] + chunk_idx
-        combined_scores = torch.cat([top_scores, chunk_top_scores], dim=1)
-        combined_indices = torch.cat([top_indices, chunk_absolute_indices], dim=1)
-
-        # Find the true global top-k among the combined results
-        top_k_in_combined_scores, top_k_in_combined_indices = torch.topk(
-            combined_scores,
-            k=top_k,
-            dim=1,
-            largest=True,
-        )
-
-        top_scores = top_k_in_combined_scores
-        top_indices = torch.gather(combined_indices, 1, top_k_in_combined_indices)
-
-    dist.barrier()
-
-    # Distributed merging for top-k results
-    if world_size > 1:
-        scores_list = [torch.empty_like(top_scores) for _ in range(world_size)]
-        indices_list = [torch.empty_like(top_indices) for _ in range(world_size)]
-
-        dist.all_gather(scores_list, top_scores)
-        dist.all_gather(indices_list, top_indices)
-
-        all_scores = torch.cat(scores_list, dim=1)
-        all_indices = torch.cat(indices_list, dim=1)
-
-        top_scores, top_indices = torch.topk(
-            all_scores,
-            k=top_k,
-            dim=1,
-            largest=True,
-        )
-        top_indices = torch.gather(all_indices, 1, top_indices)
-
-    # Gather query-positive scores from all GPUs
-    if rank == 0:
-        print(f"\nGathering query-positive scores from all GPUs...")
-
-    if world_size > 1:
-        # Each GPU has computed scores for some qrels pairs based on the chunks it processed
-        # We need to sum the scores across GPUs (since each pair is computed by one GPU)
-        gathered_scores = [
-            torch.zeros_like(query_positive_scores) for _ in range(world_size)
-        ]
-        dist.all_gather(gathered_scores, query_positive_scores)
-
-        # Sum across GPUs to get the final scores (only one GPU will have non-zero for each pair)
-        query_positive_scores = torch.stack(gathered_scores).sum(dim=0)
-
-    # Convert to numpy
-    query_positive_scores = query_positive_scores.cpu().numpy()
-
-    if rank == 0:
-        print(f"Query-positive scores computed for {len(qrels_query_ids)} pairs")
-
-    return top_scores, top_indices, query_positive_scores
 
 
 @torch.inference_mode()

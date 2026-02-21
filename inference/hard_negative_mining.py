@@ -728,106 +728,107 @@ class HardNegativesMiner:
 
                 torch.cuda.empty_cache()
                 print_memory_consumed(rank=self.rank)
+                dist.barrier()
 
             del dataset_dict
 
-    def save_to_disk(
-        self,
-        qrels,
-        negatives,
-        has_title,
-        stats,
-        save_path,
-        corpus_dict,
-        query_dict,
-    ):
+    # def save_to_disk(
+    #     self,
+    #     qrels,
+    #     negatives,
+    #     has_title,
+    #     stats,
+    #     save_path,
+    #     corpus_dict,
+    #     query_dict,
+    # ):
 
-        # Retrieve texts from corpus_dict using IDs from qrels
-        query_ids = qrels["query_id"]
-        positive_ids = qrels["positive_id"]
-        query_texts = [query_dict[qid]["text"] for qid in query_ids]
-        positive_text = [corpus_dict[pid]["text"] for pid in positive_ids]
+    #     # Retrieve texts from corpus_dict using IDs from qrels
+    #     query_ids = qrels["query_id"]
+    #     positive_ids = qrels["positive_id"]
+    #     query_texts = [query_dict[qid]["text"] for qid in query_ids]
+    #     positive_text = [corpus_dict[pid]["text"] for pid in positive_ids]
 
-        # Use (query_id, positive_id) tuples to get negatives for each qrels entry
-        negative_text = [
-            negatives[(q_id, p_id)]["text"]
-            for q_id, p_id in zip(query_ids, positive_ids)
-        ]
-        negative_id = [
-            negatives[(q_id, p_id)]["id"] for q_id, p_id in zip(query_ids, positive_ids)
-        ]
+    #     # Use (query_id, positive_id) tuples to get negatives for each qrels entry
+    #     negative_text = [
+    #         negatives[(q_id, p_id)]["text"]
+    #         for q_id, p_id in zip(query_ids, positive_ids)
+    #     ]
+    #     negative_id = [
+    #         negatives[(q_id, p_id)]["id"] for q_id, p_id in zip(query_ids, positive_ids)
+    #     ]
 
-        if has_title:
-            negative_title = [
-                negatives[(q_id, p_id)]["title"]
-                for q_id, p_id in zip(query_ids, positive_ids)
-            ]
-            positive_title = [corpus_dict[pid]["title"] for pid in positive_ids]
+    #     if has_title:
+    #         negative_title = [
+    #             negatives[(q_id, p_id)]["title"]
+    #             for q_id, p_id in zip(query_ids, positive_ids)
+    #         ]
+    #         positive_title = [corpus_dict[pid]["title"] for pid in positive_ids]
 
-            dataset = Dataset.from_dict(
-                {
-                    "query_text": query_texts,
-                    "query_id": query_ids,
-                    "positive_text": positive_text,
-                    "positive_title": positive_title,
-                    "positive_id": positive_ids,
-                    "negative_text": negative_text,
-                    "negative_title": negative_title,
-                    "negative_id": negative_id,
-                },
-                features=Features(
-                    {
-                        "query_text": Value("string"),
-                        "query_id": Value("string"),
-                        "positive_text": Value("string"),
-                        "positive_title": Value("string"),
-                        "positive_id": Value("string"),
-                        "negative_text": Sequence(Value("string")),
-                        "negative_title": Sequence(Value("string")),
-                        "negative_id": Sequence(Value("string")),
-                    }
-                ),
-            )
-        else:
-            dataset = Dataset.from_dict(
-                {
-                    "query_text": query_texts,
-                    "query_id": query_ids,
-                    "positive_text": positive_text,
-                    "positive_id": positive_ids,
-                    "negative_text": negative_text,
-                    "negative_id": negative_id,
-                },
-                features=Features(
-                    {
-                        "query_text": Value("string"),
-                        "query_id": Value("string"),
-                        "positive_text": Value("string"),
-                        "positive_id": Value("string"),
-                        "negative_text": Sequence(Value("string")),
-                        "negative_id": Sequence(Value("string")),
-                    }
-                ),
-            )
+    #         dataset = Dataset.from_dict(
+    #             {
+    #                 "query_text": query_texts,
+    #                 "query_id": query_ids,
+    #                 "positive_text": positive_text,
+    #                 "positive_title": positive_title,
+    #                 "positive_id": positive_ids,
+    #                 "negative_text": negative_text,
+    #                 "negative_title": negative_title,
+    #                 "negative_id": negative_id,
+    #             },
+    #             features=Features(
+    #                 {
+    #                     "query_text": Value("string"),
+    #                     "query_id": Value("string"),
+    #                     "positive_text": Value("string"),
+    #                     "positive_title": Value("string"),
+    #                     "positive_id": Value("string"),
+    #                     "negative_text": Sequence(Value("string")),
+    #                     "negative_title": Sequence(Value("string")),
+    #                     "negative_id": Sequence(Value("string")),
+    #                 }
+    #             ),
+    #         )
+    #     else:
+    #         dataset = Dataset.from_dict(
+    #             {
+    #                 "query_text": query_texts,
+    #                 "query_id": query_ids,
+    #                 "positive_text": positive_text,
+    #                 "positive_id": positive_ids,
+    #                 "negative_text": negative_text,
+    #                 "negative_id": negative_id,
+    #             },
+    #             features=Features(
+    #                 {
+    #                     "query_text": Value("string"),
+    #                     "query_id": Value("string"),
+    #                     "positive_text": Value("string"),
+    #                     "positive_id": Value("string"),
+    #                     "negative_text": Sequence(Value("string")),
+    #                     "negative_id": Sequence(Value("string")),
+    #                 }
+    #             ),
+    #         )
 
-        # Save metadata
-        metadata = {
-            "num_triples": stats.total_queries,
-            "num_empty_negative_entries": stats.empty_entries,
-            "num_with_7_hard_negatives": stats.total_queries - stats.less_than_7,
-            "num_with_15_hard_negatives": stats.total_queries - stats.less_than_15,
-            "num_with_24_hard_negatives": stats.total_queries - stats.less_than_24,
-            "embedder": self.model_name,
-        }
+    #     # Save metadata
+    #     metadata = {
+    #         "num_triples": stats.total_queries,
+    #         "num_empty_negative_entries": stats.empty_entries,
+    #         "num_with_7_hard_negatives": stats.total_queries - stats.less_than_7,
+    #         "num_with_15_hard_negatives": stats.total_queries - stats.less_than_15,
+    #         "num_with_24_hard_negatives": stats.total_queries - stats.less_than_24,
+    #         "embedder": self.model_name,
+    #     }
 
-        # Get the categorized path for this task
-        # save_path = get_category_path(task_name, self.path)
+    #     # Get the categorized path for this task
+    #     # save_path = get_category_path(task_name, self.path)
 
-        dist.barrier()
-        if self.rank == 0:
-            # Create parent directories if they don't exist
-            Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-            dataset.save_to_disk(save_path)
+    #     dist.barrier()
+    #     if self.rank == 0:
+    #         # Create parent directories if they don't exist
+    #         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+    #         dataset.save_to_disk(save_path)
 
-            with open(f"{save_path}/dataset_metadata.json", "w") as f:
-                json.dump(metadata, f, indent=2)
+    #         with open(f"{save_path}/dataset_metadata.json", "w") as f:
+    #             json.dump(metadata, f, indent=2)

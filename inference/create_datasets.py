@@ -245,6 +245,7 @@ def create_dataset(
     new_ds = new_ds.filter(
         filter_wrapper,
         batched=True,
+        batch_size=10000
     )
 
     if rank == 0:

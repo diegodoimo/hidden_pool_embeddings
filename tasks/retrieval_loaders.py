@@ -76,11 +76,11 @@ def deduplicate(texts, prefix="query", titles=None):
     # Generate remapped IDs: map all occurrences (including duplicates) to first occurrence ID
     all_ids = (f"{prefix}_" + texts.map(text_to_first_idx).astype(str)).tolist()
 
-    return all_ids, unique_ids, unique_texts, unique_titles
+    return all_ids, unique_ids, unique_idx, unique_texts, unique_titles, 
 
 
 def from_one_hf_dataset(
-    task, max_num_queries=10**6, rank=None, subtask=None
+    task, max_num_queries=None, rank=None, subtask=None
 ) -> RetrievalRawData:
     """
     Load data from a single HuggingFace dataset where queries and positives
@@ -122,12 +122,12 @@ def from_one_hf_dataset(
             task.positive_name,
         )
     n_pairs = len(dataset)
-
-    if n_pairs > 10**5:
+    verbose = False
+    if n_pairs > 5*10**5:
         verbose = True
     
     dist.barrier()
-    if rank == 0:
+    if rank == 0 and verbose:
         print(f"Dataset loaded in {(time.time()-start)/60:.2f} min")
         start = time.time()
         print(f"num elements in dataset: {return_formatted(n_pairs)}")
@@ -185,15 +185,15 @@ def from_one_hf_dataset(
 
     # Convert Arrow -> numpy arrays directly (fastest path)
     dist.barrier()
-    if rank == 0:
+    if rank == 0 and verbose:
         print(f"preprocessing done in {(time.time()-start)/60:.2f} min")
         start = time.time()
         print("finding unique queries and positives items...")
 
-    query_ids, unique_query_ids, unique_query_texts, _ = deduplicate(
+    query_ids, unique_query_ids, unique_query_idx, unique_query_texts, _ = deduplicate(
         query_texts, prefix="query"
     )
-    positive_ids, unique_positive_ids, unique_positive_texts, unique_positive_titles = (
+    positive_ids, unique_positive_ids, unique_positive_idx, unique_positive_texts, unique_positive_titles = (
         deduplicate(positive_texts, prefix="doc", titles=titles)
     )
     n_positives = len(unique_positive_ids)
@@ -230,7 +230,7 @@ def from_one_hf_dataset(
             )
             neg_ids = [f"neg_{i}" for i in range(len(neg_series))]
             neg_texts = neg_series.tolist()
-        if rank == 0:
+        if rank == 0 and verbose:
             print(
                 f"Found {return_formatted(len(neg_ids))} unique negatives not in positives"
             )
@@ -269,7 +269,7 @@ def from_one_hf_dataset(
             has_title=has_title,
         )
 
-        if rank == 0:
+        if rank == 0 and verbose:
             print(f"Queries limited in {(time.time()-start)/60:.2f} min")
 
     assert set(positive_ids).issubset(
@@ -277,7 +277,7 @@ def from_one_hf_dataset(
     ), "filtered qrels contain positive IDs not in corpus"
 
     dist.barrier()
-    if rank == 0:
+    if rank == 0 and verbose:
         print(f"remapping done in {(time.time()-start)/60:.2f} min")
         start = time.time()
         print("generating corpus dict...")
@@ -317,7 +317,7 @@ def from_one_hf_dataset(
     }
     assert set(document_ids) == set(corpus_dict.keys())
     dist.barrier()
-    if rank == 0:
+    if rank == 0 and verbose:
         print(f"corpus dict built in {(time.time()-start)/60:.2f} min")
 
     if rank == 0:

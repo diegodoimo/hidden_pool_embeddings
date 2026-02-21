@@ -25,7 +25,7 @@ def normalize_text(
 
 
 def load_task_data(
-    task, subtask=None, max_num_queries=10**6
+    task, subtask=None, max_num_queries=None
 ) -> Union[Tuple[Dataset, Dict, bool, int], ClassificationRawData]:
     """
     Unified data loading function for all task types (retrieval, STS, classification, clustering).
@@ -90,9 +90,11 @@ def _load_retrieval_data(
     raw_data = loader_func(task=task, subtask=subtask, max_num_queries=max_num_queries)
 
     # Convert raw data to HuggingFace datasets
+    verbose = False
+    if len(raw_data.query_ids) > 5*10**5:
+        verbose = True
 
-
-    if rank == 0:
+    if rank == 0 and verbose:
         print(f"Building qrels dataset")
     # Create qrels dataset with query_id and positive_id pairs
     qrels_ds = create_qrels_dataset(
@@ -102,14 +104,14 @@ def _load_retrieval_data(
     # Free source lists right after Arrow conversion to reduce peak memory
     del raw_data.query_ids, raw_data.positive_ids
 
-    if rank == 0:
+    if rank == 0 and verbose:
         print(f"Building queries dataset")
     unique_queries_ds = dict_to_dataset(
         texts=raw_data.unique_query_texts, ids=raw_data.unique_query_ids
     )
     del raw_data.unique_query_texts, raw_data.unique_query_ids
 
-    if rank == 0:
+    if rank == 0 and verbose:
         print(f"Building document dataset")
     corpus_ds = dict_to_dataset(
         texts=raw_data.document_texts,
