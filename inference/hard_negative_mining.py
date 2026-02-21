@@ -138,7 +138,6 @@ def update_dataset_dict(
     """
     query_ids = qrels["query_id"]
     positive_ids = qrels["positive_id"]
-    n = len(query_ids)
 
     # Initialise keys on first call
     if not dataset_dict:
@@ -154,28 +153,23 @@ def update_dataset_dict(
         if subtask is not None:
             dataset_dict["subset"] = []
 
-    # Use generators to avoid temporary list copies
-    dataset_dict["query_text"].extend(query_dict[qid]["text"] for qid in query_ids)
-    dataset_dict["query_id"].extend(query_ids)
-    dataset_dict["positive_text"].extend(
-        corpus_dict[pid]["text"] for pid in positive_ids
-    )
-    dataset_dict["positive_id"].extend(positive_ids)
-    dataset_dict["negative_text"].extend(
-        negatives[(q, p)]["text"] for q, p in zip(query_ids, positive_ids)
-    )
-    dataset_dict["negative_id"].extend(
-        negatives[(q, p)]["id"] for q, p in zip(query_ids, positive_ids)
-    )
-    if has_title:
-        dataset_dict["positive_title"].extend(
-            corpus_dict[pid]["title"] for pid in positive_ids
-        )
-        dataset_dict["negative_title"].extend(
-            negatives[(q, p)]["title"] for q, p in zip(query_ids, positive_ids)
-        )
-    if subtask is not None:
-        dataset_dict["subset"].extend([subtask] * n)
+    # Skip entries with no hard negatives — they are useless for
+    # contrastive training and waste disk space / memory.
+    for q_id, p_id in zip(query_ids, positive_ids):
+        neg = negatives.get((q_id, p_id))
+        if neg is None:
+            continue
+        dataset_dict["query_text"].append(query_dict[q_id]["text"])
+        dataset_dict["query_id"].append(q_id)
+        dataset_dict["positive_text"].append(corpus_dict[p_id]["text"])
+        dataset_dict["positive_id"].append(p_id)
+        dataset_dict["negative_text"].append(neg["text"])
+        dataset_dict["negative_id"].append(neg["id"])
+        if has_title:
+            dataset_dict["positive_title"].append(corpus_dict[p_id]["title"])
+            dataset_dict["negative_title"].append(neg["title"])
+        if subtask is not None:
+            dataset_dict["subset"].append(subtask)
 
 
 def _get_features_dict(has_title, has_subset):
@@ -668,12 +662,9 @@ class HardNegativesMiner:
             # Use composite key (query_id, positive_id) to store negatives per qrels entry
             key = (q_id, p_id)
 
-            if valid_idx.size == 0:
-                # Use the same structure as the normal case, just with empty lists
-                if has_title:
-                    hard_negatives[key] = {"id": [], "text": [], "title": []}
-                else:
-                    hard_negatives[key] = {"id": [], "text": []}
+            if valid_idx.size < 15:
+                # Discard entries with fewer than 15 hard negatives —
+                # they provide too little contrastive signal for training.
                 continue
 
             # Cap number of negatives
