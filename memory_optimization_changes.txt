@@ -1,0 +1,103 @@
+Memory Optimization Changes — February 21, 2026
+=================================================
+
+Problem
+-------
+BioASQ (14M rows, ~14M documents) causes OOM during data loading in
+retrieval_loaders.py.  The main memory hogs were:
+
+  1. corpus_dict / query_dict:  full Python dict[str, dict[str, str]] that
+     duplicates all text/title data already stored in the document_texts,
+     document_ids, and document_titles lists.  For 14M entries the Python
+     object overhead alone is ~4-7 GB.
+
+  2. HF Arrow dataset kept alive alongside the pandas DataFrame created
+     from it (double storage of the same data).
+
+  3. Intermediate objects (DataFrames, dicts) not freed as soon as they
+     are no longer needed.
+
+
+Changes
+-------
+
+### 1. LazyCorpusDict  (tasks/data_helpers.py)
+
+New class `LazyCorpusDict(collections.abc.Mapping)` added.
+
+Instead of a dict-of-dicts that duplicates every text string, it stores
+only an `id -> int` index mapping and references the existing text/title
+arrays (list or pandas Series).  Lookups return the same
+`{"text": ..., "title": ...}` dicts on the fly.
+
+It implements the full read-only Mapping interface (__getitem__,
+__contains__, __len__, __iter__, keys(), get(), values(), items()),
+so it is a drop-in replacement everywhere corpus_dict and query_dict
+are consumed (hard_negative_mining.py, load_datasets.py, etc.).
+
+The RetrievalRawData dataclass type hints were widened from
+`Dict[str, Dict[str, str]]` to `Mapping` to accept both the old dict
+and the new LazyCorpusDict.
+
+Estimated savings: ~4-7 GB for 14M entries.
+
+
+### 2. Early deletion of HF Arrow dataset  (tasks/retrieval_loaders.py)
+
+In `from_one_hf_dataset()`:
+  - After `dataset.select_columns(...).to_pandas()`, the HF dataset is
+    immediately freed with `del dataset; gc.collect()`.
+  - Previously the Arrow table stayed alive for the entire function.
+
+Estimated savings: ~10-20 GB (depends on column count / string lengths).
+
+
+### 3. Early deletion of DataFrame  (tasks/retrieval_loaders.py)
+
+In `from_one_hf_dataset()`:
+  - After extracting negatives, `del df; gc.collect()` frees the
+    DataFrame.  The pandas Series extracted from it (query_texts,
+    positive_texts, titles) keep their underlying NumPy/Arrow buffers
+    alive independently.
+
+Estimated savings: minor (a few hundred MB of pandas index/metadata),
+but prevents a second full copy from lingering.
+
+
+### 4. Early deletion of HF datasets & dicts in from_multiple_hf_datasets()
+       (tasks/retrieval_loaders.py)
+
+  - `del querys_`  after building queries_dict from it.
+  - `del corpus`   after building corpus_dict from it.
+  - `del queries_dict` after extracting unique_query_texts.
+  - At the end, the heavy `corpus_dict` (from get_dict()) is deleted and
+    replaced by a LazyCorpusDict referencing the already-built
+    document_ids/texts/titles lists.
+
+Estimated savings: several GB for large multi-dataset tasks.
+
+
+### 5. LazyCorpusDict used for both corpus_dict and query_dict
+       (tasks/retrieval_loaders.py)
+
+  - In `from_one_hf_dataset()`: corpus_dict and query_dict are built as
+    LazyCorpusDict instead of dict comprehensions.
+  - In `from_multiple_hf_datasets()`: same treatment at the end.
+
+No changes to classification_loaders.py — classification tasks add a
+"label" key to their corpus_dict entries, which is a different pattern
+and uses smaller datasets that don't OOM.
+
+
+Files modified
+--------------
+  tasks/data_helpers.py      — added LazyCorpusDict, widened type hints
+  tasks/retrieval_loaders.py — added gc import, LazyCorpusDict import,
+                                early del+gc.collect() at 7 locations,
+                                replaced dict-building with LazyCorpusDict
+
+Old code is kept as comments (prefixed with "# --- OLD:") next to each
+changed section in retrieval_loaders.py for easy rollback.
+
+
+Total estimated peak memory savings: ~15-25 GB for BioASQ (14M rows).

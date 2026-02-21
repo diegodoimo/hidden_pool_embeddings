@@ -78,7 +78,6 @@ def _load_retrieval_data(
     # Dispatch to appropriate loader based on task configuration
     rank = dist.get_rank()
 
-
     loader_func = getattr(task, "loader", None)
 
     if loader_func is None:
@@ -91,7 +90,7 @@ def _load_retrieval_data(
 
     # Convert raw data to HuggingFace datasets
     verbose = False
-    if len(raw_data.query_ids) > 5*10**5:
+    if len(raw_data.query_ids) > 5 * 10**5:
         verbose = True
 
     if rank == 0 and verbose:
@@ -113,6 +112,7 @@ def _load_retrieval_data(
 
     if rank == 0 and verbose:
         print(f"Building document dataset")
+
     corpus_ds = dict_to_dataset(
         texts=raw_data.document_texts,
         ids=raw_data.document_ids,

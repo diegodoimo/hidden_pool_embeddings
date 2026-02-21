@@ -2,6 +2,7 @@ from datasets import load_dataset, Dataset, Features, Value
 import pyarrow as pa
 import time
 import os
+from collections.abc import Mapping
 from multiprocessing import Pool
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Set, Sequence
@@ -198,6 +199,62 @@ def create_qrels_dataset(query_ids, positive_ids):
 #     return dataset
 
 
+class LazyCorpusDict(Mapping):
+    """Memory-efficient corpus/query lookup avoiding duplicated text data.
+
+    Instead of materialising a ``dict[str, dict[str, str]]`` (huge Python
+    overhead for millions of entries), this stores a compact ``id -> index``
+    mapping and looks up text/title from the original arrays on demand.
+
+    For 14M entries the full-dict approach costs ~4-7 GB in Python object
+    overhead alone; this class uses ~1.5 GB (the ``id -> int`` mapping).
+
+    Implements :class:`collections.abc.Mapping` so it is a drop-in
+    replacement everywhere a read-only dict is expected (``__getitem__``,
+    ``__contains__``, ``__len__``, ``__iter__``, ``keys()``, ``get()``,
+    ``values()``, ``items()``).
+    """
+
+    __slots__ = ("_id_to_idx", "_texts", "_titles")
+
+    def __init__(self, ids, texts, titles=None):
+        """Build the mapping from *ids* to positions in *texts*/*titles*.
+
+        Parameters
+        ----------
+        ids : list[str] | pandas.Series
+            Document / query IDs (must be unique).
+        texts : list[str] | pandas.Series
+            Texts at positions matching *ids*.
+        titles : list[str] | pandas.Series | None
+            Optional titles at positions matching *ids*.
+        """
+        self._id_to_idx: Dict[str, int] = {id_: i for i, id_ in enumerate(ids)}
+        self._texts = texts
+        self._titles = titles
+
+    # -- Mapping interface -----------------------------------------------------
+
+    def __getitem__(self, key: str) -> Dict[str, str]:
+        idx = self._id_to_idx[key]  # raises KeyError if missing
+        text = self._texts[idx]
+        if self._titles is not None:
+            return {"text": text, "title": self._titles[idx]}
+        return {"text": text}
+
+    def __contains__(self, key: object) -> bool:  # type: ignore[override]
+        return key in self._id_to_idx
+
+    def __len__(self) -> int:
+        return len(self._id_to_idx)
+
+    def __iter__(self):
+        return iter(self._id_to_idx)
+
+    def keys(self):
+        return self._id_to_idx.keys()
+
+
 @dataclass
 class RetrievalRawData:
     """Raw data structure for retrieval tasks (includes STS tasks treated as retrieval).
@@ -221,8 +278,8 @@ class RetrievalRawData:
     unique_query_texts: Sequence[str]  # List[str] or pd.Series
     unique_query_ids: List[str]
 
-    corpus_dict: Dict[str, Dict[str, str]]
-    query_dict: Dict[str, Dict[str, str]]
+    corpus_dict: Mapping  # LazyCorpusDict or dict[str, dict[str, str]]
+    query_dict: Mapping  # LazyCorpusDict or dict[str, dict[str, str]]
     has_title: bool
     n_positives: int  # Number of unique positives at the beginning of documents
 

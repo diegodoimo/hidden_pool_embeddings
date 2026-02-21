@@ -6,11 +6,12 @@ These loaders are used by multiple retrieval tasks.
 import datasets as _datasets
 from datasets import load_dataset
 from typing import List, Optional
+import gc
 import time
 import torch.distributed as dist
 import pandas as pd
 import numpy as np
-from tasks.data_helpers import RetrievalRawData, get_dict
+from tasks.data_helpers import RetrievalRawData, LazyCorpusDict, get_dict
 from utils.helpers import return_formatted
 
 _datasets.config.HF_DATASETS_TIMEOUT = 120
@@ -165,6 +166,12 @@ def from_one_hf_dataset(
             cols_to_load.append(neg_title_col)
     df = dataset.select_columns(cols_to_load).to_pandas()
 
+    # Free the HF Arrow table — the data now lives in the pandas DataFrame.
+    # For large datasets (e.g. BioASQ, 14 M rows) this reclaims ~10-20 GB.
+    del dataset
+    gc.collect()
+    # --- OLD: dataset was not freed here, staying in memory alongside df ---
+
     # Keep as pandas Series — no .tolist() needed.
     # Dataset.from_dict() in dict_to_dataset() accepts Series directly,
     # so the round-trip Arrow → list → Arrow is avoided for 20M strings.
@@ -235,6 +242,12 @@ def from_one_hf_dataset(
                 f"Found {return_formatted(len(neg_ids))} unique negatives not in positives"
             )
 
+    # Free the DataFrame — column Series (query_texts, positive_texts, titles)
+    # keep the underlying data alive via their own references.
+    del df
+    gc.collect()
+    # --- OLD: df was not freed here, staying in memory ---
+
     assert set(positive_ids).issubset(
         set(unique_positive_ids)
     ), "filtered qrels contain positive IDs not in corpus"
@@ -299,22 +312,36 @@ def from_one_hf_dataset(
         document_titles = unique_positive_titles
 
     # Build corpus_dict with unique entries (bijective doc_id <-> document)
-    if has_title:
-        corpus_dict = {
-            id_: {"text": doc_text, "title": doc_title}
-            for id_, doc_text, doc_title in zip(
-                document_ids, document_texts, document_titles
-            )
-        }
-    else:
-        corpus_dict = {
-            id_: {"text": doc_text}
-            for id_, doc_text in zip(document_ids, document_texts)
-        }
+    # Use LazyCorpusDict to avoid materialising a dict-of-dicts, which
+    # would duplicate all text data and add ~4-7 GB of Python object
+    # overhead for multi-million-row datasets.
+    corpus_dict = LazyCorpusDict(
+        ids=document_ids,
+        texts=document_texts,
+        titles=document_titles if has_title else None,
+    )
 
-    query_dict = {
-        id_: {"text": text} for id_, text in zip(unique_query_ids, unique_query_texts)
-    }
+    query_dict = LazyCorpusDict(
+        ids=unique_query_ids,
+        texts=unique_query_texts,
+    )
+    # --- OLD: corpus_dict and query_dict were full Python dicts ---
+    # if has_title:
+    #     corpus_dict = {
+    #         id_: {"text": doc_text, "title": doc_title}
+    #         for id_, doc_text, doc_title in zip(
+    #             document_ids, document_texts, document_titles
+    #         )
+    #     }
+    # else:
+    #     corpus_dict = {
+    #         id_: {"text": doc_text}
+    #         for id_, doc_text in zip(document_ids, document_texts)
+    #     }
+    #
+    # query_dict = {
+    #     id_: {"text": text} for id_, text in zip(unique_query_ids, unique_query_texts)
+    # }
     assert set(document_ids) == set(corpus_dict.keys())
     dist.barrier()
     if rank == 0 and verbose:
@@ -423,6 +450,9 @@ def from_multiple_hf_datasets(
 
     # Build queries dict
     queries_dict = get_dict(querys_, task.query_fields["id"], task.query_fields["text"])
+    del querys_  # free HF Arrow table
+    gc.collect()
+    # --- OLD: querys_ was not freed here ---
 
     # Drop entries with null text (e.g. wikihow)
     null_query_ids = [k for k, v in queries_dict.items() if not v.get("text")]
@@ -445,6 +475,9 @@ def from_multiple_hf_datasets(
         task.corpus_fields["text"],
         task.corpus_fields.get("title", None),
     )
+    del corpus  # free HF Arrow table
+    gc.collect()
+    # --- OLD: corpus HF dataset was not freed here ---
 
     # Drop entries with null text (e.g. wikihow)
     null_corpus_ids = [k for k, v in corpus_dict.items() if not v.get("text")]
@@ -496,6 +529,9 @@ def from_multiple_hf_datasets(
     unique_query_idx = unique_query_mask[unique_query_mask].index.values
     unique_query_ids = df_qrels.loc[unique_query_mask, "query_id"].tolist()
     unique_query_texts = [queries_dict[qid]["text"] for qid in unique_query_ids]
+    del queries_dict  # free the multiprocessed dict
+    gc.collect()
+    # --- OLD: queries_dict was not freed here ---
 
     # Get unique positives (preserving first occurrence order)
     unique_positive_mask = ~df_qrels["positive_id"].duplicated(keep="first")
@@ -640,9 +676,24 @@ def from_multiple_hf_datasets(
         corpus_keys == doc_keys
     ), f"corpus_dict keys mismatch with document_ids. Missing in corpus: {doc_keys - corpus_keys}, Missing in docs: {corpus_keys - doc_keys}"
 
-    query_dict = {
-        id_: {"text": text} for id_, text in zip(unique_query_ids, unique_query_texts)
-    }
+    # Replace the heavy get_dict() Python dict-of-dicts with a lightweight
+    # LazyCorpusDict that references the already-built document lists.
+    del corpus_dict
+    gc.collect()
+    corpus_dict = LazyCorpusDict(
+        ids=document_ids,
+        texts=document_texts,
+        titles=document_titles if has_title else None,
+    )
+
+    query_dict = LazyCorpusDict(
+        ids=unique_query_ids,
+        texts=unique_query_texts,
+    )
+    # --- OLD: corpus_dict was kept as a full dict-of-dicts from get_dict() ---
+    # query_dict = {
+    #     id_: {"text": text} for id_, text in zip(unique_query_ids, unique_query_texts)
+    # }
 
     return RetrievalRawData(
         query_ids=query_ids,
