@@ -1,8 +1,8 @@
 import time
 
 def main():
-    print("Sleeping for 10 hours...")
-    time.sleep(10 * 60 * 60)
+    print("Sleeping for 20 hours...")
+    time.sleep(20 * 60 * 60)
 
 
 

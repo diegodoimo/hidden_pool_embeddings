@@ -105,7 +105,7 @@ def search(
     batch_size=64,
     chunk_size=10**4,
     query_chunk_size=None,
-    print_every=10**5,
+    print_every=2*10**5,
 ):
     """
     Search for top-k documents and compute query-positive scores.
@@ -159,7 +159,7 @@ def search(
     )
 
     # ========================================================================
-    # SIMPLIFIED PREPARATION FOR QUERY-POSITIVE SCORE EXTRACTION
+    # PREPARATION FOR QUERY-POSITIVE SCORE EXTRACTION
     # ========================================================================
 
     # Build mapping from corpus_id to corpus_index (only for positives)
@@ -201,9 +201,9 @@ def search(
     time_sim = 0
 
     start = time.time()
-    print(f"chunk size {rank}: {chunk_size}")
-    n_iters = N_corpus//chunk_size
-    print(f"chunk size {rank}: {n_iters}")
+    # print(f"chunk size {rank}: {chunk_size}")
+    # #n_iters = N_corpus//chunk_size
+    # print(f"iters {rank}: {n_iters}")
 
     for i, chunk_idx in enumerate(range(0, N_corpus, chunk_size)):
 
@@ -213,7 +213,7 @@ def search(
         # t0 = time.time()
 
         if (i + 1) % interval == 0:
-            print(rank)
+            #print(rank)
             if rank == 0:
                 print(
                     f"processed {return_formatted(chunk_idx)}/{return_formatted(N_corpus)} samples in {(time.time()-start)/60:.2f} mins"
@@ -299,10 +299,6 @@ def search(
         # time_loading = t01 - t0
         # time_encoding += t1 - t01
         # time_sim += t11 - t1
-        if i+1 >= n_chunks: 
-            print(f"iter {i}, rank {rank}")
-            torch.cuda.synchronize()
-            dist.barrier()
 
 
     dist.barrier()
@@ -310,14 +306,9 @@ def search(
     if rank == 0:
         print("\nGathering top scores top indices from all GPUs...")
 
-    print(
-        f"{rank}: {top_scores.shape} {top_indices.shape} {query_positive_scores.shape}"
-    )
-
-    dist.barrier()
-    torch.cuda.synchronize()
-    print("\nCheck passed")
-
+    # print(
+    #     f"{rank}: {top_scores.shape} {top_indices.shape} {query_positive_scores.shape}"
+    # )
 
     # Distributed merging for top-k results
     if world_size > 1:
