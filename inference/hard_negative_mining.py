@@ -441,6 +441,14 @@ class HardNegativesMiner:
         free_mem, _ = torch.cuda.mem_get_info()
         stream_to_cpu = (query_emb_bytes + topk_bytes) > 0.5 * free_mem
 
+        # Broadcast stream_to_cpu from rank 0 so all GPUs take the same
+        # code path — free_mem can differ across GPUs and a mismatch
+        # would desync the NCCL collective sequence.
+        _flag = torch.tensor([int(stream_to_cpu)], device=f"cuda:{self.rank}")
+        dist.broadcast(_flag, src=0)
+        stream_to_cpu = bool(_flag.item())
+        del _flag
+
         dist.barrier()
         if self.rank == 0:
             start = time.time()
@@ -475,6 +483,18 @@ class HardNegativesMiner:
 
         dist.barrier()
         chunk_size, query_chunk_size = estimate_chunk_sizes(query_embeddings)
+
+        print(f"chunk size {self.rank}: {chunk_size}")
+        # Broadcast chunk sizes from rank 0 so the search loop has the
+        # same number of iterations on every GPU (free_mem can differ).
+        _cs = torch.tensor(
+            [chunk_size, query_chunk_size], dtype=torch.long, device=f"cuda:{self.rank}"
+        )
+        dist.broadcast(_cs, src=0)
+        chunk_size, query_chunk_size = int(_cs[0].item()), int(_cs[1].item())
+        del _cs
+        print(f"chunk size {self.rank}: {chunk_size}")
+
         if self.rank == 0:
             print("\nBuilding document embeddings and computing query-positive scores")
             if query_chunk_size < query_embeddings.shape[0]:
