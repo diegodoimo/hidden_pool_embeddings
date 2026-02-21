@@ -178,24 +178,8 @@ def update_dataset_dict(
         dataset_dict["subset"].extend([subtask] * n)
 
 
-def save_dataset_dict_to_disk(
-    dataset_dict,
-    save_path,
-    stats,
-    model_name,
-    has_title,
-    rank,
-    per_subset_stats=None,
-):
-    """Convert *dataset_dict* to an HF ``Dataset`` and save to *save_path*.
-
-    Only rank-0 performs the I/O.  The ``Dataset`` object is deleted
-    immediately after saving to keep peak memory low (important when the
-    dict contains up to ~10 M rows).
-    """
-    if rank != 0:
-        return
-
+def _get_features_dict(has_title, has_subset):
+    """Return a Features dict for the hard-negatives schema."""
     features_dict = {
         "query_text": Value("string"),
         "query_id": Value("string"),
@@ -207,14 +191,57 @@ def save_dataset_dict_to_disk(
     if has_title:
         features_dict["positive_title"] = Value("string")
         features_dict["negative_title"] = Sequence(Value("string"))
-    if "subset" in dataset_dict:
+    if has_subset:
         features_dict["subset"] = Value("string")
+    return features_dict
 
-    dataset = Dataset.from_dict(dataset_dict, features=Features(features_dict))
 
-    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-    dataset.save_to_disk(save_path)
+def save_dataset_shard_to_parquet(
+    dataset_dict,
+    save_dir,
+    shard_name,
+    has_title,
+    rank,
+):
+    """Save *dataset_dict* as a single compressed Parquet shard.
+
+    Only rank-0 performs the I/O.  The shard is written to
+    ``<save_dir>/<shard_name>.parquet`` using zstd compression,
+    which typically reduces string-heavy data to ~10-20 % of the
+    uncompressed Arrow size.
+
+    The ``Dataset`` object is deleted immediately after writing so
+    that peak memory stays proportional to one subtask, not the
+    full accumulated dataset.
+    """
+    if rank != 0:
+        return
+
+    save_path = Path(save_dir)
+    save_path.mkdir(parents=True, exist_ok=True)
+
+    has_subset = "subset" in dataset_dict
+    features = Features(_get_features_dict(has_title, has_subset))
+    dataset = Dataset.from_dict(dataset_dict, features=features)
+
+    parquet_path = save_path / f"{shard_name}.parquet"
+    dataset.to_parquet(str(parquet_path))
     del dataset  # free Arrow memory immediately
+
+
+def save_dataset_metadata(
+    save_dir,
+    stats,
+    model_name,
+    rank,
+    per_subset_stats=None,
+):
+    """Write a JSON metadata file summarising the mined hard-negatives.
+
+    Only rank-0 performs the I/O.
+    """
+    if rank != 0:
+        return
 
     metadata = {
         "num_triples": stats.total_queries,
@@ -228,8 +255,40 @@ def save_dataset_dict_to_disk(
         metadata["per_subset"] = {
             name: s.to_dict() for name, s in per_subset_stats.items()
         }
-    with open(f"{save_path}/dataset_metadata.json", "w") as f:
+    Path(save_dir).mkdir(parents=True, exist_ok=True)
+    with open(f"{save_dir}/dataset_metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
+
+
+# ---------- backward-compatible wrapper (non-subtask datasets) ----------
+def save_dataset_dict_to_disk(
+    dataset_dict,
+    save_path,
+    stats,
+    model_name,
+    has_title,
+    rank,
+    per_subset_stats=None,
+):
+    """Convert *dataset_dict* to a compressed Parquet file and save to *save_path*.
+
+    Only rank-0 performs the I/O.  The ``Dataset`` object is deleted
+    immediately after saving to keep peak memory low.
+    """
+    save_dataset_shard_to_parquet(
+        dataset_dict=dataset_dict,
+        save_dir=save_path,
+        shard_name="data",
+        has_title=has_title,
+        rank=rank,
+    )
+    save_dataset_metadata(
+        save_dir=save_path,
+        stats=stats,
+        model_name=model_name,
+        rank=rank,
+        per_subset_stats=per_subset_stats,
+    )
 
 
 class HardNegativesMiner:
@@ -484,7 +543,6 @@ class HardNegativesMiner:
         dist.barrier()
         chunk_size, query_chunk_size = estimate_chunk_sizes(query_embeddings)
 
-
         # Broadcast chunk sizes from rank 0 so the search loop has the
         # same number of iterations on every GPU (free_mem can differ).
         _cs = torch.tensor(
@@ -668,7 +726,6 @@ class HardNegativesMiner:
             if not has_subtasks:
                 subtasks = [None]
 
-            dataset_dict = {}
             accumulated_stats = TripletStats()
             per_subset_stats = {} if has_subtasks else None
 
@@ -718,6 +775,10 @@ class HardNegativesMiner:
                         + (f" subtask {subtask}" if subtask else "")
                     )
 
+                # Build a fresh dict for this subtask only — avoids
+                # accumulating all subtasks in memory (critical for
+                # StackExchange with 174 subtasks / ~4.7 M rows).
+                dataset_dict = {}
                 update_dataset_dict(
                     dataset_dict=dataset_dict,
                     qrels=dataset["qrels"],
@@ -733,20 +794,32 @@ class HardNegativesMiner:
 
                 dist.barrier()
                 if self.rank == 0:
-                    print(f"\n\nsaving dataset {task_name}")
+                    print(
+                        f"\n\nsaving shard for {task_name}"
+                        + (f" subtask {subtask}" if subtask else "")
+                    )
 
-                save_dataset_dict_to_disk(
+                # Save this subtask as a compressed Parquet shard,
+                # then release the dict so memory stays bounded.
+                shard_name = subtask if subtask is not None else "data"
+                save_dataset_shard_to_parquet(
                     dataset_dict=dataset_dict,
-                    save_path=save_path,
-                    stats=accumulated_stats,
-                    model_name=self.model_name,
+                    save_dir=save_path,
+                    shard_name=shard_name,
                     has_title=has_title,
                     rank=self.rank,
-                    per_subset_stats=per_subset_stats,
                 )
+                del dataset_dict
 
                 torch.cuda.empty_cache()
                 print_memory_consumed(rank=self.rank)
                 dist.barrier()
 
-            del dataset_dict
+            # Write metadata once after all subtasks are done
+            save_dataset_metadata(
+                save_dir=save_path,
+                stats=accumulated_stats,
+                model_name=self.model_name,
+                rank=self.rank,
+                per_subset_stats=per_subset_stats,
+            )

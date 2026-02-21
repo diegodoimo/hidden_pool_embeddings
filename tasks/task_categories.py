@@ -69,24 +69,8 @@ NLI_TASKS = [
     "snli",
     "mnli",
     "anli",
+    "xnli",
     "all_nli",  # Combined NLI dataset
-]
-
-XNLI_TASKS = [
-    "xnli_ar",
-    "xnli_bg",
-    "xnli_de",
-    "xnli_el",
-    "xnli_es",
-    "xnli_fr",
-    "xnli_hi",
-    "xnli_ru",
-    "xnli_sw",
-    "xnli_th",
-    "xnli_tr",
-    "xnli_ur",
-    "xnli_vi",
-    "xnli_zh",
 ]
 
 # ============================================================================
@@ -173,9 +157,6 @@ for task in SUMMARIZATION:
 for task in NLI_TASKS:
     TASK_TO_CATEGORY[task] = "nli"
 
-for task in XNLI_TASKS:
-    TASK_TO_CATEGORY[task] = "nli/xnli"
-
 # STS tasks
 for task in STS_TASKS:
     TASK_TO_CATEGORY[task] = "sts"
@@ -223,8 +204,8 @@ def get_category_path(task_name: str, base_path: str) -> str:
         >>> get_category_path("snli", "./results/datasets_negatives/qwen3_8b")
         "./results/datasets_negatives/qwen3_8b/nli/snli"
 
-        >>> get_category_path("xnli_ar", "./results/datasets_negatives/qwen3_8b")
-        "./results/datasets_negatives/qwen3_8b/nli/xnli/xnli_ar"
+        >>> get_category_path("xnli", "./results/datasets_negatives/qwen3_8b")
+        "./results/datasets_negatives/qwen3_8b/nli/xnli"
     """
     category = get_task_category(task_name)
     if category:
