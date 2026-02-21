@@ -306,6 +306,9 @@ def search(
 
     dist.barrier()
     torch.cuda.synchronize()
+    print("\nCheck passed")
+
+
     # Distributed merging for top-k results
     if world_size > 1:
         if queries_on_cpu:
