@@ -235,6 +235,10 @@ def search(
     time_sim = 0
 
     start = time.time()
+    print(f"chunk size {rank}: {chunk_size}")
+    n_iters = N_corpus//chunk_size
+    print(f"chunk size {rank}: {n_iters}")
+
     for i, chunk_idx in enumerate(range(0, N_corpus, chunk_size)):
         
         dist.barrier()
@@ -243,6 +247,7 @@ def search(
         #t0 = time.time()
 
         if (i + 1) % interval == 0:
+            print(rank)
             if rank == 0:
                 print(
                     f"processed {return_formatted(chunk_idx)}/{return_formatted(N_corpus)} samples in {(time.time()-start)/60:.2f} mins"
@@ -329,6 +334,11 @@ def search(
         # time_loading = t01 - t0
         # time_encoding += t1 - t01
         # time_sim += t11 - t1
+        if i+1 >= n_chunks: 
+            print(f"iter {i}, rank {rank}")
+            torch.cuda.synchronize()
+            dist.barrier()
+
 
     dist.barrier()
     torch.cuda.synchronize()
