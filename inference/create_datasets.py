@@ -242,11 +242,7 @@ def create_dataset(
         all_removed_empty_ids.extend(removed_empty)
         return keep_mask
 
-    new_ds = new_ds.filter(
-        filter_wrapper,
-        batched=True,
-        batch_size=10000
-    )
+    new_ds = new_ds.filter(filter_wrapper, batched=True, batch_size=10000)
 
     if rank == 0:
         print(f"dataset filtered in {(time.time()-start)/60:.2f}min")
@@ -276,19 +272,48 @@ def filter_qrels_by_length(
     Returns:
         Filtered qrels dataset
     """
+    # --- SLOW original implementation (kept for reference) ---
+    # Two sources of inefficiency:
+    # 1. `removed_query_ids` and `removed_positive_ids` are plain Python lists, so
+    #    `qid not in removed_query_ids` is an O(n) linear scan on every iteration,
+    #    making the overall loop O(n * m) where n=14M pairs and m=number of removed ids.
+    # 2. The pure-Python for-loop over 14M rows has large per-iteration overhead
+    #    (bytecode dispatch, dynamic type checks, list.append) compared to vectorized C code.
+    #
+    # pair_valid_indices = []
+    # for i, (qid, pid) in enumerate(
+    #     zip(qrels_dataset["query_id"], qrels_dataset["positive_id"])
+    # ):
+    #     if qid not in removed_query_ids and pid not in removed_positive_ids:
+    #         pair_valid_indices.append(i)
+    # filtered_qrels = qrels_dataset.select(pair_valid_indices)
+    # return filtered_qrels
+    # ----------------------------------------------------------
 
-    # Filter pairs: Keep only if BOTH query AND positive are within max_length
-    pair_valid_indices = []
-    for i, (qid, pid) in enumerate(
-        zip(qrels_dataset["query_id"], qrels_dataset["positive_id"])
-    ):
-        if qid not in removed_query_ids and pid not in removed_positive_ids:
-            pair_valid_indices.append(i)
+    if not removed_query_ids and not removed_positive_ids:
+        return qrels_dataset
 
-    # Filter the qrels dataset based on the valid indices
-    filtered_qrels = qrels_dataset.select(pair_valid_indices)
+    # Convert to sets for O(1) lookup instead of O(n) list scan
+    removed_query_set = set(removed_query_ids)
+    removed_positive_set = set(removed_positive_ids)
 
-    return filtered_qrels
+    # pd.Series accepts Python lists directly, so we skip the list→np.array copy.
+    # isin() with a set runs a C-level (Cython) loop which is faster than a
+    # Python-generator loop (np.fromiter), despite both being O(n).
+    # Note: np.isin() is NOT used here because it sorts the lookup array → O(n log n).
+    import pandas as pd
+
+    query_valid = (
+        ~pd.Series(qrels_dataset["query_id"]).isin(removed_query_set).to_numpy()
+    )
+    positive_valid = (
+        ~pd.Series(qrels_dataset["positive_id"]).isin(removed_positive_set).to_numpy()
+    )
+
+    keep_mask = query_valid & positive_valid
+    valid_indices = np.where(keep_mask)[0].tolist()
+
+    return qrels_dataset.select(valid_indices)
 
 
 def instruction_template_embeddinggemma(prompt_type, task_metadata, row):
