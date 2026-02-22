@@ -421,7 +421,7 @@ class HardNegativesMiner:
 
             if self.rank == 0:
                 print(
-                    f"full queries and corpus filters in {(time.time()-start)/60:.2f}min"
+                    f"full queries and corpus filtered in {(time.time()-start)/60:.2f}min"
                 )
                 num_queries_lost = len(set(unique_queries_dataset["id"])) - len(
                     set(filtered_qrels["query_id"])

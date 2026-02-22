@@ -158,7 +158,7 @@ def from_one_hf_dataset(
 
     revision = getattr(task, "revision", None)
     dataset = _load_hf_dataset(task.hf_name, subset_name, task.split, revision=revision)
-    _print_ram("after loading HF dataset", rank)
+    #_print_ram("after loading HF dataset", rank)
 
     if task.preprocessor is not None:
         dataset = task.preprocessor(
@@ -216,13 +216,13 @@ def from_one_hf_dataset(
         if neg_title_col is not None:
             cols_to_load.append(neg_title_col)
     df = dataset.select_columns(cols_to_load).to_pandas()
-    _print_ram("after to_pandas (before del dataset)", rank)
+    #_print_ram("after to_pandas (before del dataset)", rank)
 
     # Free the HF Arrow table — the data now lives in the pandas DataFrame.
     # For large datasets (e.g. BioASQ, 14 M rows) this reclaims ~10-20 GB.
     del dataset
     gc.collect()
-    _print_ram("after del dataset + gc", rank)
+    #_print_ram("after del dataset + gc", rank)
     # --- OLD: dataset was not freed here, staying in memory alongside df ---
 
     # Keep as pandas Series — no .tolist() needed.
@@ -261,7 +261,7 @@ def from_one_hf_dataset(
         unique_positive_titles,
     ) = deduplicate(positive_texts, prefix="doc", titles=titles)
     n_positives = len(unique_positive_ids)
-    _print_ram("after deduplication", rank)
+    #_print_ram("after deduplication", rank)
 
     # Extract unique negative texts not already in positives
     neg_ids = []
@@ -304,7 +304,7 @@ def from_one_hf_dataset(
     # keep the underlying data alive via their own references.
     del df
     gc.collect()
-    _print_ram("after del df + gc", rank)
+    #_print_ram("after del df + gc", rank)
     # --- OLD: df was not freed here, staying in memory ---
 
     assert set(positive_ids).issubset(
@@ -403,7 +403,7 @@ def from_one_hf_dataset(
     query_dict = {
         id_: {"text": text} for id_, text in zip(unique_query_ids, unique_query_texts)
     }
-    _print_ram("after building CorpusDict", rank)
+    #_print_ram("after building CorpusDict", rank)
     assert set(document_ids) == set(corpus_dict.keys())
     dist.barrier()
     if rank == 0 and verbose:
@@ -484,7 +484,7 @@ def from_multiple_hf_datasets(
     corpus = _load_hf_dataset(
         task.hf_name, corpus_subset, task.positive_name, revision=revision
     )
-    _print_ram("after loading all HF datasets", rank)
+    #_print_ram("after loading all HF datasets", rank)
 
     if len(qrels) > 10**6:
         verbose = True
@@ -519,7 +519,7 @@ def from_multiple_hf_datasets(
     queries_dict = get_dict(querys_, task.query_fields["id"], task.query_fields["text"])
     del querys_  # free HF Arrow table
     gc.collect()
-    _print_ram("after queries_dict + del querys_", rank)
+    #_print_ram("after queries_dict + del querys_", rank)
     # --- OLD: querys_ was not freed here ---
 
     # Drop entries with null text (e.g. wikihow)
@@ -546,7 +546,7 @@ def from_multiple_hf_datasets(
     )
     del corpus  # free HF Arrow table
     gc.collect()
-    _print_ram("after corpus_dict + del corpus", rank)
+    #_print_ram("after corpus_dict + del corpus", rank)
     # --- OLD: corpus HF dataset was not freed here ---
 
     # Drop entries with null text (e.g. wikihow)
@@ -602,7 +602,7 @@ def from_multiple_hf_datasets(
     unique_query_texts = [queries_dict[qid]["text"] for qid in unique_query_ids]
     del queries_dict  # free the multiprocessed dict
     gc.collect()
-    _print_ram("after del queries_dict", rank)
+    #_print_ram("after del queries_dict", rank)
     # --- OLD: queries_dict was not freed here ---
 
     # Get unique positives (preserving first occurrence order)
@@ -752,7 +752,7 @@ def from_multiple_hf_datasets(
     # LazyCorpusDict that references the already-built document lists.
     del corpus_dict
     gc.collect()
-    _print_ram("after del corpus_dict (get_dict)", rank)
+    #_print_ram("after del corpus_dict (get_dict)", rank)
     corpus_dict = LazyCorpusDict(
         ids=document_ids,
         texts=document_texts,
@@ -763,7 +763,7 @@ def from_multiple_hf_datasets(
         ids=unique_query_ids,
         texts=unique_query_texts,
     )
-    _print_ram("after building LazyCorpusDicts", rank)
+    #_print_ram("after building LazyCorpusDicts", rank)
     # --- OLD: corpus_dict was kept as a full dict-of-dicts from get_dict() ---
     # query_dict = {
     #     id_: {"text": text} for id_, text in zip(unique_query_ids, unique_query_texts)

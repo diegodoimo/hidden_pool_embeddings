@@ -289,14 +289,15 @@ def filter_qrels_by_length(
     # filtered_qrels = qrels_dataset.select(pair_valid_indices)
     # return filtered_qrels
     # ----------------------------------------------------------
-
+    rank = dist.get_rank()
     if not removed_query_ids and not removed_positive_ids:
         return qrels_dataset
 
     # Convert to sets for O(1) lookup instead of O(n) list scan
+    t1 = time.time ()
     removed_query_set = set(removed_query_ids)
     removed_positive_set = set(removed_positive_ids)
-
+    t2 = time.time()
     # pd.Series accepts Python lists directly, so we skip the list→np.array copy.
     # isin() with a set runs a C-level (Cython) loop which is faster than a
     # Python-generator loop (np.fromiter), despite both being O(n).
@@ -310,10 +311,20 @@ def filter_qrels_by_length(
         ~pd.Series(qrels_dataset["positive_id"]).isin(removed_positive_set).to_numpy()
     )
 
+    t3 = time.time()
     keep_mask = query_valid & positive_valid
     valid_indices = np.where(keep_mask)[0].tolist()
+    t4 = time.time()
+    qrels_dataset = qrels_dataset.select(valid_indices)
+    t5 = time.time()
 
-    return qrels_dataset.select(valid_indices)
+    if rank == 0:
+        print((t2-t1)/60, "set conversion")
+        print((t3-t2)/60, "pandas conversion")
+        print((t4-t3)/60, "remaning operations conversion")
+        print((t5-t4)/60, "select indices")
+
+    return qrels_dataset
 
 
 def instruction_template_embeddinggemma(prompt_type, task_metadata, row):
