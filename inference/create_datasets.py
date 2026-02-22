@@ -289,42 +289,49 @@ def filter_qrels_by_length(
     # filtered_qrels = qrels_dataset.select(pair_valid_indices)
     # return filtered_qrels
     # ----------------------------------------------------------
-    rank = dist.get_rank()
     if not removed_query_ids and not removed_positive_ids:
         return qrels_dataset
 
-    # Convert to sets for O(1) lookup instead of O(n) list scan
-    t1 = time.time ()
-    removed_query_set = set(removed_query_ids)
-    removed_positive_set = set(removed_positive_ids)
-    t2 = time.time()
-    # pd.Series accepts Python lists directly, so we skip the list→np.array copy.
-    # isin() with a set runs a C-level (Cython) loop which is faster than a
-    # Python-generator loop (np.fromiter), despite both being O(n).
-    # Note: np.isin() is NOT used here because it sorts the lookup array → O(n log n).
-    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    from datasets import Dataset
 
-    query_valid = (
-        ~pd.Series(qrels_dataset["query_id"]).isin(removed_query_set).to_numpy()
+    # --- Previous approach (kept for reference) ---
+    # pd.Series(qrels_dataset["query_id"]) first decodes the internal Arrow column
+    # into 14M Python string objects, then wraps them in a Series — that
+    # materialisation alone took ~3.75 min for 14M rows.
+    # The fix: operate directly on the underlying Arrow table so the data
+    # never leaves C++ memory.
+    #
+    # removed_query_set = set(removed_query_ids)
+    # removed_positive_set = set(removed_positive_ids)
+    # query_valid = ~pd.Series(qrels_dataset["query_id"]).isin(removed_query_set).to_numpy()
+    # positive_valid = ~pd.Series(qrels_dataset["positive_id"]).isin(removed_positive_set).to_numpy()
+    # keep_mask = query_valid & positive_valid
+    # valid_indices = np.where(keep_mask)[0].tolist()
+    # return qrels_dataset.select(valid_indices)
+    # -----------------------------------------------
+
+    # Access the underlying Arrow table — no Python object creation for 14M rows.
+    # pc.is_in runs entirely in C++ against an Arrow hash table, then
+    # table.filter() applies the boolean mask without going through Python.
+    arrow_table = qrels_dataset.data.table
+
+    query_keep = pc.invert(
+        pc.is_in(
+            arrow_table.column("query_id"),
+            value_set=pa.array(list(removed_query_ids)),
+        )
     )
-    positive_valid = (
-        ~pd.Series(qrels_dataset["positive_id"]).isin(removed_positive_set).to_numpy()
+    positive_keep = pc.invert(
+        pc.is_in(
+            arrow_table.column("positive_id"),
+            value_set=pa.array(list(removed_positive_ids)),
+        )
     )
+    keep_mask = pc.and_(query_keep, positive_keep)
 
-    t3 = time.time()
-    keep_mask = query_valid & positive_valid
-    valid_indices = np.where(keep_mask)[0].tolist()
-    t4 = time.time()
-    qrels_dataset = qrels_dataset.select(valid_indices)
-    t5 = time.time()
-
-    if rank == 0:
-        print((t2-t1)/60, "set conversion")
-        print((t3-t2)/60, "pandas conversion")
-        print((t4-t3)/60, "remaning operations conversion")
-        print((t5-t4)/60, "select indices")
-
-    return qrels_dataset
+    return Dataset(arrow_table.filter(keep_mask))
 
 
 def instruction_template_embeddinggemma(prompt_type, task_metadata, row):
