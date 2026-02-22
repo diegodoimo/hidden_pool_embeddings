@@ -21,6 +21,13 @@ from datasets import DatasetInfo
 import json
 from utils.helpers import print_memory_consumed, return_formatted
 
+# Maximum number of queries to process in a single mine-one pass.
+# When the total number of unique queries exceeds this, the full
+# encode → search → get_hard_negatives → save pipeline is run
+# iteratively in chunks of this size.  This avoids the need for
+# stream_to_cpu which may not be available on every server.
+ITERATIVE_ENCODE_THRESHOLD = 5 * 10**6
+
 
 def estimate_chunk_sizes(query_embeddings, max_corpus_chunk=5 * 10**4):
     """Estimate corpus and query chunk sizes to stay within GPU memory.
@@ -493,8 +500,8 @@ class HardNegativesMiner:
         query_emb_bytes = n_queries * hidden_size * 4  # float32
         topk_bytes = n_queries * top_k * 12  # float32 scores + int64 indices
         free_mem, _ = torch.cuda.mem_get_info()
-        stream_to_cpu = (query_emb_bytes + topk_bytes) > 0.5 * free_mem
-
+        # stream_to_cpu = (query_emb_bytes + topk_bytes) > 0.5 * free_mem
+        stream_to_cpu = False
         # Broadcast stream_to_cpu from rank 0 so all GPUs take the same
         # code path — free_mem can differ across GPUs and a mismatch
         # would desync the NCCL collective sequence.
@@ -702,6 +709,147 @@ class HardNegativesMiner:
 
         return hard_negatives, stats
 
+    def _mine_and_save_iterative(
+        self,
+        dataset,
+        model,
+        has_title,
+        corpus_dict,
+        query_dict,
+        save_path,
+        batch_size,
+        subtask,
+        has_subtasks,
+    ):
+        """Mine hard negatives for very large query sets in chunks.
+
+        When unique queries exceed ``ITERATIVE_ENCODE_THRESHOLD`` the full
+        encode → search → get_hard_negatives → save pipeline is run on
+        successive chunks of queries that individually fit in GPU memory.
+        Each chunk produces its own Parquet shard so that peak RAM stays
+        bounded throughout.
+
+        Returns:
+            TripletStats accumulated across all chunks.
+        """
+        n_queries = len(dataset["unique_queries"])
+        chunk_size = ITERATIVE_ENCODE_THRESHOLD
+        n_chunks = (n_queries + chunk_size - 1) // chunk_size
+
+        if self.rank == 0:
+            print(
+                f"\nIterative mining: {return_formatted(n_queries)} queries "
+                f"in {n_chunks} chunks of up to "
+                f"{return_formatted(chunk_size)}"
+            )
+
+        accumulated_stats = TripletStats()
+
+        # Pre-extract qrels columns (may be Arrow columns — convert once)
+        all_qrel_query_ids = list(dataset["qrels"]["query_id"])
+        all_qrel_positive_ids = list(dataset["qrels"]["positive_id"])
+
+        for ci in range(n_chunks):
+            chunk_start = ci * chunk_size
+            chunk_end = min(chunk_start + chunk_size, n_queries)
+
+            if self.rank == 0:
+                print(
+                    f"\n{'=' * 60}\n"
+                    f"Iterative chunk {ci + 1}/{n_chunks}: "
+                    f"queries {return_formatted(chunk_start)}"
+                    f"–{return_formatted(chunk_end)}\n"
+                    f"{'=' * 60}"
+                )
+
+            # Select unique queries for this chunk
+            chunk_unique_queries = dataset["unique_queries"].select(
+                range(chunk_start, chunk_end)
+            )
+            chunk_query_id_set = set(chunk_unique_queries["id"])
+
+            # Filter qrels to only include queries in this chunk
+            chunk_qrel_qids = []
+            chunk_qrel_pids = []
+            for qid, pid in zip(all_qrel_query_ids, all_qrel_positive_ids):
+                if qid in chunk_query_id_set:
+                    chunk_qrel_qids.append(qid)
+                    chunk_qrel_pids.append(pid)
+
+            chunk_qrels = Dataset.from_dict(
+                {"query_id": chunk_qrel_qids, "positive_id": chunk_qrel_pids}
+            )
+
+            if self.rank == 0:
+                print(
+                    f"chunk unique queries: {return_formatted(len(chunk_unique_queries))}, "
+                    f"chunk qrels: {return_formatted(len(chunk_qrels))}"
+                )
+
+            chunk_dataset = {
+                "qrels": chunk_qrels,
+                "unique_queries": chunk_unique_queries,
+                "corpus": dataset["corpus"],
+                "n_positives": dataset["n_positives"],
+            }
+
+            # mine_one will see ≤ ITERATIVE_ENCODE_THRESHOLD queries,
+            # so it will use the normal GPU path (no stream_to_cpu).
+            hard_negatives, stats = self.mine_one(
+                dataset=chunk_dataset,
+                model=model,
+                batch_size=batch_size,
+                has_title=has_title,
+                corpus_dict=corpus_dict,
+            )
+            stats.total_queries = len(chunk_qrels)
+            accumulated_stats.merge(stats)
+
+            dist.barrier()
+            if self.rank == 0:
+                print(f"\n\nupdating dataset dict for chunk {ci + 1}/{n_chunks}")
+
+            # Build dataset dict and save shard immediately
+            dataset_dict = {}
+            update_dataset_dict(
+                dataset_dict=dataset_dict,
+                qrels=chunk_qrels,
+                negatives=hard_negatives,
+                has_title=has_title,
+                corpus_dict=corpus_dict,
+                query_dict=query_dict,
+                subtask=subtask if has_subtasks else None,
+            )
+
+            # Shard naming: append chunk index to distinguish from
+            # single-chunk shards produced by the non-iterative path.
+            base_name = subtask if subtask is not None else "data"
+            shard_name = f"{base_name}_chunk_{ci}"
+
+            dist.barrier()
+            if self.rank == 0:
+                print(f"\nsaving shard {shard_name}")
+
+            save_dataset_shard_to_parquet(
+                dataset_dict=dataset_dict,
+                save_dir=save_path,
+                shard_name=shard_name,
+                has_title=has_title,
+                rank=self.rank,
+            )
+
+            del hard_negatives, chunk_dataset, dataset_dict
+            del chunk_qrels, chunk_unique_queries
+            del chunk_qrel_qids, chunk_qrel_pids
+            torch.cuda.empty_cache()
+
+            dist.barrier()
+            if self.rank == 0:
+                print(f"Chunk {ci + 1}/{n_chunks} done")
+                print_memory_consumed(rank=self.rank)
+
+        return accumulated_stats
+
     def mine_negatives(self, model, batch_size=64):
 
         self.batch_size = batch_size
@@ -748,6 +896,39 @@ class HardNegativesMiner:
                     print(f"\n\nprocessing dataset {task_name}")
                     print_memory_consumed(rank=self.rank)
 
+                # Decide whether to use the iterative path for very
+                # large query sets (> ITERATIVE_ENCODE_THRESHOLD).
+                n_unique_queries = len(dataset["unique_queries"])
+                use_iterative = n_unique_queries > ITERATIVE_ENCODE_THRESHOLD
+                # Broadcast from rank 0 so every GPU takes the same path.
+                _flag = torch.tensor([int(use_iterative)], device=f"cuda:{self.rank}")
+                dist.broadcast(_flag, src=0)
+                use_iterative = bool(_flag.item())
+                del _flag
+
+                if use_iterative:
+                    chunk_stats = self._mine_and_save_iterative(
+                        dataset=dataset,
+                        model=model,
+                        has_title=has_title,
+                        corpus_dict=corpus_dict,
+                        query_dict=query_dict,
+                        save_path=save_path,
+                        batch_size=batch_size,
+                        subtask=subtask,
+                        has_subtasks=has_subtasks,
+                    )
+                    accumulated_stats.merge(chunk_stats)
+                    if has_subtasks:
+                        per_subset_stats[subtask] = chunk_stats
+
+                    del dataset, data_split
+                    torch.cuda.empty_cache()
+                    print_memory_consumed(rank=self.rank)
+                    dist.barrier()
+                    continue
+
+                # --------------- normal (non-iterative) path ---------------
                 hard_negatives, stats = self.mine_one(
                     dataset=dataset,
                     model=model,
