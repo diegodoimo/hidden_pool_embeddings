@@ -166,7 +166,7 @@ def _load_retrieval_data(
         print(f"Writing corpus Arrow file to {tmp_path}")
     _print_ram("before ipc write", rank)
     with pa_ipc.new_file(tmp_path, schema) as writer:
-        writer.write(pa.record_batch(arrays, schema=schema))
+        writer.write_table(pa.table(dict(zip(names, arrays))))
     _print_ram("after ipc write", rank)
 
     # Free the in-memory arrays before opening the mmap'd dataset
