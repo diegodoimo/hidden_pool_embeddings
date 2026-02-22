@@ -120,69 +120,14 @@ def _load_retrieval_data(
     if rank == 0 and verbose:
         print(f"Building document dataset")
 
-    # --- Old implementation (single call, higher peak memory) ---
-    # corpus_ds = dict_to_dataset(
-    #     texts=raw_data.document_texts,
-    #     ids=raw_data.document_ids,
-    #     titles=raw_data.document_titles,
-    # )
-    # del raw_data.document_texts, raw_data.document_ids, raw_data.document_titles
-    # _print_ram("after dict_to_dataset (corpus)", rank)
-
-    # Build each Arrow column one at a time, freeing the Python list from
-    # raw_data before allocating the next one.  This avoids the peak where
-    # all three Python lists AND all three Arrow arrays coexist in memory.
-    arr_doc_text = pa.array(raw_data.document_texts, type=pa.string())
-    del raw_data.document_texts
-    gc.collect()
-    _print_ram("after arr_doc_text", rank)
-
-    arr_doc_id = pa.array(raw_data.document_ids, type=pa.string())
-    del raw_data.document_ids
-    gc.collect()
-    _print_ram("after arr_doc_id", rank)
-
-    has_titles = raw_data.document_titles is not None
-    if has_titles:
-        arr_doc_title = pa.array(raw_data.document_titles, type=pa.string())
-        del raw_data.document_titles
-        gc.collect()
-        _print_ram("after arr_doc_title", rank)
-        names = ["text", "id", "title"]
-        arrays = [arr_doc_text, arr_doc_id, arr_doc_title]
-    else:
-        del raw_data.document_titles
-        names = ["text", "id"]
-        arrays = [arr_doc_text, arr_doc_id]
-
-    # Write to a temp Arrow IPC file (zero-copy streaming from existing buffers),
-    # then free the source arrays and memory-map the file back.
-    # This avoids the in-process copy that Dataset(pa.table(...)) may trigger
-    # when combining large chunked string columns (which caused the OOM/hang).
-    schema = pa.schema([(n, pa.string()) for n in names])
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".arrow")
-    os.close(tmp_fd)
-    if rank == 0 and verbose:
-        print(f"Writing corpus Arrow file to {tmp_path}")
-    _print_ram("before ipc write", rank)
-    with pa_ipc.new_file(tmp_path, schema) as writer:
-        writer.write_table(pa.table(dict(zip(names, arrays))))
-    _print_ram("after ipc write", rank)
-
-    # Free the in-memory arrays before opening the mmap'd dataset
-    del arrays, arr_doc_text, arr_doc_id
-    if has_titles:
-        del arr_doc_title
-    gc.collect()
-    _print_ram("after del arrays (before mmap)", rank)
-
-    # Memory-map the IPC file: buffers are backed by disk pages, not RAM.
-    # On Linux, unlinking after mmap is safe — the data remains accessible.
-    mm = pa.memory_map(tmp_path, "r")
-    corpus_table = pa.ipc.open_file(mm).read_all()
-    os.unlink(tmp_path)
-    corpus_ds = Dataset(corpus_table)
-    del corpus_table
+    corpus_ds = _build_corpus_dataset(
+        texts=raw_data.document_texts,
+        ids=raw_data.document_ids,
+        titles=raw_data.document_titles,
+        rank=rank,
+        verbose=verbose,
+    )
+    del raw_data.document_texts, raw_data.document_ids, raw_data.document_titles
     _print_ram("after dict_to_dataset (corpus)", rank)
 
     hf_dataset = {
@@ -224,3 +169,95 @@ def _load_classification_data(task) -> ClassificationRawData:
 def _build_corpus_dict(dataset, id_field, text_field, title_field=None):
     """Helper to build corpus dictionary from dataset."""
     return get_dict(dataset, id_field, text_field, title_field)
+
+
+# Threshold above which the mmap IPC strategy is used instead of the
+# standard in-memory pa.table() path.  The large datasets that require
+# it (s2orc_*, paq, bioasq) all have >9M documents; normal datasets are
+# well below 5M.
+_LARGE_CORPUS_THRESHOLD = 5_000_000
+
+
+def _build_corpus_dataset(texts, ids, titles, rank=0, verbose=False) -> Dataset:
+    """Build a HuggingFace Dataset from corpus lists.
+
+    For small corpora (< _LARGE_CORPUS_THRESHOLD documents) uses the fast
+    in-memory pa.table() path via dict_to_dataset.
+
+    For large corpora (>= _LARGE_CORPUS_THRESHOLD documents) uses a
+    write-then-mmap strategy to avoid the combine_chunks() copy that
+    Dataset(pa.table(...)) triggers on ChunkedArrays produced by pa.array()
+    over lists exceeding Arrow's 2 GB buffer limit.  That copy can spike
+    memory by 30-60 GB per process and cause OOM on datasets like
+    s2orc_title_abstract (~41M docs), paq (~9M docs), and bioasq (~14M docs).
+
+    The mmap strategy:
+      1. Convert each Python list to an Arrow array one at a time, freeing
+         the source list before converting the next (avoids Python+Arrow
+         double-presence during conversion).
+      2. Write all columns to a temp Arrow IPC file — the IPC writer
+         handles ChunkedArrays natively with zero in-memory copy.
+      3. Delete all in-memory Arrow arrays and gc.collect().
+      4. Memory-map the file back; the resulting table's buffers are backed
+         by OS file pages, not heap RAM.
+      5. Wrap in Dataset() — no combine_chunks() is triggered because the
+         table is already in contiguous on-disk layout.
+      6. Unlink the temp file (safe on Linux: mmap keeps the inode alive).
+    """
+    n_docs = len(ids)
+
+    if n_docs < _LARGE_CORPUS_THRESHOLD:
+        # Fast in-memory path for normal-sized corpora.
+        return dict_to_dataset(texts=texts, ids=ids, titles=titles)
+
+    # --- Large-corpus mmap path ---
+    if rank == 0 and verbose:
+        print(
+            f"Large corpus detected ({n_docs:,} docs >= {_LARGE_CORPUS_THRESHOLD:,}): "
+            "using write-then-mmap strategy"
+        )
+
+    arr_text = pa.array(texts, type=pa.string())
+    del texts
+    gc.collect()
+    _print_ram("after arr_doc_text", rank)
+
+    arr_id = pa.array(ids, type=pa.string())
+    del ids
+    gc.collect()
+    _print_ram("after arr_doc_id", rank)
+
+    has_titles = titles is not None
+    if has_titles:
+        arr_title = pa.array(titles, type=pa.string())
+        del titles
+        gc.collect()
+        _print_ram("after arr_doc_title", rank)
+        names = ["text", "id", "title"]
+        arrays = [arr_text, arr_id, arr_title]
+    else:
+        names = ["text", "id"]
+        arrays = [arr_text, arr_id]
+
+    schema = pa.schema([(n, pa.string()) for n in names])
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".arrow")
+    os.close(tmp_fd)
+    if rank == 0 and verbose:
+        print(f"Writing corpus Arrow file to {tmp_path}")
+    _print_ram("before ipc write", rank)
+    with pa_ipc.new_file(tmp_path, schema) as writer:
+        writer.write_table(pa.table(dict(zip(names, arrays))))
+    _print_ram("after ipc write", rank)
+
+    del arrays, arr_text, arr_id
+    if has_titles:
+        del arr_title
+    gc.collect()
+    _print_ram("after del arrays (before mmap)", rank)
+
+    mm = pa.memory_map(tmp_path, "r")
+    corpus_table = pa_ipc.open_file(mm).read_all()
+    os.unlink(tmp_path)
+    corpus_ds = Dataset(corpus_table)
+    del corpus_table
+    return corpus_ds

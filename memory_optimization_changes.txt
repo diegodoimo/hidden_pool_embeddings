@@ -100,4 +100,114 @@ Old code is kept as comments (prefixed with "# --- OLD:") next to each
 changed section in retrieval_loaders.py for easy rollback.
 
 
+=================================================
+Memory Optimization Changes — February 22, 2026
+=================================================
+
+Problem
+-------
+After the Feb-21 changes the loader reached "Building document dataset"
+but then silently hung / was OOM-killed.  The RAM profile at that point
+was (per process, 4 processes total):
+
+  [RAM] after arr_doc_text:   process RSS 50.92 GB
+  [RAM] after arr_doc_id:     process RSS 51.02 GB
+  [RAM] after arr_doc_title:  process RSS 52.34 GB
+  <process killed — no further output>
+
+The process was killed immediately after printing "after arr_doc_title",
+so the crash occurred on the very next line: building the HuggingFace
+Dataset from the three Arrow arrays.
+
+
+First attempt — column-by-column pa.array construction (not the root cause)
+-----------------------------------------------------------------------------
+The initial hypothesis was that the peak memory came from all three
+Python lists (document_texts, document_ids, document_titles) and all
+three Arrow arrays coexisting simultaneously.  The fix was to convert
+one column at a time, deleting each Python list from raw_data and
+calling gc.collect() before converting the next.
+
+This did reduce the peak during the pa.array() calls (the RAM log above
+confirms that: only ~1.5 GB growth across all three columns combined,
+which is negligible compared to the ~52 GB baseline).
+
+However, the process was still killed after all three arrays were built.
+Therefore column-by-column construction was NOT the root cause of the OOM.
+
+
+Root cause — pa.table() + Dataset() force a combine_chunks() copy
+------------------------------------------------------------------
+`pa.array()` on a Python list large enough to exceed Arrow's internal
+2 GB buffer limit produces a ChunkedArray (multiple contiguous buffers
+instead of one).  When you then call:
+
+    Dataset(pa.table({"text": arr_doc_text, "id": arr_doc_id, "title": arr_doc_title}))
+
+the HuggingFace Dataset constructor (and/or pa.table itself) internally
+calls combine_chunks() on each ChunkedArray to produce a single
+contiguous buffer per column.  For a 14M-row string column that can be
+10-20 GB, this combine_chunks() call allocates a brand-new contiguous
+copy of the entire column while the original chunked buffers are still
+alive — effectively doubling the memory needed for that column.
+
+With three large string columns the combined spike is ~30-60 GB per
+process, which exceeds the 125 GB per-process budget (500 GB / 4).
+
+An additional symptom was the TypeError that appeared in a subsequent
+run:
+
+    TypeError: Cannot convert pyarrow.lib.ChunkedArray to pyarrow.lib.Array
+
+This confirmed that pa.array() was indeed returning ChunkedArrays for
+these large inputs, not plain Arrays.
+
+
+Fix — write to Arrow IPC file, free arrays, memory-map back
+------------------------------------------------------------
+The solution avoids the combine_chunks() copy entirely by writing the
+Arrow data to a temporary file on disk and memory-mapping it back:
+
+  1. Build Arrow arrays column by column, freeing each Python list from
+     raw_data immediately (retained from the Feb-21 first attempt, still
+     useful to avoid the Python↔Arrow double-presence during conversion).
+
+  2. Collect the ChunkedArrays into a pa.table() (accepted natively,
+     no combine_chunks needed at this stage).
+
+  3. Write the table to a temp file with pa_ipc.new_file + write_table.
+     This streams each chunk to disk sequentially with zero in-memory
+     copy — Arrow's IPC writer handles chunked columns natively.
+
+  4. Delete all in-memory Arrow arrays and call gc.collect() — at this
+     point ~52 GB of RSS is released before the read-back.
+
+  5. Re-open the file with pa.memory_map() + pa.ipc.open_file().read_all().
+     The resulting table's buffers are backed by OS file pages (mmap),
+     not heap RAM.  The OS can evict those pages under memory pressure.
+
+  6. Wrap in Dataset(corpus_table).  Because the table comes from an IPC
+     file and is already in the canonical single-buffer-per-column layout
+     expected by HuggingFace, no combine_chunks() is triggered.
+
+  7. Unlink the temp file immediately after opening the mmap.  On Linux
+     this is safe: the open file descriptor keeps the inode alive until
+     the Dataset is freed.
+
+The key insight is that the IPC write step serves as a zero-copy
+serialiser that converts the chunked in-memory representation into the
+contiguous on-disk layout Arrow expects, without ever holding both
+representations in RAM simultaneously.
+
+
+Files modified
+--------------
+  tasks/load_datasets.py  — added imports (gc, tempfile, pyarrow.ipc),
+                             replaced Dataset(pa.table(...)) block with
+                             the write→free→mmap pipeline described above.
+                             Old single-call dict_to_dataset() invocation
+                             is retained as a comment for reference.
+
+
+
 Total estimated peak memory savings: ~15-25 GB for BioASQ (14M rows).
