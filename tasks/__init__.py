@@ -149,7 +149,7 @@ DATASETS_BY_SIZE = [
     # "anli",  #    164,019
     # "qqp",  #    172,242
     # "naturalquestions",  #    175,446
-    # "miracl",  #    227,090               NOT DONE
+    # #"miracl",  #    227,090               NOT DONE
     # "specter",  #    241,084
     # "sentence_compression",  #    356,409
     # "stackoverflow_dup",  #    373,863
@@ -160,17 +160,17 @@ DATASETS_BY_SIZE = [
     # "mnli",  #    544,416
     # "pubmedqa",  #    546,761
     # "cnndm",  #    592,859
-    #"snli",  #    637,407
-    #"eli5",  #    648,429
-    #"mrtydi",  #  1,051,025
-    "yahooanswers",  #  2,369,859
-    "amazonqa",  #  3,264,575
-    "gooaq",  #  4,488,520
-    "hotpotqa",  #  5,323,776
-    "fever",  #  5,533,044
-    "xnli",  #  7,253,838
-    "msmarco",  #  9,351,742
-    "stackexchange",  #  9,500,045
+    # "snli",  #    637,407
+    # "eli5",  #    648,429
+    # "mrtydi",  #  1,051,025
+    # "yahooanswers",  #  2,369,859
+    # "amazonqa",  #  3,264,575
+    # "gooaq",  #  4,488,520
+    # "hotpotqa",  #  5,323,776
+    # "fever",  #  5,533,044
+    # "xnli",  #  7,253,838
+    # "msmarco",  #  9,351,742
+    # "stackexchange",  #  9,500,045   NOT DONE
     "bioasq",  # 27,284,021
     "s2orc_abstract_citation",  # 56,386,121
     "s2orc_title_citation",  # 65,572,442

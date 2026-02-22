@@ -375,34 +375,35 @@ def from_one_hf_dataset(
     # would duplicate all text data and add ~4-7 GB of Python object
     # overhead for multi-million-row datasets.
 
-    corpus_dict = LazyCorpusDict(
-        ids=document_ids,
-        texts=document_texts,
-        titles=document_titles if has_title else None,
-    )
+    # corpus_dict = LazyCorpusDict(
+    #     ids=document_ids,
+    #     texts=document_texts,
+    #     titles=document_titles if has_title else None,
+    # )
 
-    query_dict = LazyCorpusDict(
-        ids=unique_query_ids,
-        texts=unique_query_texts,
-    )
-    _print_ram("after building LazyCorpusDict", rank)
+    # query_dict = LazyCorpusDict(
+    #     ids=unique_query_ids,
+    #     texts=unique_query_texts,
+    # )
+    
     # --- OLD: corpus_dict and query_dict were full Python dicts ---
-    # if has_title:
-    #     corpus_dict = {
-    #         id_: {"text": doc_text, "title": doc_title}
-    #         for id_, doc_text, doc_title in zip(
-    #             document_ids, document_texts, document_titles
-    #         )
-    #     }
-    # else:
-    #     corpus_dict = {
-    #         id_: {"text": doc_text}
-    #         for id_, doc_text in zip(document_ids, document_texts)
-    #     }
-    #
-    # query_dict = {
-    #     id_: {"text": text} for id_, text in zip(unique_query_ids, unique_query_texts)
-    # }
+    if has_title:
+        corpus_dict = {
+            id_: {"text": doc_text, "title": doc_title}
+            for id_, doc_text, doc_title in zip(
+                document_ids, document_texts, document_titles
+            )
+        }
+    else:
+        corpus_dict = {
+            id_: {"text": doc_text}
+            for id_, doc_text in zip(document_ids, document_texts)
+        }
+    
+    query_dict = {
+        id_: {"text": text} for id_, text in zip(unique_query_ids, unique_query_texts)
+    }
+    _print_ram("after building CorpusDict", rank)
     assert set(document_ids) == set(corpus_dict.keys())
     dist.barrier()
     if rank == 0 and verbose:

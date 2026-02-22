@@ -651,7 +651,7 @@ class HardNegativesMiner:
             ]
 
             # Threshold based on this specific (query, positive) pair's score
-            upper_threshold = min(0.95 * query_positive_scores[qrel_idx], 0.9)
+            upper_threshold = min(0.9 * query_positive_scores[qrel_idx], 0.9)
 
             # Find valid hard negatives
             valid_mask = candidate_scores < upper_threshold
