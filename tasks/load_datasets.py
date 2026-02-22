@@ -5,10 +5,12 @@ from datasets import Dataset, Features, Value
 import time
 import os
 import gc
+import tempfile
 from multiprocessing import Pool
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Set, Union, Tuple
 import pyarrow as pa
+import pyarrow.ipc as pa_ipc
 from tasks.data_helpers import (
     dict_to_dataset,
     create_qrels_dataset,
@@ -140,20 +142,47 @@ def _load_retrieval_data(
     gc.collect()
     _print_ram("after arr_doc_id", rank)
 
-    if raw_data.document_titles is not None:
+    has_titles = raw_data.document_titles is not None
+    if has_titles:
         arr_doc_title = pa.array(raw_data.document_titles, type=pa.string())
         del raw_data.document_titles
         gc.collect()
         _print_ram("after arr_doc_title", rank)
-        corpus_ds = Dataset(
-            pa.table({"text": arr_doc_text, "id": arr_doc_id, "title": arr_doc_title})
-        )
-        del arr_doc_title
+        names = ["text", "id", "title"]
+        arrays = [arr_doc_text, arr_doc_id, arr_doc_title]
     else:
         del raw_data.document_titles
-        corpus_ds = Dataset(pa.table({"text": arr_doc_text, "id": arr_doc_id}))
-    del arr_doc_text, arr_doc_id
+        names = ["text", "id"]
+        arrays = [arr_doc_text, arr_doc_id]
+
+    # Write to a temp Arrow IPC file (zero-copy streaming from existing buffers),
+    # then free the source arrays and memory-map the file back.
+    # This avoids the in-process copy that Dataset(pa.table(...)) may trigger
+    # when combining large chunked string columns (which caused the OOM/hang).
+    schema = pa.schema([(n, pa.string()) for n in names])
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".arrow")
+    os.close(tmp_fd)
+    if rank == 0 and verbose:
+        print(f"Writing corpus Arrow file to {tmp_path}")
+    _print_ram("before ipc write", rank)
+    with pa_ipc.new_file(tmp_path, schema) as writer:
+        writer.write(pa.record_batch(arrays, schema=schema))
+    _print_ram("after ipc write", rank)
+
+    # Free the in-memory arrays before opening the mmap'd dataset
+    del arrays, arr_doc_text, arr_doc_id
+    if has_titles:
+        del arr_doc_title
     gc.collect()
+    _print_ram("after del arrays (before mmap)", rank)
+
+    # Memory-map the IPC file: buffers are backed by disk pages, not RAM.
+    # On Linux, unlinking after mmap is safe — the data remains accessible.
+    mm = pa.memory_map(tmp_path, "r")
+    corpus_table = pa.ipc.open_file(mm).read_all()
+    os.unlink(tmp_path)
+    corpus_ds = Dataset(corpus_table)
+    del corpus_table
     _print_ram("after dict_to_dataset (corpus)", rank)
 
     hf_dataset = {
