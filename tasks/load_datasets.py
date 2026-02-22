@@ -4,9 +4,11 @@ from tasks.retrieval_tasks import *
 from datasets import Dataset, Features, Value
 import time
 import os
+import gc
 from multiprocessing import Pool
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Set, Union, Tuple
+import pyarrow as pa
 from tasks.data_helpers import (
     dict_to_dataset,
     create_qrels_dataset,
@@ -116,12 +118,42 @@ def _load_retrieval_data(
     if rank == 0 and verbose:
         print(f"Building document dataset")
 
-    corpus_ds = dict_to_dataset(
-        texts=raw_data.document_texts,
-        ids=raw_data.document_ids,
-        titles=raw_data.document_titles,
-    )
-    del raw_data.document_texts, raw_data.document_ids, raw_data.document_titles
+    # --- Old implementation (single call, higher peak memory) ---
+    # corpus_ds = dict_to_dataset(
+    #     texts=raw_data.document_texts,
+    #     ids=raw_data.document_ids,
+    #     titles=raw_data.document_titles,
+    # )
+    # del raw_data.document_texts, raw_data.document_ids, raw_data.document_titles
+    # _print_ram("after dict_to_dataset (corpus)", rank)
+
+    # Build each Arrow column one at a time, freeing the Python list from
+    # raw_data before allocating the next one.  This avoids the peak where
+    # all three Python lists AND all three Arrow arrays coexist in memory.
+    arr_doc_text = pa.array(raw_data.document_texts, type=pa.string())
+    del raw_data.document_texts
+    gc.collect()
+    _print_ram("after arr_doc_text", rank)
+
+    arr_doc_id = pa.array(raw_data.document_ids, type=pa.string())
+    del raw_data.document_ids
+    gc.collect()
+    _print_ram("after arr_doc_id", rank)
+
+    if raw_data.document_titles is not None:
+        arr_doc_title = pa.array(raw_data.document_titles, type=pa.string())
+        del raw_data.document_titles
+        gc.collect()
+        _print_ram("after arr_doc_title", rank)
+        corpus_ds = Dataset(
+            pa.table({"text": arr_doc_text, "id": arr_doc_id, "title": arr_doc_title})
+        )
+        del arr_doc_title
+    else:
+        del raw_data.document_titles
+        corpus_ds = Dataset(pa.table({"text": arr_doc_text, "id": arr_doc_id}))
+    del arr_doc_text, arr_doc_id
+    gc.collect()
     _print_ram("after dict_to_dataset (corpus)", rank)
 
     hf_dataset = {
