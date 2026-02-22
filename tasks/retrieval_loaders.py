@@ -7,6 +7,7 @@ import datasets as _datasets
 from datasets import load_dataset
 from typing import List, Optional
 import gc
+import os
 import time
 import torch.distributed as dist
 import pandas as pd
@@ -15,6 +16,49 @@ from tasks.data_helpers import RetrievalRawData, LazyCorpusDict, get_dict
 from utils.helpers import return_formatted
 
 _datasets.config.HF_DATASETS_TIMEOUT = 120
+
+
+def _print_ram(label: str, rank: int = 0):
+    """Print RAM usage on rank 0.
+
+    Reports two complementary metrics:
+      - VmRSS  (from /proc/self/status): RAM used by *this process* only
+        (resident set size). Useful to see which step in the loader is
+        responsible for memory growth.
+      - available (from psutil): free RAM across the *entire system*,
+        accounting for all processes and OS caches. Useful to know how
+        close the machine is to OOM (especially with multiple DDP ranks).
+    """
+    if rank != 0:
+        return
+    # --- Per-process RSS (this process only) ---
+    rss_gb = None
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    rss_gb = int(line.split()[1]) / 1024**2
+                    break
+    except FileNotFoundError:
+        import resource
+
+        rss_gb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024**2
+
+    # --- System-wide available RAM (all processes) ---
+    avail_gb = None
+    try:
+        import psutil
+
+        avail_gb = psutil.virtual_memory().available / 1024**3
+    except ImportError:
+        pass
+
+    parts = [f"[RAM] {label}:"]
+    if rss_gb is not None:
+        parts.append(f"process RSS {rss_gb:.2f} GB")
+    if avail_gb is not None:
+        parts.append(f"system available {avail_gb:.2f} GB")
+    print("  ".join(parts))
 
 
 def _load_hf_dataset(hf_name, config_name, split, revision=None):
@@ -77,7 +121,13 @@ def deduplicate(texts, prefix="query", titles=None):
     # Generate remapped IDs: map all occurrences (including duplicates) to first occurrence ID
     all_ids = (f"{prefix}_" + texts.map(text_to_first_idx).astype(str)).tolist()
 
-    return all_ids, unique_ids, unique_idx, unique_texts, unique_titles, 
+    return (
+        all_ids,
+        unique_ids,
+        unique_idx,
+        unique_texts,
+        unique_titles,
+    )
 
 
 def from_one_hf_dataset(
@@ -108,6 +158,7 @@ def from_one_hf_dataset(
 
     revision = getattr(task, "revision", None)
     dataset = _load_hf_dataset(task.hf_name, subset_name, task.split, revision=revision)
+    _print_ram("after loading HF dataset", rank)
 
     if task.preprocessor is not None:
         dataset = task.preprocessor(
@@ -124,9 +175,9 @@ def from_one_hf_dataset(
         )
     n_pairs = len(dataset)
     verbose = False
-    if n_pairs > 5*10**5:
+    if n_pairs > 10**6:
         verbose = True
-    
+
     dist.barrier()
     if rank == 0 and verbose:
         print(f"Dataset loaded in {(time.time()-start)/60:.2f} min")
@@ -165,11 +216,13 @@ def from_one_hf_dataset(
         if neg_title_col is not None:
             cols_to_load.append(neg_title_col)
     df = dataset.select_columns(cols_to_load).to_pandas()
+    _print_ram("after to_pandas (before del dataset)", rank)
 
     # Free the HF Arrow table — the data now lives in the pandas DataFrame.
     # For large datasets (e.g. BioASQ, 14 M rows) this reclaims ~10-20 GB.
     del dataset
     gc.collect()
+    _print_ram("after del dataset + gc", rank)
     # --- OLD: dataset was not freed here, staying in memory alongside df ---
 
     # Keep as pandas Series — no .tolist() needed.
@@ -200,10 +253,15 @@ def from_one_hf_dataset(
     query_ids, unique_query_ids, unique_query_idx, unique_query_texts, _ = deduplicate(
         query_texts, prefix="query"
     )
-    positive_ids, unique_positive_ids, unique_positive_idx, unique_positive_texts, unique_positive_titles = (
-        deduplicate(positive_texts, prefix="doc", titles=titles)
-    )
+    (
+        positive_ids,
+        unique_positive_ids,
+        unique_positive_idx,
+        unique_positive_texts,
+        unique_positive_titles,
+    ) = deduplicate(positive_texts, prefix="doc", titles=titles)
     n_positives = len(unique_positive_ids)
+    _print_ram("after deduplication", rank)
 
     # Extract unique negative texts not already in positives
     neg_ids = []
@@ -246,6 +304,7 @@ def from_one_hf_dataset(
     # keep the underlying data alive via their own references.
     del df
     gc.collect()
+    _print_ram("after del df + gc", rank)
     # --- OLD: df was not freed here, staying in memory ---
 
     assert set(positive_ids).issubset(
@@ -315,6 +374,7 @@ def from_one_hf_dataset(
     # Use LazyCorpusDict to avoid materialising a dict-of-dicts, which
     # would duplicate all text data and add ~4-7 GB of Python object
     # overhead for multi-million-row datasets.
+
     corpus_dict = LazyCorpusDict(
         ids=document_ids,
         texts=document_texts,
@@ -325,6 +385,7 @@ def from_one_hf_dataset(
         ids=unique_query_ids,
         texts=unique_query_texts,
     )
+    _print_ram("after building LazyCorpusDict", rank)
     # --- OLD: corpus_dict and query_dict were full Python dicts ---
     # if has_title:
     #     corpus_dict = {
@@ -396,6 +457,7 @@ def from_multiple_hf_datasets(
         subtask: Optional subtask prefix for constructing HF subset names
     """
     rank = dist.get_rank() if rank is None else rank
+    verbose = False
 
     # Resolve HF subset names, optionally prefixed by subtask
     if subtask is not None:
@@ -421,9 +483,13 @@ def from_multiple_hf_datasets(
     corpus = _load_hf_dataset(
         task.hf_name, corpus_subset, task.positive_name, revision=revision
     )
+    _print_ram("after loading all HF datasets", rank)
+
+    if len(qrels) > 10**6:
+        verbose = True
 
     dist.barrier()
-    if rank == 0:
+    if rank == 0 and verbose:
         print(f"Datasets loaded in {(time.time()-start)/60:.2f} min")
         start = time.time()
         print(f"num elements in queries: {len(querys_)//10**3}k")
@@ -452,6 +518,7 @@ def from_multiple_hf_datasets(
     queries_dict = get_dict(querys_, task.query_fields["id"], task.query_fields["text"])
     del querys_  # free HF Arrow table
     gc.collect()
+    _print_ram("after queries_dict + del querys_", rank)
     # --- OLD: querys_ was not freed here ---
 
     # Drop entries with null text (e.g. wikihow)
@@ -463,6 +530,7 @@ def from_multiple_hf_datasets(
     if rank == 0:
         if null_query_ids:
             print(f"Dropped {len(null_query_ids)} queries with null text")
+    if rank == 0 and verbose:
         print(f"Queries processed in {(time.time()-start)/60:.2f} min")
         start = time.time()
         print(f"Processing {len(corpus)} docs...")
@@ -477,6 +545,7 @@ def from_multiple_hf_datasets(
     )
     del corpus  # free HF Arrow table
     gc.collect()
+    _print_ram("after corpus_dict + del corpus", rank)
     # --- OLD: corpus HF dataset was not freed here ---
 
     # Drop entries with null text (e.g. wikihow)
@@ -488,6 +557,7 @@ def from_multiple_hf_datasets(
     if rank == 0:
         if null_corpus_ids:
             print(f"Dropped {len(null_corpus_ids)} corpus docs with null text")
+    if rank == 0 and verbose:
         print(f"Corpus processed in {(time.time()-start)/60:.2f} min")
         start = time.time()
         print("Processing qrels with vectorized operations...")
@@ -511,7 +581,7 @@ def from_multiple_hf_datasets(
         drop=True
     )
 
-    if rank == 0:
+    if rank == 0 and verbose:
         print(f"Found {len(df_qrels)} valid query-positive pairs")
 
     # Extract query and positive IDs for all pairs (these are string IDs from qrels)
@@ -520,7 +590,7 @@ def from_multiple_hf_datasets(
     n_pairs = len(query_ids)
 
     dist.barrier()
-    if rank == 0:
+    if rank == 0 and verbose:
         print(f"Found {n_pairs} valid query-positive pairs")
         print("Finding unique queries and positives...")
 
@@ -531,6 +601,7 @@ def from_multiple_hf_datasets(
     unique_query_texts = [queries_dict[qid]["text"] for qid in unique_query_ids]
     del queries_dict  # free the multiprocessed dict
     gc.collect()
+    _print_ram("after del queries_dict", rank)
     # --- OLD: queries_dict was not freed here ---
 
     # Get unique positives (preserving first occurrence order)
@@ -552,7 +623,7 @@ def from_multiple_hf_datasets(
         unique_positive_titles = None
 
     dist.barrier()
-    if rank == 0:
+    if rank == 0 and verbose:
         print(
             f"Found {return_formatted(len(unique_query_ids))} unique queries before limiting"
         )
@@ -612,7 +683,7 @@ def from_multiple_hf_datasets(
                     [corpus_dict[did]["title"] for did in remaining_corpus_ids]
                 )
 
-        if rank == 0:
+        if rank == 0 and verbose:
             print(f"Queries limited in {(time.time()-start)/60:.2f} min")
             print(
                 f"Positives referenced by filtered pairs: {return_formatted(n_positives)}"
@@ -657,7 +728,7 @@ def from_multiple_hf_datasets(
                 f"Total unique documents in corpus: {return_formatted(len(document_ids))}"
             )
 
-    if rank == 0:
+    if rank == 0 and verbose:
         print(f"Qrels processing completed in {(time.time()-start)/60:.2f} min")
 
     # Assertions to ensure data consistency (same as from_one_hf_dataset)
@@ -680,6 +751,7 @@ def from_multiple_hf_datasets(
     # LazyCorpusDict that references the already-built document lists.
     del corpus_dict
     gc.collect()
+    _print_ram("after del corpus_dict (get_dict)", rank)
     corpus_dict = LazyCorpusDict(
         ids=document_ids,
         texts=document_texts,
@@ -690,6 +762,7 @@ def from_multiple_hf_datasets(
         ids=unique_query_ids,
         texts=unique_query_texts,
     )
+    _print_ram("after building LazyCorpusDicts", rank)
     # --- OLD: corpus_dict was kept as a full dict-of-dicts from get_dict() ---
     # query_dict = {
     #     id_: {"text": text} for id_, text in zip(unique_query_ids, unique_query_texts)

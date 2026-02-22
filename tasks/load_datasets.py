@@ -14,6 +14,7 @@ from tasks.data_helpers import (
     ClassificationRawData,
     get_dict,
 )
+from tasks.retrieval_loaders import _print_ram
 import torch.distributed as dist
 
 
@@ -102,6 +103,7 @@ def _load_retrieval_data(
     )
     # Free source lists right after Arrow conversion to reduce peak memory
     del raw_data.query_ids, raw_data.positive_ids
+    _print_ram("after create_qrels_dataset", rank)
 
     if rank == 0 and verbose:
         print(f"Building queries dataset")
@@ -109,6 +111,7 @@ def _load_retrieval_data(
         texts=raw_data.unique_query_texts, ids=raw_data.unique_query_ids
     )
     del raw_data.unique_query_texts, raw_data.unique_query_ids
+    _print_ram("after dict_to_dataset (queries)", rank)
 
     if rank == 0 and verbose:
         print(f"Building document dataset")
@@ -119,6 +122,7 @@ def _load_retrieval_data(
         titles=raw_data.document_titles,
     )
     del raw_data.document_texts, raw_data.document_ids, raw_data.document_titles
+    _print_ram("after dict_to_dataset (corpus)", rank)
 
     hf_dataset = {
         "unique_queries": unique_queries_ds,
