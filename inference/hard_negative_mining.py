@@ -411,6 +411,7 @@ class HardNegativesMiner:
             )
 
             corpus_ids_set = set(corpus_dataset["id"])
+            
             # Check that filtered pairs only contain valid IDs
             assert set(filtered_qrels["query_id"]).issubset(
                 set(unique_queries_dataset["id"])

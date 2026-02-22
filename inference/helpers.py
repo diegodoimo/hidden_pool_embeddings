@@ -484,7 +484,6 @@ def encode(
     # prefetcher = CUDAPrefetcher(loader, device=model.device)
 
     for batch in loader:
-        # batch is already on GPU (transferred asynchronously by the prefetcher)
         batch = {key: val.to(model.device) for key, val in batch.items()}
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 
