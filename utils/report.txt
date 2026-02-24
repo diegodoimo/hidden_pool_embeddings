@@ -1,0 +1,109 @@
+Bug Report & Modifications
+===========================
+
+Bugs in gemma3textmodel.py
+--------------------------
+1. mean_pool returns wrong shape
+   keepdim=True on sum(dim=1) produced (B, 1, H) instead of the documented (B, H).
+   The second keepdim also used the integer 1 instead of True.
+   Fix: removed keepdim from both .sum() calls.
+
+Bugs in gemma3model.py
+-----------------------
+2. GatedAttention instantiated with wrong kwargs
+   EmbeddingGemmaHiddenPool called GatedAttention(d_model=h, d_attn=attention_dim),
+   but the constructor signature is (hidden_size, num_attention_heads, head_dim).
+   The mismatched keyword arguments were silently absorbed by Python, leaving all
+   parameters at their defaults.
+   Fix: GatedAttention(hidden_size=h, num_attention_heads=1, head_dim=attention_dim).
+
+3. GatedAttention.forward called with extra argument
+   self.pooling(hidden, attention_mask) passed two positional args, but forward()
+   only accepts hidden_states. The attention mask is unnecessary here since pooling
+   is over layer indices, not token positions.
+   Fix: changed call site to self.pooling(hidden).
+
+4. self.w shape (head_dim, 1) caused matmul mismatch
+   The learned query vector was shaped as a column vector. When multiplied against
+   the gating mechanism (B, heads, seq, head_dim), the dimensions didn't align.
+   Fix: changed to (1, head_dim) with proper unsqueeze broadcasting.
+
+5. Raw hidden_states used as values without projection
+   The original eager_attention_forward received the un-projected hidden states as
+   values, causing shape mismatches with the multi-head reshape of U and V.
+   Fix: added a dedicated value projection (self.W) and an output projection (self.o_proj).
+
+6. output_hidden_states not forced to True
+   EmbeddingGemmaHiddenPool.forward passed the caller-supplied output_hidden_states
+   (which defaults to None/False), making outputs.hidden_states be None and crashing
+   on torch.cat(None).
+   Fix: always pass output_hidden_states=True.
+
+7. torch.cat should be torch.stack
+   The per-layer hidden states are (B, D) tensors after mean pooling. torch.cat(dim=1)
+   concatenates along the feature dimension (producing (B, num_layers*D)), when the
+   intent is to create a layer sequence (B, num_layers, D).
+   Fix: changed to torch.stack(..., dim=1).
+
+8. Function name collision
+   The gated-attention forward function was named eager_attention_forward, colliding
+   with the standard transformer attention function defined later in the same file.
+   Fix: renamed to gated_attention_forward.
+
+Modifications to t5gemma2.py
+-----------------------------
+- Added mean_pool function matching the corrected version.
+- Added output_hidden_states parameter to T5Gemma2Encoder.forward().
+- When enabled, collects mean_pool(hidden_states, attention_mask) before each encoder
+  layer and after the last one, returning them via BaseModelOutput(hidden_states=...).
+
+Modifications to t5gemma2model.py
+----------------------------------
+- Added get_model(args, model_config) mirroring gemma3model.get_model.
+- Added EmbeddingT5Gemma2: standard mean pooling + projection + normalize.
+- Added EmbeddingT5Gemma2HiddenPool: forces output_hidden_states=True, stacks per-layer
+  mean-pooled representations, applies GatedAttention over layers, then projection +
+  normalize.
+- Reuses MeanPooling, Projection, Normalize, and GatedAttention from gemma3model.py.
+
+CLS Query Pooling Option
+=========================
+New --cls_query_pooling flag (used together with --attention_pooling).
+Instead of mean-pooling each layer's hidden states, a learnable CLS query token is
+prepended to the input and its residual-stream representation is tracked through
+every transformer layer.
+
+How it works
+------------
+1. A learnable CLS query embedding (1, 1, hidden_size), initialized with small random
+   values (std=0.02), is prepended to the input embeddings at position 0.
+2. The attention_mask is extended with a 1 at position 0 so all tokens attend to the
+   CLS query and the CLS query attends to all tokens (bidirectional).
+3. Position IDs are left to the encoder to recompute for the new sequence length.
+4. At each transformer layer, the CLS token's representation hidden_states[:, 0, :]
+   is extracted (via the new cls_position parameter), producing one (B, D) vector
+   per layer instead of mean pooling.
+5. These per-layer CLS representations are stacked into (B, num_layers+1, D) and
+   pooled via the same GatedAttention mechanism over layers.
+6. The result goes through projection and normalization as before.
+
+Files modified
+--------------
+gemma3textmodel.py:
+  - Added cls_position parameter to Gemma3TextModel.forward().
+  - When cls_position is set (e.g. 0), extracts hidden_states[:, cls_position, :]
+    per layer instead of mean pooling. Falls back to mean pooling when None.
+
+t5gemma2.py:
+  - Same cls_position parameter added to T5Gemma2Encoder.forward().
+
+gemma3model.py:
+  - Added EmbeddingGemmaHiddenPoolCLS class with learnable self.cls_query parameter.
+  - get_model selects this class when both --attention_pooling and --cls_query_pooling
+    are set.
+
+t5gemma2model.py:
+  - Added EmbeddingT5Gemma2HiddenPoolCLS class with identical logic.
+
+arguments.py:
+  - Added --cls_query_pooling flag (requires --attention_pooling).

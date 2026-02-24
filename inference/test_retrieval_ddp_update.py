@@ -5,16 +5,10 @@ from mteb.abstasks.retrieval import _filter_queries_without_positives
 from mteb.types import PromptType
 from .create_datasets import create_dataset
 
-from typing import cast
-from copy import copy
-from mteb.types import HFSubset
-from datasets import DatasetDict
 from functools import partial
-import numpy as np
 import torch.distributed as dist
 from mteb._evaluators.retrieval_metrics import calculate_retrieval_scores
 import torch.nn.functional as F
-from torch.nn.utils.rnn import pad_sequence
 from mteb._evaluators.retrieval_metrics import make_score_dict
 from utils.sorted_sampler import LenghtSortedSampler
 from .helpers import (
@@ -35,7 +29,7 @@ class evaluate_retrieval:
         tasks,
         instruction_template,
         padding_side="right",
-        new_inference_mode=False,
+        new_inference_mode=True,
     ):
 
         self.world_size = dist.get_world_size()
