@@ -51,7 +51,7 @@ def main():
             # if task.metadata.type == "Retrieval":
             #     tasks.append(task)
     else:
-        tasks = [args.task_name]
+        tasks = [mteb.get_task(args.task_name)]
 
     retrieval_evaluator = evaluate_retrieval(
         tasks=tasks,

@@ -4,7 +4,6 @@ from torch.utils.data import DataLoader
 from mteb.abstasks.retrieval import _filter_queries_without_positives
 from mteb.types import PromptType
 
-
 from functools import partial
 import torch.distributed as dist
 from mteb._evaluators.retrieval_metrics import calculate_retrieval_scores
@@ -38,7 +37,8 @@ class evaluate_retrieval:
         self.world_size = dist.get_world_size()
         self.rank = dist.get_rank()
         self.tokenizer = tokenizer
-        self.task_names = tasks
+        # self.task_names = [task.metadata.name for task in tasks]
+        self.tasks = tasks
         self.padding_side = padding_side
         self.new_inference_mode = new_inference_mode
 
@@ -51,8 +51,9 @@ class evaluate_retrieval:
     def prepare_datasets(self, instruction_template, max_passage_len=4096):
 
         datasets = {}
-        for task_name in self.task_names:
-            task = mteb.get_task(task_name)
+        for task in self.tasks:
+            task_name = task.metadata.name
+            # task = mteb.get_task(task_name)
 
             eval_splits = task.metadata.eval_splits
             assert len(eval_splits) == 1
