@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 import torch.distributed as dist
 from argparse import ArgumentParser
 
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk, Dataset
 from transformers import GemmaTokenizerFast
 from transformers import AutoConfig
 from peft import LoraConfig, TaskType, get_peft_model
@@ -25,16 +25,21 @@ from utils.contrastive_datasets import (
     collate_fn_with_padding_joint,
     LengthBalancedDistributedSampler,
 )
-from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLoss
-import mteb
+from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLossHardNegatives
 from typing import Callable
-from utils.gemma3model import ContrastiveLossEmbedding
 
 from inference.test_retrieval_ddp_update import evaluate_retrieval
 from inference.create_datasets import (
     instruction_template_qwen3,
     instruction_template_embeddinggemma,
 )
+
+path = "results/datasets_negatives/qwen3_600m/retrieval/general_retrieval/arguana"
+dataset = Dataset.from_parquet(f"{path}/data.parquet")
+
+
+dataset["negative_title"][0]
+dataset["negative_text"][0]
 
 
 class Trainer:
@@ -286,36 +291,18 @@ def main():
     )
 
     if RANK == 0:
-        print("loading msmarco")
+        print("loading train set ")
         start = time.time()
-    hf_corpus = load_dataset("mteb/msmarco", name="corpus")
-    hf_queries = load_dataset("mteb/msmarco", name="queries")
-    hf_qrels = load_dataset("mteb/msmarco", name="default", split="train")
 
     if RANK == 0:
         print(f"msmarco loaded in {time.time()-start}")
         print("matching query and positives")
         start = time.time()
-    train_queries, train_docs = prepare_msmarco(hf_queries, hf_corpus, hf_qrels)
-    dist.barrier()
 
     if RANK == 0:
         print(f"msmarco prepared in {time.time()-start}")
         start = time.time()
         print("tokenizing dataset")
-
-    tokenized_dataset = msmarco_dataset(
-        queries_dataset=train_queries,
-        pos_passages_dataset=train_docs,
-        tokenizer=tokenizer,
-        max_query_len=1024,
-        max_passage_len=4096,
-        sort_by_length=True,
-        query_task="query",
-        document_task="document",
-        batch_size=1000,
-        rank=RANK,
-    )
 
     dist.barrier()
     if RANK == 0:
@@ -356,7 +343,7 @@ def main():
     )
 
     # Initialize loss and optimizer
-    loss_fn = EmbeddingGemmaLoss(temperature=0.07)
+    loss_fn = EmbeddingGemmaLossHardNegatives(temperature=0.07)
     if WORLD_SIZE > 1 and args.distributed_loss:
         loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
 

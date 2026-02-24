@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import DataLoader
 from mteb.abstasks.retrieval import _filter_queries_without_positives
 from mteb.types import PromptType
-from .create_datasets import create_dataset
+
 
 from functools import partial
 import torch.distributed as dist
@@ -11,13 +11,16 @@ from mteb._evaluators.retrieval_metrics import calculate_retrieval_scores
 import torch.nn.functional as F
 from mteb._evaluators.retrieval_metrics import make_score_dict
 from utils.sorted_sampler import LenghtSortedSampler
-from .helpers import (
+from inference.helpers import (
     search,
     encode,
     collate_fn_with_padding,
     abs_task_preprocessing,
     last_token_pool,
 )
+from inference.create_datasets import create_dataset
+from utils.helpers import _print_ram
+from collections import defaultdict
 import time
 
 
@@ -36,9 +39,14 @@ class evaluate_retrieval:
         self.rank = dist.get_rank()
         self.tokenizer = tokenizer
         self.task_names = tasks
-        self.datasets = self.prepare_datasets(instruction_template)
         self.padding_side = padding_side
         self.new_inference_mode = new_inference_mode
+
+        _print_ram(label="before loading datasets", rank=self.rank)
+        self.datasets = self.prepare_datasets(instruction_template)
+        _print_ram(label="after loading datastes", rank=self.rank)
+
+        dist.barrier()
 
     def prepare_datasets(self, instruction_template, max_passage_len=4096):
 
@@ -89,6 +97,7 @@ class evaluate_retrieval:
                 "hf_split": eval_split,
                 "main_score": task.metadata.main_score,
                 "hf_subset": hf_subset,
+                "task_type": task.metadata.type,
             }
 
         return datasets
@@ -305,12 +314,13 @@ class evaluate_retrieval:
         return {main_score: scores[main_score]}
 
     def evaluate(self, model, batch_size=64):
-        results = {}
+        results = defaultdict(list)
+
         for name, task in self.datasets.items():
             if self.rank == 0:
                 print(f"processing datasets {name}")
 
-            results[name] = self.evaluate_one(
+            output_res = self.evaluate_one(
                 dataset=task["dataset"],
                 task_specific_scores=task["task_specific_scores"],
                 ignore_identical_ids=task["ignore_identical_ids"],
@@ -320,5 +330,6 @@ class evaluate_retrieval:
                 model=model,
                 batch_size=batch_size,
             )
+            results[task["task_type"]].append({name: output_res})
 
         return results

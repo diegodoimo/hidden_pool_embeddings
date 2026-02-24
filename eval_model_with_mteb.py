@@ -7,19 +7,29 @@ import json
 import numpy as np
 
 
-# print("loading benchmark")
-# bench_dict = {"mteb_multilingual_v2": "MTEB(Multilingual, v2)", "mteb_eng_v2": "MTEB(eng, v2)"}
-# benchmark = mteb.get_benchmark("MTEB(Multilingual, v2)")
-# benchmarks = mteb.get_benchmarks()
+print("loading benchmark")
+bench_dict = {
+    "mteb_multilingual_v2": "MTEB(Multilingual, v2)",
+    "mteb_eng_v2": "MTEB(eng, v2)",
+}
+benchmark = mteb.get_benchmark("MTEB(eng, v2)")
+benchmarks = mteb.get_benchmarks()
+
+for benchmark in benchmarks:
+    for task in benchmark.tasks:
+        print(task.metadata.name)
+        print(task.metadata.prompt)
 
 
-# task_types = set(task.metadata.prompt for benchmark in benchmarks for task in benchmark.tasks)
+benchmark[0].metadata.type
+task_types = set(
+    task.metadata.type for benchmark in benchmarks for task in benchmark.tasks
+)
 
-# for benchmark in benchmarks:
-#     for task in benchmark.tasks:
-#         print(task.metadata.name)
-#         print(task.metadata.prompt)
-# task_types
+
+task_types = set(task.metadata.type for task in benchmark.tasks)
+
+task_types
 
 
 def parse_args():
@@ -30,9 +40,13 @@ def parse_args():
     parser.add_argument("--model_name_or_path", type=str, default="./tokenizer")
     parser.add_argument("--use_flash_attn", action="store_true")
     parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--out_dir", type=str, default=None, help="Where to store the final model.")
+    parser.add_argument(
+        "--out_dir", type=str, default=None, help="Where to store the final model."
+    )
     parser.add_argument("--filename", type=str, default="")
-    parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
+    parser.add_argument(
+        "--seed", type=int, default=None, help="A seed for reproducible training."
+    )
     parser.add_argument("--preprocessing_num_workers", type=int, default=6)
     parser.add_argument("--avg_token", action="store_true")
     parser.add_argument("--save_distances", action="store_true")
@@ -60,28 +74,32 @@ def main():
     args = parse_args()
 
     results = {}
-    # bench_dict = {"mteb_multilingual_v2": "MTEB(Multilingual, v2)", "mteb_eng_v2": "MTEB(eng, v2)"}
-    # tasks_dict = {"classification", "retrieval", "clustering"}
+    bench_dict = {
+        "mteb_multilingual_v2": "MTEB(Multilingual, v2)",
+        "mteb_eng_v2": "MTEB(eng, v2)",
+    }
 
     print("loading model")
     model = mteb.get_model(args.model_name_or_path)
 
     # print("loading benchmark")
-    # benchmark = mteb.get_benchmark(bench_dict[args.benchmark])
+    benchmark = mteb.get_benchmark(bench_dict[args.benchmark])
 
     # task_types = set(task.metadata.type for task in benchmark.tasks)
 
-    # tasks = []
-    # for task in benchmark.tasks:
-    #     if task.metadata.type == "Retrieval":
-    #         tasks.append(task)
+    tasks = []
+    for task in benchmark.tasks:
+        if task.metadata.type == "Retrieval":
+            tasks.append(task)
 
-    tasks = mteb.get_tasks(tasks=["ArguAna"])
+    # tasks = mteb.get_tasks(tasks=["ArguAna"])
 
     print("evaluating tasks")
     start0 = time.time()
     for i, task in enumerate(tasks):
-        print(f"evaluating task: {task} ({i+1}/{len(tasks)}) {(time.time()-start0)/60:.1f}min")
+        print(
+            f"evaluating task: {task} ({i+1}/{len(tasks)}) {(time.time()-start0)/60:.1f}min"
+        )
         start = time.time()
         res = mteb.evaluate(model, tasks=task, overwrite_strategy="always")
         end = time.time()

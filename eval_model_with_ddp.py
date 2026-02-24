@@ -10,11 +10,14 @@ from inference.create_datasets import (
     instruction_template_qwen3,
     instruction_template_embeddinggemma,
 )
+import mteb
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name_or_path", type=str)
+    parser.add_argument("--task_name", type=str, default="ArguAna")
+    parser.add_argument("--benchmark", type=str, default=None)
     args = parser.parse_args()
     return args
 
@@ -32,11 +35,26 @@ def main():
 
     if "qwen3" in args.model_name_or_path.lower():
         instruction_template = instruction_template_qwen3
-    elif "embeddinggemma" in arg.model_name_or_path.lower():
-        instruction_template=instruction_template_embeddinggemma,
+    elif "embeddinggemma" in args.model_name_or_path.lower():
+        instruction_template = instruction_template_embeddinggemma
+
+    bench_dict = {
+        "mteb_multilingual_v2": "MTEB(Multilingual, v2)",
+        "mteb_eng_v2": "MTEB(eng, v2)",
+    }
+
+    if args.benchmark:
+        benchmark = mteb.get_benchmark(bench_dict[args.benchmark])
+        tasks = []
+        for task in benchmark.tasks:
+            tasks.append(task)
+            # if task.metadata.type == "Retrieval":
+            #     tasks.append(task)
+    else:
+        tasks = [args.task_name]
 
     retrieval_evaluator = evaluate_retrieval(
-        tasks=["ArguAna"],
+        tasks=tasks,
         tokenizer=tokenizer,
         instruction_template=instruction_template,
         padding_side="right",
