@@ -26,7 +26,7 @@ from utils.helpers import print_memory_consumed, return_formatted
 # encode → search → get_hard_negatives → save pipeline is run
 # iteratively in chunks of this size.  This avoids the need for
 # stream_to_cpu which may not be available on every server.
-ITERATIVE_ENCODE_THRESHOLD = 5 * 10**6
+ITERATIVE_ENCODE_THRESHOLD = 10**6
 
 
 def estimate_chunk_sizes(query_embeddings, max_corpus_chunk=5 * 10**4):
@@ -48,7 +48,7 @@ def estimate_chunk_sizes(query_embeddings, max_corpus_chunk=5 * 10**4):
     dim = query_embeddings.shape[1]
 
     bytes_per_doc = dim * elem_size  # one corpus embedding vector
-    budget = int(0.7 * free_mem)
+    budget = int(0.8* free_mem)
     queries_on_cpu = not query_embeddings.is_cuda
 
     if queries_on_cpu:
