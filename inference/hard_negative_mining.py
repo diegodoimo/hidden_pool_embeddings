@@ -26,7 +26,7 @@ from utils.helpers import print_memory_consumed, return_formatted
 # encode → search → get_hard_negatives → save pipeline is run
 # iteratively in chunks of this size.  This avoids the need for
 # stream_to_cpu which may not be available on every server.
-ITERATIVE_ENCODE_THRESHOLD = 6 * 10**6
+ITERATIVE_ENCODE_THRESHOLD = 5 * 10**6
 
 
 def estimate_chunk_sizes(query_embeddings, max_corpus_chunk=5 * 10**4):
@@ -417,18 +417,15 @@ class HardNegativesMiner:
                 data_split["qrels"],
             )
 
-            # Assertions removed: filter_qrels_by_length guarantees by construction
-            # that only rows whose IDs are NOT in removed_ids survive, so the subsets
-            # are always valid. Re-materialising 14M Arrow rows into Python sets to
-            # re-check this was a significant and redundant cost.
-            #
-            # corpus_ids_set = set(corpus_dataset["id"])
-            # assert set(filtered_qrels["query_id"]).issubset(
-            #     set(unique_queries_dataset["id"])
-            # ), "filtered qrels contain query IDs not in unique queries"
-            # assert set(filtered_qrels["positive_id"]).issubset(
-            #     corpus_ids_set
-            # ), "filtered qrels contain positive IDs not in corpus"
+            corpus_ids_set = set(corpus_dataset["id"])
+            
+            # Check that filtered pairs only contain valid IDs
+            assert set(filtered_qrels["query_id"]).issubset(
+                set(unique_queries_dataset["id"])
+            ), "filtered qrels contain query IDs not in unique queries"
+            assert set(filtered_qrels["positive_id"]).issubset(
+                corpus_ids_set
+            ), "filtered qrels contain positive IDs not in corpus"
 
             if self.rank == 0:
                 print(
