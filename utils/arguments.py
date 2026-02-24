@@ -84,6 +84,7 @@ def parse_args():
     parser.add_argument("--freeze_encoder", action="store_true")
     parser.add_argument("--attention_pooling", action="store_true")
     parser.add_argument("--attention_dim", type=int, default=None)
+    parser.add_argument("--cls_query_pooling", action="store_true")
     parser.add_argument("--joint_batch", action="store_true")
 
     args = parser.parse_args()
