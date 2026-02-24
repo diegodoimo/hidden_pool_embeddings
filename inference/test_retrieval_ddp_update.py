@@ -150,13 +150,15 @@ class evaluate_retrieval:
         query_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["queries"]["id"])}
         doc_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["corpus"]["id"])}
 
-        print(f"rank {self.rank}: query_idx_to_id: {len(query_idx_to_id)}")
-        print(f"rank {self.rank}: doc_idx_to_id: {len(query_idx_to_id)}")
+        # print(f"rank {self.rank}: query_idx_to_id: {len(query_idx_to_id)}")
+        # print(f"rank {self.rank}: doc_idx_to_id: {len(query_idx_to_id)}")
 
         collate_fn = partial(
             collate_fn_with_padding,
             pad_token_id=self.tokenizer.pad_token_id,
             padding_side=self.padding_side,
+            tokenizer=self.tokenizer,
+            eot_id=self.tokenizer.pad_token_id,
         )
 
         sampler_queries = None
@@ -206,6 +208,7 @@ class evaluate_retrieval:
                 collate_fn=collate_fn,
                 top_k=top_k,
                 batch_size=batch_size,
+                estract_positives=False,
                 chunk_size=2 * 10**3,
             )
 

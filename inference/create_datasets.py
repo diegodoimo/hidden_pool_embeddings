@@ -48,6 +48,25 @@ def instruction_template_qwen3(prompt_type, task_metadata, text, title="") -> st
 
     return prompt
 
+def instruction_template_embeddinggemma(prompt_type, task_metadata, text, title=""):
+
+    #text = row["text"]
+
+    # we do not use  task specific instruction in embeddinggemma
+    if prompt_type == PromptType.query:
+        instruction = TASK_PROMPTS[task_metadata.type]
+        prompt = f"{instruction.strip()} {text.strip()}"
+
+    elif prompt_type == PromptType.document:
+        
+        if len(title) > 0:
+            instruction = TASK_PROMPTS["document"].format(title=title)
+        else:
+            instruction = TASK_PROMPTS["Retrieval-document"]
+        
+        prompt = f"{instruction.strip()} {text.strip()}"
+
+    return prompt
 
 def _is_valid_row(text: str) -> bool:
     """Check if a dataset row has non-empty text content."""
@@ -341,22 +360,4 @@ def filter_qrels_by_length(
     #return Dataset(arrow_table.filter(keep_mask))
 
 
-def instruction_template_embeddinggemma(prompt_type, task_metadata, row):
 
-    text = row["text"]
-
-    # we do not use  task specific instruction in embeddinggemma
-    if prompt_type == PromptType.query:
-        prompt = TASK_PROMPTS[task_metadata.type]
-
-    elif prompt_type == PromptType.document:
-        prompt = TASK_PROMPTS["Retrieval-document"]
-
-        title = None
-        if "title" in row and len(row["title"]) > 0:
-            title = row["title"]
-
-        if title is not None:
-            prompt = TASK_PROMPTS["document"].format(title=title)
-
-    return (prompt + text).strip()

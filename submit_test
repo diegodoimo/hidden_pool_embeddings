@@ -52,7 +52,7 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     eval_model_with_ddp.py  \
-    --model_name_or_path google/embeddinggemma-300m \
-    #--model_name_or_path "Qwen/Qwen3-Embedding-0.6B" \
+    --model_name_or_path "Qwen/Qwen3-Embedding-0.6B" \
+    #--model_name_or_path google/embeddinggemma-300m \
 
  

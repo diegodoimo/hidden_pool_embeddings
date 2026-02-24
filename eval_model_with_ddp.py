@@ -30,22 +30,21 @@ def main():
         args.model_name_or_path, use_fast=False, trust_remote_code=True
     )
 
+    if "qwen3" in args.model_name_or_path.lower():
+        instruction_template = instruction_template_qwen3
+    elif "embeddinggemma" in arg.model_name_or_path.lower():
+        instruction_template=instruction_template_embeddinggemma,
+
     retrieval_evaluator = evaluate_retrieval(
         tasks=["ArguAna"],
         tokenizer=tokenizer,
-        # instruction_template=instruction_template_qwen3,
-        instruction_template=instruction_template_embeddinggemma,
+        instruction_template=instruction_template,
         padding_side="right",
         new_inference_mode=True,
     )
 
-    # model = AutoModel.from_pretrained(
-    #     "Qwen/Qwen3-Embedding-0.6B",
-    #     dtype=torch.bfloat16,
-    # ).to("cuda")
-
     model = AutoModel.from_pretrained(
-        "google/embeddinggemma-300m",
+        args.model_name_or_path,
         dtype=torch.bfloat16,
     ).to("cuda")
 

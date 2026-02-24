@@ -95,12 +95,13 @@ def search(
     query_embeddings,
     corpus_dataset,
     collate_fn,
-    n_positives,
-    qrels_query_ids,
-    qrels_positive_ids,
-    unique_query_ids,
-    unique_query_id_to_idx,
-    corpus_ids,
+    n_positives=0,
+    qrels_query_ids=None,
+    qrels_positive_ids=None,
+    unique_query_ids=None,
+    unique_query_id_to_idx=None,
+    corpus_ids=None,
+    estract_positives=True,
     top_k=100,
     batch_size=64,
     chunk_size=10**4,
@@ -163,20 +164,29 @@ def search(
     # ========================================================================
 
     # Build mapping from corpus_id to corpus_index (only for positives)
-    corpus_id_to_idx = {pid: idx for idx, pid in enumerate(corpus_ids[:n_positives])}
+    
 
     # Build inverted index: positive_corpus_idx -> list of (query_idx, qrel_idx)
-    positive_to_queries = {}
-    for qrel_idx, (qid, pid) in enumerate(zip(qrels_query_ids, qrels_positive_ids)):
-        corpus_idx = corpus_id_to_idx.get(pid)
-        if corpus_idx is not None and corpus_idx < n_positives:
-            query_idx = unique_query_id_to_idx[qid]
-            if corpus_idx not in positive_to_queries:
-                positive_to_queries[corpus_idx] = []
-            positive_to_queries[corpus_idx].append((query_idx, qrel_idx))
+    if estract_positives:
+        assert n_positives> 0
+        assert qrels_query_ids is not None
+        assert qrels_positive_ids is not None
+        assert unique_query_ids is not None
+        assert unique_query_id_to_idx is not None
+        assert corpus_ids is not None
 
-    # query_positive_scores always on GPU (one float per qrel pair — small)
-    query_positive_scores = torch.zeros(len(qrels_query_ids), device=gpu_device)
+        corpus_id_to_idx = {pid: idx for idx, pid in enumerate(corpus_ids[:n_positives])}
+        positive_to_queries = {}
+        for qrel_idx, (qid, pid) in enumerate(zip(qrels_query_ids, qrels_positive_ids)):
+            corpus_idx = corpus_id_to_idx.get(pid)
+            if corpus_idx is not None and corpus_idx < n_positives:
+                query_idx = unique_query_id_to_idx[qid]
+                if corpus_idx not in positive_to_queries:
+                    positive_to_queries[corpus_idx] = []
+                positive_to_queries[corpus_idx].append((query_idx, qrel_idx))
+
+        # query_positive_scores always on GPU (one float per qrel pair — small)
+        query_positive_scores = torch.zeros(len(qrels_query_ids), device=gpu_device)
 
     # ========================================================================
 
@@ -192,18 +202,15 @@ def search(
                 f"Using query_chunk_size: {return_formatted(query_chunk_size)} "
                 f"({(N_queries + query_chunk_size - 1) // query_chunk_size} query passes per corpus chunk)"
             )
-        print(
-            f"Will extract query-positive scores for {return_formatted(len(qrels_query_ids))} qrels pairs"
-        )
+        if estract_positives:
+            print(
+                f"Will extract query-positive scores for {return_formatted(len(qrels_query_ids))} qrels pairs"
+            )
 
     time_loading = 0
     time_encoding = 0
     time_sim = 0
-
     start = time.time()
-    # print(f"chunk size {rank}: {chunk_size}")
-    # #n_iters = N_corpus//chunk_size
-    # print(f"iters {rank}: {n_iters}")
 
     for i, chunk_idx in enumerate(range(0, N_corpus, chunk_size)):
 
@@ -293,22 +300,12 @@ def search(
             del scores
 
         del local_corpus_chunk, local_indices
-        # torch.cuda.synchronize()
-        # t11 = time.time()
-
-        # time_loading = t01 - t0
-        # time_encoding += t1 - t01
-        # time_sim += t11 - t1
-
 
     dist.barrier()
     torch.cuda.synchronize()
     if rank == 0:
         print("\nGathering top scores top indices from all GPUs...")
 
-    # print(
-    #     f"{rank}: {top_scores.shape} {top_indices.shape} {query_positive_scores.shape}"
-    # )
 
     # Distributed merging for top-k results
     if world_size > 1:
@@ -364,9 +361,12 @@ def search(
     dist.barrier()
     torch.cuda.synchronize()
     # Gather query-positive scores from all GPUs
+
+    if not estract_positives:
+        return top_scores, top_indices
+
     if rank == 0:
         print("\nGathering query-positive scores from all GPUs...")
-
     if world_size > 1:
         # Each GPU has computed scores for some qrels pairs based on the chunks it processed
         # We need to sum the scores across GPUs (since each pair is computed by one GPU)
@@ -381,7 +381,7 @@ def search(
     # Convert to numpy
     query_positive_scores = query_positive_scores.cpu().numpy()
 
-    if rank == 0:
+    if rank == 0 and qrels_query_ids is not None:
         print(f"Query-positive scores computed for {len(qrels_query_ids)} pairs")
 
     return top_scores, top_indices, query_positive_scores
