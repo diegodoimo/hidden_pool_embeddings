@@ -19,18 +19,21 @@ from utils.helpers import print_memory_consumed, return_formatted
 
 
 def collate_fn_with_padding(
-    batch, pad_token_id=0, padding_side="right", tokenizer=None, eot_id=None
+    batch, pad_token_id=0, padding_side="right", tokenizer=None, eot_id=None,
+    add_special_tokens=False,
 ):
 
     input_text = [item["prompt"] for item in batch]
     tokens = tokenizer(
         input_text,
-        add_special_tokens=False,
+        add_special_tokens=add_special_tokens,
         return_attention_mask=False,
     )["input_ids"]
-    query_token_ids = [torch.tensor(tok + [eot_id]) for tok in tokens]
+    if eot_id is not None:
+        query_token_ids = [torch.tensor(tok + [eot_id]) for tok in tokens]
+    else:
+        query_token_ids = [torch.tensor(tok) for tok in tokens]
 
-    # query_token_ids = [torch.tensor(item["input_ids"]) for item in batch]
     query_attention_mask = [torch.ones_like(input_ids) for input_ids in query_token_ids]
 
     # Pad queries and create attention masks
@@ -202,7 +205,7 @@ def search(
     interval = print_every // chunk_size + 1
     dist.barrier()
     start = time.time()
-    if rank == 0 and verbose:
+    if rank == 0:
         print(f"Using chunk_size: {return_formatted(chunk_size)}")
         if queries_on_cpu:
             print("Query embeddings on CPU — top-k bookkeeping also on CPU")

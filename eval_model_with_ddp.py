@@ -1,5 +1,6 @@
 from inference.test_retrieval_ddp_update import evaluate_retrieval
 import os
+import json
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 import argparse
@@ -28,23 +29,35 @@ def main():
 
     dist.init_process_group(
         "nccl",
-        device_id=LOCAL_RANK,
+        device_id=torch.device("cuda", LOCAL_RANK),
         timeout=timedelta(
             seconds=60
         ),  
     )
-    torch.cuda.set_device(dist.get_rank())
+    rank = dist.get_rank()
+    torch.cuda.set_device(LOCAL_RANK)
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name_or_path, use_fast=False, trust_remote_code=True
     )
 
     if "qwen3" in args.model_name_or_path.lower():
+        model_name = "qwen3_embedding"
         instruction_template = instruction_template_qwen3
         pool_fn = last_token_pool
+        add_special_tokens = False
+        append_eos = True
     elif "embeddinggemma" in args.model_name_or_path.lower():
+        model_name = "embeddinggemma"
         instruction_template = instruction_template_embeddinggemma
         pool_fn = mean_pool
+        add_special_tokens = True
+        append_eos = False
+    else:
+        raise ValueError(
+            f"Unrecognized model '{args.model_name_or_path}'. "
+            "Expected a path containing 'qwen3' or 'embeddinggemma'."
+        )
 
     bench_dict = {
         "mteb_multilingual_v2": "MTEB(Multilingual, v2)",
@@ -66,6 +79,8 @@ def main():
         padding_side="right",
         new_inference_mode=True,
         pool_fn=pool_fn,
+        add_special_tokens=add_special_tokens,
+        append_eos=append_eos,
     )
 
     model = AutoModel.from_pretrained(
@@ -74,10 +89,15 @@ def main():
     ).to("cuda")
 
     model = DDP(model, device_ids=[LOCAL_RANK])
-    results = retrieval_evaluator.evaluate(model, batch_size=32)
+    model = torch.compile(model)
+
+    results = retrieval_evaluator.evaluate(model, batch_size=64)
 
     if rank == 0:
         print(results)
+        label = args.benchmark if args.benchmark else args.task_name
+        with open(f'{model_name}_{label}_results.json', 'w', encoding='utf-8') as f:
+            json.dump(results, f, ensure_ascii=False, indent=4)
 
     dist.destroy_process_group()
 

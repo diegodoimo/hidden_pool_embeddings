@@ -52,6 +52,8 @@ class evaluate_retrieval:
         padding_side="right",
         new_inference_mode=True,
         pool_fn=last_token_pool,
+        add_special_tokens=False,
+        append_eos=True,
     ):
 
         self.world_size = dist.get_world_size()
@@ -62,6 +64,8 @@ class evaluate_retrieval:
         self.padding_side = padding_side
         self.new_inference_mode = new_inference_mode
         self.pool_fn = pool_fn
+        self.add_special_tokens = add_special_tokens
+        self.append_eos = append_eos
 
         t1 = time.time()
         _print_ram(label="before loading datasets", rank=self.rank)
@@ -610,7 +614,8 @@ class evaluate_retrieval:
             pad_token_id=self.tokenizer.pad_token_id,
             padding_side=self.padding_side,
             tokenizer=self.tokenizer,
-            eot_id=self.tokenizer.eos_token_id,
+            eot_id=self.tokenizer.eos_token_id if self.append_eos else None,
+            add_special_tokens=self.add_special_tokens,
         )
         sampler = LenghtSortedSampler(dataset)
         loader = DataLoader(
@@ -665,7 +670,8 @@ class evaluate_retrieval:
             pad_token_id=self.tokenizer.pad_token_id,
             padding_side=self.padding_side,
             tokenizer=self.tokenizer,
-            eot_id=self.tokenizer.eos_token_id,
+            eot_id=self.tokenizer.eos_token_id if self.append_eos else None,
+            add_special_tokens=self.add_special_tokens,
         )
 
         sampler_queries = None
