@@ -1,3 +1,4 @@
+import os
 import torch
 from torch.nn.utils.rnn import pad_sequence
 from typing import cast
@@ -252,7 +253,7 @@ def search(
             subcorpus,
             sampler=sampler_corpus,
             batch_size=batch_size,
-            num_workers=16,
+            num_workers=max(1, len(os.sched_getaffinity(0)) // 2 - 2),
             pin_memory=True,
             prefetch_factor=4,
             persistent_workers=False,

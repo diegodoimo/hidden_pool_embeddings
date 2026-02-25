@@ -1,3 +1,4 @@
+import os
 import mteb
 import torch
 from torch.utils.data import DataLoader
@@ -53,7 +54,7 @@ class evaluate_retrieval:
         new_inference_mode=True,
         pool_fn=last_token_pool,
         add_special_tokens=False,
-        append_eos=True,
+        eot_id=None,
     ):
 
         self.world_size = dist.get_world_size()
@@ -65,7 +66,7 @@ class evaluate_retrieval:
         self.new_inference_mode = new_inference_mode
         self.pool_fn = pool_fn
         self.add_special_tokens = add_special_tokens
-        self.append_eos = append_eos
+        self.eot_id = eot_id
 
         t1 = time.time()
         _print_ram(label="before loading datasets", rank=self.rank)
@@ -114,7 +115,7 @@ class evaluate_retrieval:
         return max_rows, max_info
 
     def prepare_datasets(
-        self, instruction_template, max_passage_len=4096, max_samples=10_000_000
+        self, instruction_template, max_passage_len=4096, max_samples=1_000_000
     ):
 
         datasets = {}
@@ -736,7 +737,7 @@ class evaluate_retrieval:
             pad_token_id=self.tokenizer.pad_token_id,
             padding_side=self.padding_side,
             tokenizer=self.tokenizer,
-            eot_id=self.tokenizer.eos_token_id if self.append_eos else None,
+            eot_id=self.eot_id,
             add_special_tokens=self.add_special_tokens,
         )
         sampler = LenghtSortedSampler(dataset)
@@ -744,7 +745,7 @@ class evaluate_retrieval:
             dataset,
             sampler=sampler,
             batch_size=batch_size,
-            num_workers=16,
+            num_workers=max(1, len(os.sched_getaffinity(0)) // 2 - 2),
             pin_memory=True,
             collate_fn=collate_fn,
         )
@@ -792,7 +793,7 @@ class evaluate_retrieval:
             pad_token_id=self.tokenizer.pad_token_id,
             padding_side=self.padding_side,
             tokenizer=self.tokenizer,
-            eot_id=self.tokenizer.eos_token_id if self.append_eos else None,
+            eot_id=self.eot_id,
             add_special_tokens=self.add_special_tokens,
         )
 
@@ -813,7 +814,7 @@ class evaluate_retrieval:
             dataset["queries"],
             sampler=sampler_queries,
             batch_size=batch_size,
-            num_workers=16,
+            num_workers=max(1, len(os.sched_getaffinity(0)) // 2 - 2),
             pin_memory=True,
             collate_fn=collate_fn,
         )
@@ -1034,7 +1035,6 @@ class evaluate_retrieval:
         all_v = list(itertools.chain.from_iterable(v_measures.values()))
         mean_v = float(np.mean(all_v))
         std_v = float(np.std(all_v))
-
         # if self.rank == 0:
         #     print(f"  v_measure={mean_v:.4f} (std={std_v:.4f})")
 
@@ -1047,13 +1047,13 @@ class evaluate_retrieval:
         task_obj = task_data["task_obj"]
         main_score = task_data["main_score"]
 
-        if self.rank == 0:
-            print("  encoding train set...")
+        # if self.rank == 0:
+        #     print("  encoding train set...")
         train_embeddings = self._encode_dataset(
             model, dataset["train_texts"], batch_size
         )
-        if self.rank == 0:
-            print("  encoding test set...")
+        # if self.rank == 0:
+        #     print("  encoding test set...")
         test_embeddings = self._encode_dataset(
             model, dataset["test_texts"], batch_size
         )

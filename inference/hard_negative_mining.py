@@ -1,3 +1,4 @@
+import os
 import torch
 from torch.utils.data import DataLoader
 from mteb.types import PromptType
@@ -305,7 +306,7 @@ class HardNegativesMiner:
         max_length=512,
         pool_fn=None,
         add_special_tokens=False,
-        append_eos=True,
+        eot_id=None,
     ):
         from .helpers import last_token_pool as _default_pool
         self.world_size = dist.get_world_size()
@@ -317,7 +318,7 @@ class HardNegativesMiner:
         self.max_length = max_length
         self.pool_fn = pool_fn if pool_fn is not None else _default_pool
         self.add_special_tokens = add_special_tokens
-        self.append_eos = append_eos
+        self.eot_id = eot_id
 
         if self.rank == 0:
             Path(path).mkdir(parents=True, exist_ok=True)
@@ -482,14 +483,14 @@ class HardNegativesMiner:
             pad_token_id=self.tokenizer.pad_token_id,
             padding_side=self.padding_side,
             tokenizer=self.tokenizer,
-            eot_id=self.tokenizer.eos_token_id if self.append_eos else None,
+            eot_id=self.eot_id,
             add_special_tokens=self.add_special_tokens,
         )
         queries_loader = DataLoader(
             dataset["unique_queries"],
             sampler=sampler_queries,
             batch_size=batch_size,
-            num_workers=16,
+            num_workers=max(1, len(os.sched_getaffinity(0)) // 2 - 2),
             pin_memory=True,
             collate_fn=collate_fn,
         )

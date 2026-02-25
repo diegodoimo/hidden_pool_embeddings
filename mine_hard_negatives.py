@@ -215,6 +215,7 @@ def main():
         instruction_template=instruction_template_qwen3,
         padding_side="right",
         max_length=max_length,
+        eot_id=tokenizer.pad_token_id,
     )
 
     if RANK == 0:

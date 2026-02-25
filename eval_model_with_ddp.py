@@ -46,13 +46,13 @@ def main():
         instruction_template = instruction_template_qwen3
         pool_fn = last_token_pool
         add_special_tokens = False
-        append_eos = True
+        eot_id = tokenizer.pad_token_id
     elif "embeddinggemma" in args.model_name_or_path.lower():
         model_name = "embeddinggemma"
         instruction_template = instruction_template_embeddinggemma
         pool_fn = mean_pool
         add_special_tokens = True
-        append_eos = False
+        eot_id = None
     else:
         raise ValueError(
             f"Unrecognized model '{args.model_name_or_path}'. "
@@ -80,7 +80,7 @@ def main():
         new_inference_mode=True,
         pool_fn=pool_fn,
         add_special_tokens=add_special_tokens,
-        append_eos=append_eos,
+        eot_id=eot_id,
     )
 
     model = AutoModel.from_pretrained(

@@ -1,3 +1,4 @@
+import os
 import mteb
 import torch
 from torch.utils.data import DataLoader
@@ -215,11 +216,12 @@ class evaluate_retrieval:
             padding_side=self.padding_side,
         )
 
+        num_workers = max(1, len(os.sched_getaffinity(0)) // 2 - 2)
         queries_loader = DataLoader(
             dataset["queries"],
             sampler=sampler_queries,
             batch_size=batch_size,
-            num_workers=16,
+            num_workers=num_workers,
             pin_memory=True,
             collate_fn=collate_fn,
         )
@@ -227,7 +229,7 @@ class evaluate_retrieval:
             dataset["corpus"],
             sampler=sampler_corpus,
             batch_size=batch_size,
-            num_workers=16,
+            num_workers=num_workers,
             pin_memory=True,
             collate_fn=collate_fn,
         )
