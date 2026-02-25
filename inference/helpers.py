@@ -67,6 +67,13 @@ def last_token_pool(last_hidden_states, attention_mask):
         ]
 
 
+def mean_pool(last_hidden_states, attention_mask):
+    mask = attention_mask.unsqueeze(-1)  # (B, L, 1)
+    masked_sum = (last_hidden_states * mask).sum(dim=1)  # (B, H)
+    mask_sum = mask.sum(dim=1).clamp(min=1e-9)  # (B, 1)
+    return masked_sum / mask_sum
+
+
 def abs_task_preprocessing(task, eval_split):
 
     subsets_to_run = None
@@ -107,6 +114,8 @@ def search(
     chunk_size=10**4,
     query_chunk_size=None,
     print_every=2*10**5,
+    verbose=False,
+    pool_fn=last_token_pool,
 ):
     """
     Search for top-k documents and compute query-positive scores.
@@ -193,7 +202,7 @@ def search(
     interval = print_every // chunk_size + 1
     dist.barrier()
     start = time.time()
-    if rank == 0:
+    if rank == 0 and verbose:
         print(f"Using chunk_size: {return_formatted(chunk_size)}")
         if queries_on_cpu:
             print("Query embeddings on CPU — top-k bookkeeping also on CPU")
@@ -256,6 +265,7 @@ def search(
             prompt_type=PromptType.document,
             world_size=world_size,
             divided_by_chunks=True,
+            pool_fn=pool_fn,
         )
 
         # torch.cuda.synchronize()
@@ -303,7 +313,8 @@ def search(
 
     dist.barrier()
     torch.cuda.synchronize()
-    if rank == 0:
+
+    if rank == 0 and verbose:
         print("\nGathering top scores top indices from all GPUs...")
 
 
@@ -365,7 +376,7 @@ def search(
     if not estract_positives:
         return top_scores, top_indices
 
-    if rank == 0:
+    if rank == 0 and verbose:
         print("\nGathering query-positive scores from all GPUs...")
     if world_size > 1:
         # Each GPU has computed scores for some qrels pairs based on the chunks it processed
@@ -381,7 +392,7 @@ def search(
     # Convert to numpy
     query_positive_scores = query_positive_scores.cpu().numpy()
 
-    if rank == 0 and qrels_query_ids is not None:
+    if rank == 0 and verbose and qrels_query_ids is not None:
         print(f"Query-positive scores computed for {len(qrels_query_ids)} pairs")
 
     return top_scores, top_indices, query_positive_scores
@@ -468,7 +479,8 @@ def update_query_positive_score(
 
 @torch.inference_mode()
 def encode(
-    model, loader, world_size, prompt_type, divided_by_chunks=False, stream_to_cpu=False
+    model, loader, world_size, prompt_type, divided_by_chunks=False, stream_to_cpu=False,
+    pool_fn=last_token_pool,
 ):
 
     # distributed sampler will duplicate examples at the end
@@ -491,7 +503,7 @@ def encode(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
             )
-            out_embeddings = last_token_pool(
+            out_embeddings = pool_fn(
                 out_embeddings.last_hidden_state,
                 batch["attention_mask"],
             )

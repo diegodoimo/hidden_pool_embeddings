@@ -303,8 +303,9 @@ class HardNegativesMiner:
         instruction_template,
         padding_side="right",
         max_length=512,
+        pool_fn=None,
     ):
-
+        from .helpers import last_token_pool as _default_pool
         self.world_size = dist.get_world_size()
         self.rank = dist.get_rank()
 
@@ -312,6 +313,7 @@ class HardNegativesMiner:
         self.task_names = task_names
         self.padding_side = padding_side
         self.max_length = max_length
+        self.pool_fn = pool_fn if pool_fn is not None else _default_pool
 
         if self.rank == 0:
             Path(path).mkdir(parents=True, exist_ok=True)
@@ -476,7 +478,7 @@ class HardNegativesMiner:
             pad_token_id=self.tokenizer.pad_token_id,
             padding_side=self.padding_side,
             tokenizer=self.tokenizer,
-            eot_id=self.tokenizer.pad_token_id,
+            eot_id=self.tokenizer.eos_token_id,
         )
         queries_loader = DataLoader(
             dataset["unique_queries"],
@@ -526,6 +528,7 @@ class HardNegativesMiner:
             prompt_type=PromptType.query,
             world_size=self.world_size,
             stream_to_cpu=stream_to_cpu,
+            pool_fn=self.pool_fn,
         )
 
         dist.barrier()
@@ -578,6 +581,7 @@ class HardNegativesMiner:
             batch_size=batch_size,
             chunk_size=chunk_size,
             query_chunk_size=query_chunk_size,
+            pool_fn=self.pool_fn,
         )
 
         del query_embeddings
