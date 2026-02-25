@@ -13,6 +13,12 @@ bench_dict = {
     "mteb_eng_v2": "MTEB(eng, v2)",
 }
 benchmark = mteb.get_benchmark("MTEB(eng, v2)")
+
+
+tasks = []
+for task in benchmark.tasks:
+    tasks.append(task.metadata.name)
+
 benchmarks = mteb.get_benchmarks()
 
 for benchmark in benchmarks:
