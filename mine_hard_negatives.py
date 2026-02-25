@@ -178,8 +178,8 @@ def main():
         "nccl",
         device_id=LOCAL_RANK,
         timeout=timedelta(
-            seconds=1800
-        ),  # 30 min — large datasets need time for encoding + search
+            seconds=60
+        ),  
     )
     torch.cuda.set_device(dist.get_rank())
 

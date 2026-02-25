@@ -21,6 +21,22 @@ from inference.create_datasets import create_dataset
 from utils.helpers import _print_ram
 from collections import defaultdict
 import time
+import itertools
+import numpy as np
+from datasets import Dataset as HFDataset
+
+from sklearn.metrics.pairwise import (
+    paired_cosine_distances,
+    paired_euclidean_distances,
+    paired_manhattan_distances,
+)
+from sklearn.preprocessing import MultiLabelBinarizer
+from sklearn.base import clone
+from mteb.abstasks.multilabel_classification import _evaluate_classifier
+from mteb.abstasks.clustering import _evaluate_clustering_bootstrapped
+from mteb._evaluators.pair_classification_evaluator import PairClassificationDistances
+from scipy.stats import pearsonr, spearmanr
+from mteb._evaluators.text.summarization_evaluator import SummarizationEvaluator
 
 
 class evaluate_retrieval:
@@ -42,101 +58,578 @@ class evaluate_retrieval:
         self.padding_side = padding_side
         self.new_inference_mode = new_inference_mode
 
+        ti = time.time()
         _print_ram(label="before loading datasets", rank=self.rank)
         self.datasets = self.prepare_datasets(instruction_template)
-        _print_ram(label="after loading datastes", rank=self.rank)
-
         dist.barrier()
+        _print_ram(label="after loading datastes", rank=self.rank)
+        if self.rank ==0:
+            print(f"datsets prepared in {(time.time()-t1)/60:.2f} min")
 
-    def prepare_datasets(self, instruction_template, max_passage_len=4096):
+    def _get_max_split_size_from_hub(self, task):
+        """Query HF Hub for the largest split size (rows) without downloading data.
+
+        Inspects all dataset configs (e.g. corpus/queries for retrieval tasks)
+        and returns (max_rows, description_string).  Only metadata is fetched.
+        """
+        from datasets import get_dataset_config_names, get_dataset_config_info
+
+        ds_kwargs = dict(task.metadata.dataset)
+        path = ds_kwargs.get("path")
+        if not path:
+            return 0, ""
+        revision = ds_kwargs.get("revision")
+
+        try:
+            configs = get_dataset_config_names(path, revision=revision)
+        except Exception as e:
+            if self.rank == 0:
+                print(f"  WARNING: could not list configs for {path}: {e}")
+            return 0, ""
+
+        max_rows = 0
+        max_info = ""
+        for config in configs:
+            try:
+                info = get_dataset_config_info(
+                    path, config_name=config, revision=revision
+                )
+                if info.splits:
+                    for split_name, split_info in info.splits.items():
+                        if split_info.num_examples > max_rows:
+                            max_rows = split_info.num_examples
+                            max_info = f"{config}/{split_name}"
+            except Exception:
+                continue
+
+        return max_rows, max_info
+
+    def prepare_datasets(
+        self, instruction_template, max_passage_len=4096, max_samples=10_000_000
+    ):
 
         datasets = {}
-        for task in self.tasks:
+        n_tasks = len(self.tasks)
+        for i, task in enumerate(self.tasks):
             task_name = task.metadata.name
-            # task = mteb.get_task(task_name)
+            task_type = task.metadata.type
+
+            if self.rank == 0:
+                print(f"processing {task_name} {i}/{n_tasks}")
+
+            if self.rank == 0:
+                print(f"preparing {task_name} (type: {task_type})")
 
             eval_splits = task.metadata.eval_splits
-            assert len(eval_splits) == 1
-            eval_split = eval_splits[0]
+            if "test" in eval_splits:
+                eval_split = "test"
+            else:
+                eval_split = eval_splits[-1]
+            if self.rank == 0 and len(eval_splits) > 1:
+                print(f"  multiple eval_splits {eval_splits}, using '{eval_split}'")
+
+            max_rows, size_info = self._get_max_split_size_from_hub(task)
+            if max_rows > max_samples:
+                if self.rank == 0:
+                    print(
+                        f"  SKIPPING {task_name}: largest split has {max_rows} rows "
+                        f"({size_info}, limit={max_samples})"
+                    )
+                continue
+            if self.rank == 0 and max_rows > 0:
+                print(f"  largest split: {max_rows} rows ({size_info})")
+
             task.load_data()
-            task.convert_v1_dataset_format_to_v2()
 
-            data_split, hf_subset = abs_task_preprocessing(task, eval_split)
-
-            data_split["relevant_docs"], data_split["queries"] = (
-                _filter_queries_without_positives(
-                    data_split["relevant_docs"], data_split["queries"]
+            if task_type == "Retrieval":
+                self._prepare_retrieval(
+                    task, task_name, eval_split, instruction_template, datasets
                 )
-            )
-
-            queries_dataset = create_dataset(
-                dataset=data_split["queries"],
-                task_metadata=task.metadata,
-                instruction_template=instruction_template,
-                tokenizer=self.tokenizer,
-                prompt_type=PromptType.query,
-                max_length=8192,
-            )
-
-            corpus_dataset = create_dataset(
-                dataset=data_split["corpus"],
-                task_metadata=task.metadata,
-                instruction_template=instruction_template,
-                tokenizer=self.tokenizer,
-                prompt_type=PromptType.document,
-                max_length=8192,
-            )
-
-            datasets[task_name] = {
-                "dataset": {
-                    "queries": queries_dataset,
-                    "corpus": corpus_dataset,
-                    "relevant_docs": data_split["relevant_docs"],
-                },
-                "task_specific_scores": task.task_specific_scores,
-                "ignore_identical_ids": task.ignore_identical_ids,
-                "hf_split": eval_split,
-                "main_score": task.metadata.main_score,
-                "hf_subset": hf_subset,
-                "task_type": task.metadata.type,
-            }
+            elif task_type == "PairClassification":
+                self._prepare_pair_classification(
+                    task, task_name, eval_split, instruction_template, datasets
+                )
+            elif task_type == "MultilabelClassification":
+                self._prepare_multilabel_classification(
+                    task, task_name, eval_split, instruction_template, datasets
+                )
+            elif task_type == "Clustering":
+                self._prepare_clustering(
+                    task, task_name, eval_split, instruction_template, datasets
+                )
+            elif task_type == "Classification":
+                self._prepare_classification(
+                    task, task_name, eval_split, instruction_template, datasets
+                )
+            elif task_type == "STS":
+                self._prepare_sts(
+                    task, task_name, eval_split, instruction_template, datasets
+                )
+            elif task_type == "Summarization":
+                self._prepare_summarization(
+                    task, task_name, eval_split, instruction_template, datasets
+                )
+            elif task_type == "Reranking":
+                self._prepare_retrieval(
+                    task, task_name, eval_split, instruction_template, datasets
+                )
+            else:
+                if self.rank == 0:
+                    print(f"  WARNING: unsupported task type '{task_type}', skipping")
+            _print_ram(label="dataset loaded", rank=self.rank)
 
         return datasets
 
-    @torch.inference_mode()
-    def encode(self, model, loader):
+    # -------------------------------------------------------------------------
+    # Dataset preparation per task type
+    # -------------------------------------------------------------------------
 
-        # distributed sampler will duplicate examples at the end
-        num_samples = len(loader.dataset)
-        embeddings = []
+    def _prepare_retrieval(
+        self, task, task_name, eval_split, instruction_template, datasets
+    ):
+        task.convert_v1_dataset_format_to_v2()
+        data_split, hf_subset = abs_task_preprocessing(task, eval_split)
 
-        for i, batch in enumerate(loader):
-            batch = {key: val.to(model.device) for key, val in batch.items()}
+        data_split["relevant_docs"], data_split["queries"] = (
+            _filter_queries_without_positives(
+                data_split["relevant_docs"], data_split["queries"]
+            )
+        )
 
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                out_embeddings = model(
-                    input_ids=batch["input_ids"],
-                    attention_mask=batch["attention_mask"],
+        queries_dataset = create_dataset(
+            dataset=data_split["queries"],
+            task_metadata=task.metadata,
+            instruction_template=instruction_template,
+            tokenizer=self.tokenizer,
+            prompt_type=PromptType.query,
+            max_length=4096,
+        )
+
+        corpus_dataset = create_dataset(
+            dataset=data_split["corpus"],
+            task_metadata=task.metadata,
+            instruction_template=instruction_template,
+            tokenizer=self.tokenizer,
+            prompt_type=PromptType.document,
+            max_length=4096,
+        )
+
+        datasets[task_name] = {
+            "dataset": {
+                "queries": queries_dataset,
+                "corpus": corpus_dataset,
+                "relevant_docs": data_split["relevant_docs"],
+            },
+            "task_specific_scores": task.task_specific_scores,
+            "ignore_identical_ids": task.ignore_identical_ids,
+            "hf_split": eval_split,
+            "main_score": task.metadata.main_score,
+            "hf_subset": hf_subset,
+            "task_type": task.metadata.type,
+        }
+
+    def _prepare_text_dataset(self, texts, task_metadata, instruction_template):
+        """Create a prompt-augmented HF dataset from raw texts for encoding."""
+        dataset = HFDataset.from_dict(
+            {"id": [str(i) for i in range(len(texts))], "text": texts}
+        )
+        ds = create_dataset(
+            dataset=dataset,
+            task_metadata=task_metadata,
+            instruction_template=instruction_template,
+            tokenizer=self.tokenizer,
+            prompt_type=PromptType.query,
+            max_length=100_000,
+        )
+        if len(ds) != len(texts) and self.rank == 0:
+            print(
+                f"  WARNING: {len(texts) - len(ds)} texts filtered during dataset creation"
+            )
+        return ds
+
+    def _prepare_pair_classification(
+        self, task, task_name, eval_split, instruction_template, datasets
+    ):
+        data_split, hf_subset = abs_task_preprocessing(task, eval_split)
+
+        # v1 compatibility: some datasets store all pairs in a single row
+        if task.metadata.modalities == ["text"]:
+            if isinstance(data_split, HFDataset) and len(data_split) == 1:
+                data_split = data_split[0]
+
+        input1_col = task.input1_column_name
+        input2_col = task.input2_column_name
+        label_col = task.label_column_name
+
+        sentence1 = list(data_split[input1_col])
+        sentence2 = list(data_split[input2_col])
+        labels = list(data_split[label_col])
+
+        # Deduplicate texts for efficient encoding
+        all_sentences = sentence1 + sentence2
+        unique_texts, text_to_idx = [], {}
+        for text in all_sentences:
+            h = hash(text)
+            if h not in text_to_idx:
+                text_to_idx[h] = len(unique_texts)
+                unique_texts.append(text)
+
+        indices1 = [text_to_idx[hash(s)] for s in sentence1]
+        indices2 = [text_to_idx[hash(s)] for s in sentence2]
+
+        if self.rank == 0:
+            n_dedup = len(all_sentences) - len(unique_texts)
+            print(
+                f"  {n_dedup}/{len(all_sentences)} duplicate texts deduplicated"
+            )
+
+        texts_ds = self._prepare_text_dataset(
+            unique_texts, task.metadata, instruction_template
+        )
+
+        datasets[task_name] = {
+            "dataset": {
+                "texts": texts_ds,
+                "indices1": indices1,
+                "indices2": indices2,
+                "labels": labels,
+            },
+            "hf_split": eval_split,
+            "main_score": task.metadata.main_score,
+            "hf_subset": hf_subset,
+            "task_type": task.metadata.type,
+            "task_obj": task,
+        }
+
+    def _prepare_multilabel_classification(
+        self, task, task_name, eval_split, instruction_template, datasets
+    ):
+        from typing import cast
+        from copy import copy
+        from mteb.types import HFSubset
+        from datasets import DatasetDict
+
+        task.dataset = cast(dict[HFSubset, DatasetDict], task.dataset)
+        hf_subsets = (
+            copy(task.hf_subsets) if task.hf_subsets else list(task.dataset.keys())
+        )
+        assert len(hf_subsets) == 1, hf_subsets
+        hf_subset = hf_subsets[0]
+
+        if hf_subset not in task.dataset and hf_subset == "default":
+            ds = task.dataset
+        else:
+            ds = task.dataset[hf_subset]
+
+        input_col = task.input_column_name
+        label_col = task.label_column_name
+
+        if isinstance(ds, DatasetDict):
+            ds = ds.select_columns([input_col, label_col])
+
+        train_data = ds[task.train_split]
+        test_data = ds[eval_split]
+
+        # Subsample test set to 2000 as MTEB does
+        try:
+            if len(test_data) > 2000:
+                split_ds = test_data.train_test_split(
+                    test_size=2000, seed=42, stratify_by_column=label_col
                 )
-                out_embeddings = last_token_pool(
-                    out_embeddings.last_hidden_state,
-                    batch["attention_mask"],
-                )
+                test_data = split_ds["test"]
+        except ValueError:
+            if self.rank == 0:
+                print("  Could not stratify test subsample, using full test set")
 
-                batch_embeddings = F.normalize(out_embeddings, p=2, dim=1)
+        train_texts = list(train_data[input_col])
+        test_texts = list(test_data[input_col])
+        train_labels = list(train_data[label_col])
+        test_labels = list(test_data[label_col])
 
-            if self.world_size > 1:
-                gathered = [
-                    torch.zeros_like(out_embeddings) for _ in range(self.world_size)
-                ]
-                dist.all_gather(gathered, out_embeddings)
+        if self.rank == 0:
+            print(f"  train: {len(train_texts)}, test: {len(test_texts)} samples")
 
-                # Concatenate across ranks for this batch
-                batch_embeddings = torch.cat(gathered, dim=0)
-            embeddings.append(batch_embeddings.float())
+        train_ds = self._prepare_text_dataset(
+            train_texts, task.metadata, instruction_template
+        )
+        test_ds = self._prepare_text_dataset(
+            test_texts, task.metadata, instruction_template
+        )
 
-        embeddings = torch.cat(embeddings, dim=0)
-        return embeddings[:num_samples]
+        datasets[task_name] = {
+            "dataset": {
+                "train_texts": train_ds,
+                "test_texts": test_ds,
+                "train_labels": train_labels,
+                "test_labels": test_labels,
+            },
+            "hf_split": eval_split,
+            "main_score": task.metadata.main_score,
+            "hf_subset": hf_subset,
+            "task_type": task.metadata.type,
+            "task_obj": task,
+        }
+
+    def _prepare_clustering(
+        self, task, task_name, eval_split, instruction_template, datasets
+    ):
+        data_split, hf_subset = abs_task_preprocessing(task, eval_split)
+
+        input_col = task.input_column_name
+        label_col = task.label_column_name
+
+        sentences = list(data_split[input_col])
+        labels = list(data_split[label_col])
+
+        if (
+            task.max_document_to_embed is not None
+            and task.max_fraction_of_documents_to_embed is not None
+        ):
+            raise ValueError(
+                "Both max_document_to_embed and max_fraction_of_documents_to_embed are set"
+            )
+
+        if task.max_fraction_of_documents_to_embed is not None:
+            max_docs = min(
+                len(sentences),
+                int(task.max_fraction_of_documents_to_embed * len(sentences)),
+            )
+            indices = task.rng_state.sample(range(len(sentences)), k=max_docs)
+            sentences = [sentences[i] for i in indices]
+            labels = [labels[i] for i in indices]
+        elif task.max_document_to_embed is not None:
+            max_docs = min(len(sentences), task.max_document_to_embed)
+            indices = task.rng_state.sample(range(len(sentences)), k=max_docs)
+            sentences = [sentences[i] for i in indices]
+            labels = [labels[i] for i in indices]
+
+        if self.rank == 0:
+            print(f"  {len(sentences)} samples for clustering")
+
+        texts_ds = self._prepare_text_dataset(
+            sentences, task.metadata, instruction_template
+        )
+
+        datasets[task_name] = {
+            "dataset": {
+                "texts": texts_ds,
+                "labels": labels,
+            },
+            "hf_split": eval_split,
+            "main_score": task.metadata.main_score,
+            "hf_subset": hf_subset,
+            "task_type": task.metadata.type,
+            "task_obj": task,
+        }
+
+    def _prepare_classification(
+        self, task, task_name, eval_split, instruction_template, datasets
+    ):
+        from typing import cast
+        from copy import copy
+        from mteb.types import HFSubset
+        from datasets import DatasetDict
+
+        task.dataset = cast(dict[HFSubset, DatasetDict], task.dataset)
+        hf_subsets = (
+            copy(task.hf_subsets) if task.hf_subsets else list(task.dataset.keys())
+        )
+        assert len(hf_subsets) == 1, hf_subsets
+        hf_subset = hf_subsets[0]
+
+        if hf_subset not in task.dataset and hf_subset == "default":
+            ds = task.dataset
+        else:
+            ds = task.dataset[hf_subset]
+
+        input_col = task.input_column_name
+        label_col = task.label_column_name
+
+        if isinstance(ds, DatasetDict):
+            ds = ds.select_columns([input_col, label_col])
+
+        train_data = ds[task.train_split]
+        test_data = ds[eval_split]
+
+        train_texts = list(train_data[input_col])
+        test_texts = list(test_data[input_col])
+        train_labels = list(train_data[label_col])
+        test_labels = list(test_data[label_col])
+
+        if self.rank == 0:
+            print(f"  train: {len(train_texts)}, test: {len(test_texts)} samples")
+
+        train_ds = self._prepare_text_dataset(
+            train_texts, task.metadata, instruction_template
+        )
+        test_ds = self._prepare_text_dataset(
+            test_texts, task.metadata, instruction_template
+        )
+
+        datasets[task_name] = {
+            "dataset": {
+                "train_texts": train_ds,
+                "test_texts": test_ds,
+                "train_labels": train_labels,
+                "test_labels": test_labels,
+            },
+            "hf_split": eval_split,
+            "main_score": task.metadata.main_score,
+            "hf_subset": hf_subset,
+            "task_type": task.metadata.type,
+            "task_obj": task,
+        }
+
+    def _prepare_sts(
+        self, task, task_name, eval_split, instruction_template, datasets
+    ):
+        data_split, hf_subset = abs_task_preprocessing(task, eval_split)
+
+        col1, col2 = task.column_names
+
+        sentence1 = list(data_split[col1])
+        sentence2 = list(data_split[col2])
+        raw_scores = list(data_split["score"])
+        normalized_scores = [task._normalize(s) for s in raw_scores]
+
+        all_sentences = sentence1 + sentence2
+        unique_texts, text_to_idx = [], {}
+        for text in all_sentences:
+            h = hash(text)
+            if h not in text_to_idx:
+                text_to_idx[h] = len(unique_texts)
+                unique_texts.append(text)
+
+        indices1 = [text_to_idx[hash(s)] for s in sentence1]
+        indices2 = [text_to_idx[hash(s)] for s in sentence2]
+
+        if self.rank == 0:
+            n_dedup = len(all_sentences) - len(unique_texts)
+            print(
+                f"  {n_dedup}/{len(all_sentences)} duplicate texts deduplicated"
+            )
+
+        texts_ds = self._prepare_text_dataset(
+            unique_texts, task.metadata, instruction_template
+        )
+
+        datasets[task_name] = {
+            "dataset": {
+                "texts": texts_ds,
+                "indices1": indices1,
+                "indices2": indices2,
+                "labels": normalized_scores,
+            },
+            "hf_split": eval_split,
+            "main_score": task.metadata.main_score,
+            "hf_subset": hf_subset,
+            "task_type": task.metadata.type,
+            "task_obj": task,
+        }
+
+    def _prepare_summarization(
+        self, task, task_name, eval_split, instruction_template, datasets
+    ):
+        data_split, hf_subset = abs_task_preprocessing(task, eval_split)
+
+        text_col = task.text_column_name
+        human_col = task.human_summaries_column_name
+        machine_col = task.machine_summaries_column_name
+        relevance_col = task.relevancy_column_name
+
+        human_summaries = list(data_split[human_col])
+        machine_summaries = list(data_split[machine_col])
+        relevance = list(data_split[relevance_col])
+
+        normalized_scores = [
+            ((np.array(x) - task.min_score) / (task.max_score - task.min_score)).tolist()
+            for x in relevance
+        ]
+
+        human_lens = [len(hs) for hs in human_summaries]
+        machine_lens = [len(ms) for ms in machine_summaries]
+
+        all_human = [s for hs in human_summaries for s in hs]
+        all_machine = [s for ms in machine_summaries for s in ms]
+
+        all_texts = all_human + all_machine
+        unique_texts, text_to_idx = [], {}
+        for text in all_texts:
+            h = hash(text)
+            if h not in text_to_idx:
+                text_to_idx[h] = len(unique_texts)
+                unique_texts.append(text)
+
+        human_indices = [text_to_idx[hash(s)] for s in all_human]
+        machine_indices = [text_to_idx[hash(s)] for s in all_machine]
+
+        if self.rank == 0:
+            n_dedup = len(all_texts) - len(unique_texts)
+            print(
+                f"  {n_dedup}/{len(all_texts)} duplicate summaries deduplicated"
+            )
+            print(
+                f"  {len(human_summaries)} samples, "
+                f"{sum(human_lens)} human summaries, "
+                f"{sum(machine_lens)} machine summaries"
+            )
+
+        texts_ds = self._prepare_text_dataset(
+            unique_texts, task.metadata, instruction_template
+        )
+
+        datasets[task_name] = {
+            "dataset": {
+                "texts": texts_ds,
+                "human_indices": human_indices,
+                "machine_indices": machine_indices,
+                "human_lens": human_lens,
+                "machine_lens": machine_lens,
+                "gold_scores": normalized_scores,
+            },
+            "hf_split": eval_split,
+            "main_score": task.metadata.main_score,
+            "hf_subset": hf_subset,
+            "task_type": task.metadata.type,
+            "task_obj": task,
+        }
+
+    # -------------------------------------------------------------------------
+    # Encoding helpers
+    # -------------------------------------------------------------------------
+
+    def _encode_dataset(self, model, dataset, batch_size):
+        """Encode a prepared dataset using the DDP-aware pipeline."""
+        collate_fn = partial(
+            collate_fn_with_padding,
+            pad_token_id=self.tokenizer.pad_token_id,
+            padding_side=self.padding_side,
+            tokenizer=self.tokenizer,
+            eot_id=self.tokenizer.pad_token_id,
+        )
+        sampler = LenghtSortedSampler(dataset)
+        loader = DataLoader(
+            dataset,
+            sampler=sampler,
+            batch_size=batch_size,
+            num_workers=16,
+            pin_memory=True,
+            collate_fn=collate_fn,
+        )
+        dist.barrier()
+        start = time.time()
+        embeddings = encode(
+            model, loader, prompt_type=PromptType.query, world_size=self.world_size
+        )
+        dist.barrier()
+        if self.rank == 0:
+            print(f"  encoded {len(dataset)} samples in {time.time()-start:.2f}s")
+        return embeddings
+
+
+    # -------------------------------------------------------------------------
+    # Per-task-type evaluation
+    # -------------------------------------------------------------------------
 
     def evaluate_one(
         self,
@@ -149,7 +642,7 @@ class evaluate_retrieval:
         model,
         batch_size=8,
         top_k=None,
-        k_values=[1, 3, 5, 10, 20, 50],
+        k_values=[1, 3, 5, 10, 20, 100, 1000],
         skip_first_result: bool = False,
     ):
 
@@ -197,65 +690,34 @@ class evaluate_retrieval:
             collate_fn=collate_fn,
         )
 
-        if self.new_inference_mode:
-            dist.barrier()
-            start = time.time()
-            query_embeddings = encode(
-                model,
-                queries_loader,
-                prompt_type=PromptType.query,
-                world_size=self.world_size,
-            )
-            dist.barrier()
-            if self.rank == 0:
-                print(f"time to encode queries: {time.time()-start}")
-            time.time()
+        dist.barrier()
+        start = time.time()
+        query_embeddings = encode(
+            model,
+            queries_loader,
+            prompt_type=PromptType.query,
+            world_size=self.world_size,
+        )
+        dist.barrier()
+        if self.rank == 0:
+            print(f"time to encode queries: {time.time()-start}")
+        time.time()
 
-            top_scores, top_indices = search(
-                model=model,
-                query_embeddings=query_embeddings,
-                corpus_dataset=dataset["corpus"],
-                collate_fn=collate_fn,
-                top_k=top_k,
-                batch_size=batch_size,
-                estract_positives=False,
-                chunk_size=2 * 10**3,
-            )
+        top_scores, top_indices = search(
+            model=model,
+            query_embeddings=query_embeddings,
+            corpus_dataset=dataset["corpus"],
+            collate_fn=collate_fn,
+            top_k=top_k,
+            batch_size=batch_size,
+            estract_positives=False,
+            chunk_size=2 * 10**3,
+        )
 
-            dist.barrier()
-            if self.rank == 0:
-                print(f"time to encode docs + search: {time.time()-start}")
-        else:
-            corpus_loader = DataLoader(
-                dataset["corpus"],
-                sampler=sampler_corpus,
-                batch_size=batch_size,
-                num_workers=16,
-                pin_memory=True,
-                collate_fn=collate_fn,
-            )
+        dist.barrier()
+        if self.rank == 0:
+            print(f"time to encode docs + search: {time.time()-start}")
 
-            dist.barrier()
-            start = time.time()
-            query_embeddings = self.encode(model, queries_loader)
-            dist.barrier()
-            if self.rank == 0:
-                print(f"time to encode queries: {time.time()-start}")
-            time.time()
-            corpus_embeddings = self.encode(model, corpus_loader)
-
-            scores = torch.matmul(query_embeddings, corpus_embeddings.T)
-            top_scores, top_indices = torch.topk(
-                scores,
-                k=min(
-                    top_k + 1, len(scores[1]) if len(scores) > 1 else len(scores[-1])
-                ),
-                dim=1,
-                largest=True,
-            )
-            dist.barrier()
-            if self.rank == 0:
-                print(f"time to encode docs + search: {time.time()-start}")
 
         top_scores = top_scores.cpu()
         top_indices = top_indices.tolist()
@@ -314,23 +776,388 @@ class evaluate_retrieval:
         )
         return {main_score: scores[main_score]}
 
+    @torch.inference_mode()
+    def evaluate_one_pair_classification(self, task_data, model, batch_size):
+        model = model.eval()
+        dataset = task_data["dataset"]
+        task_obj = task_data["task_obj"]
+        main_score = task_data["main_score"]
+
+        embeddings = self._encode_dataset(model, dataset["texts"], batch_size)
+        embeddings_np = embeddings.cpu().numpy()
+
+        emb1 = embeddings_np[dataset["indices1"]]
+        emb2 = embeddings_np[dataset["indices2"]]
+
+        cosine_scores = 1 - paired_cosine_distances(emb1, emb2)
+        manhattan_distances_ = paired_manhattan_distances(emb1, emb2)
+        euclidean_distances_ = paired_euclidean_distances(emb1, emb2)
+        dot_scores = np.sum(emb1 * emb2, axis=1)
+
+        distances = PairClassificationDistances(
+            cosine_scores=cosine_scores.tolist(),
+            euclidean_distances=euclidean_distances_.tolist(),
+            manhattan_distances=manhattan_distances_.tolist(),
+            similarity_scores=cosine_scores.tolist(),
+            dot_scores=dot_scores.tolist(),
+        )
+
+        scores = task_obj._compute_metrics(distances, dataset["labels"])
+
+        if self.rank == 0:
+            for k, v in scores.items():
+                if k.startswith("max_"):
+                    print(f"  {k}: {v:.4f}")
+
+        return {main_score: scores[main_score]}
+
+    @torch.inference_mode()
+    def evaluate_one_multilabel_classification(self, task_data, model, batch_size):
+        model = model.eval()
+        dataset = task_data["dataset"]
+        task_obj = task_data["task_obj"]
+        main_score = task_data["main_score"]
+
+        if self.rank == 0:
+            print("  encoding train set...")
+        train_embeddings = self._encode_dataset(
+            model, dataset["train_texts"], batch_size
+        )
+        if self.rank == 0:
+            print("  encoding test set...")
+        test_embeddings = self._encode_dataset(
+            model, dataset["test_texts"], batch_size
+        )
+
+        X_train_all = train_embeddings.cpu().numpy()
+        X_test = test_embeddings.cpu().numpy()
+
+        train_labels = dataset["train_labels"]
+        test_labels = dataset["test_labels"]
+
+        binarizer = MultiLabelBinarizer()
+        y_test = binarizer.fit_transform(test_labels)
+
+        scores = []
+        for i_exp in range(task_obj.n_experiments):
+            sample_indices, _ = task_obj._undersample_data_indices(
+                train_labels, task_obj.samples_per_label, None
+            )
+            X_train = X_train_all[sample_indices]
+            y_train = binarizer.transform(
+                [train_labels[idx] for idx in sample_indices]
+            )
+
+            y_pred, classifier = _evaluate_classifier(
+                X_train, y_train, X_test, task_obj.evaluator
+            )
+            scores_exp = task_obj._calculate_scores(
+                y_test, y_pred, X_test, classifier
+            )
+            scores.append(scores_exp)
+
+            if self.rank == 0:
+                print(
+                    f"  experiment {i_exp + 1}/{task_obj.n_experiments}: "
+                    f"f1={scores_exp['f1']:.4f}, lrap={scores_exp['lrap']:.4f}"
+                )
+
+        avg_scores = {
+            k: float(np.mean([s[k] for s in scores])) for k in scores[0]
+        }
+        if self.rank == 0:
+            print(f"  avg {main_score}: {avg_scores.get(main_score, 'N/A')}")
+
+        return {main_score: avg_scores[main_score]}
+
+    @torch.inference_mode()
+    def evaluate_one_clustering(self, task_data, model, batch_size):
+        model = model.eval()
+        dataset = task_data["dataset"]
+        task_obj = task_data["task_obj"]
+        main_score = task_data["main_score"]
+
+        embeddings = self._encode_dataset(model, dataset["texts"], batch_size)
+        embeddings_np = embeddings.cpu().numpy()
+
+        labels = dataset["labels"]
+        labels = [l if isinstance(l, list) else [l] for l in labels]
+
+        v_measures, _ = _evaluate_clustering_bootstrapped(
+            embeddings_np,
+            labels,
+            n_clusters=task_obj.n_clusters,
+            cluster_size=task_obj.max_documents_per_cluster,
+            kmean_batch_size=task_obj.k_mean_batch_size,
+            max_depth=task_obj.max_depth,
+            rng_state=task_obj.rng_state,
+            seed=task_obj.seed,
+        )
+
+        all_v = list(itertools.chain.from_iterable(v_measures.values()))
+        mean_v = float(np.mean(all_v))
+        std_v = float(np.std(all_v))
+
+        if self.rank == 0:
+            print(f"  v_measure={mean_v:.4f} (std={std_v:.4f})")
+
+        return {main_score: mean_v}
+
+    @torch.inference_mode()
+    def evaluate_one_classification(self, task_data, model, batch_size):
+        model = model.eval()
+        dataset = task_data["dataset"]
+        task_obj = task_data["task_obj"]
+        main_score = task_data["main_score"]
+
+        if self.rank == 0:
+            print("  encoding train set...")
+        train_embeddings = self._encode_dataset(
+            model, dataset["train_texts"], batch_size
+        )
+        if self.rank == 0:
+            print("  encoding test set...")
+        test_embeddings = self._encode_dataset(
+            model, dataset["test_texts"], batch_size
+        )
+
+        X_train_all = train_embeddings.cpu().numpy()
+        X_test = test_embeddings.cpu().numpy()
+
+        train_labels = dataset["train_labels"]
+        test_labels = dataset["test_labels"]
+
+        evaluator_model = task_obj.evaluator_model
+        if "random_state" in evaluator_model.get_params():
+            evaluator_model = evaluator_model.set_params(
+                random_state=task_obj.seed
+            )
+
+        scores = []
+        idxs = None
+        for i_exp in range(task_obj.n_experiments):
+            if idxs is None:
+                idxs = list(range(len(train_labels)))
+            rng_state = np.random.RandomState(task_obj.seed)
+            rng_state.shuffle(idxs)
+
+            label_counter = defaultdict(int)
+            sampled_idxs = []
+            for i in idxs:
+                label = train_labels[i]
+                if label_counter[label] < task_obj.samples_per_label:
+                    sampled_idxs.append(i)
+                    label_counter[label] += 1
+
+            X_train = X_train_all[sampled_idxs]
+            y_train = [train_labels[i] for i in sampled_idxs]
+
+            clf = clone(evaluator_model)
+            clf.fit(X_train, y_train)
+            y_pred = clf.predict(X_test)
+
+            scores_exp = task_obj._calculate_scores(test_labels, y_pred)
+            scores.append(scores_exp)
+
+            if self.rank == 0:
+                print(
+                    f"  experiment {i_exp + 1}/{task_obj.n_experiments}: "
+                    f"accuracy={scores_exp['accuracy']:.4f}, f1={scores_exp['f1']:.4f}"
+                )
+
+        avg_scores = {
+            k: (
+                float(np.mean(values))
+                if (values := [s[k] for s in scores if s[k] is not None])
+                else np.nan
+            )
+            for k in scores[0].keys()
+        }
+        if self.rank == 0:
+            print(f"  avg {main_score}: {avg_scores.get(main_score, 'N/A')}")
+
+        return {main_score: avg_scores[main_score]}
+
+    @torch.inference_mode()
+    def evaluate_one_sts(self, task_data, model, batch_size):
+        model = model.eval()
+        dataset = task_data["dataset"]
+        task_obj = task_data["task_obj"]
+        main_score = task_data["main_score"]
+
+        embeddings = self._encode_dataset(model, dataset["texts"], batch_size)
+        embeddings_np = embeddings.cpu().numpy()
+
+        emb1 = embeddings_np[dataset["indices1"]]
+        emb2 = embeddings_np[dataset["indices2"]]
+
+        cosine_scores = 1 - paired_cosine_distances(emb1, emb2)
+        manhattan_distances_ = -paired_manhattan_distances(emb1, emb2)
+        euclidean_distances_ = -paired_euclidean_distances(emb1, emb2)
+
+        scores_dict = {
+            "cosine_scores": cosine_scores.tolist(),
+            "manhattan_distances": manhattan_distances_.tolist(),
+            "euclidean_distances": euclidean_distances_.tolist(),
+            "similarity_scores": None,
+        }
+
+        scores = task_obj._calculate_scores(scores_dict, dataset["labels"])
+
+        if self.rank == 0:
+            for k, v in scores.items():
+                print(f"  {k}: {v:.4f}")
+
+        return {main_score: scores[main_score]}
+
+    @torch.inference_mode()
+    def evaluate_one_summarization(self, task_data, model, batch_size):
+        model = model.eval()
+        dataset = task_data["dataset"]
+        main_score = task_data["main_score"]
+
+        embeddings = self._encode_dataset(model, dataset["texts"], batch_size)
+        embeddings_np = embeddings.cpu().numpy()
+
+        human_indices = dataset["human_indices"]
+        machine_indices = dataset["machine_indices"]
+        human_lens = dataset["human_lens"]
+        machine_lens = dataset["machine_lens"]
+        gold_scores = dataset["gold_scores"]
+
+        embs_human = embeddings_np[human_indices]
+        embs_machine = embeddings_np[machine_indices]
+
+        embs_human_per_sample = np.split(embs_human, np.cumsum(human_lens)[:-1])
+        embs_machine_per_sample = np.split(embs_machine, np.cumsum(machine_lens)[:-1])
+
+        cosine_spearman_scores = []
+        cosine_pearson_scores = []
+        dot_spearman_scores = []
+        dot_pearson_scores = []
+
+        n_skipped = 0
+        for i, (embs_human_i, embs_machine_i) in enumerate(
+            zip(embs_human_per_sample, embs_machine_per_sample)
+        ):
+            cosine_pred = []
+            dot_pred = []
+            human_scores = []
+
+            for emb_machine, gold_score in zip(embs_machine_i, gold_scores[i]):
+                cos_scores = emb_machine @ embs_human_i.T
+                dot_scores = emb_machine @ embs_human_i.T
+
+                cosine_pred.append(float(np.max(cos_scores)))
+                dot_pred.append(float(np.max(dot_scores)))
+                human_scores.append(gold_score)
+
+            if (
+                len(set(human_scores)) == 1
+                or len(set(dot_pred)) == 1
+                or len(set(cosine_pred)) == 1
+            ):
+                n_skipped += 1
+                continue
+
+            cosine_spearman_scores.append(
+                spearmanr(human_scores, cosine_pred).statistic
+            )
+            cosine_pearson_scores.append(
+                pearsonr(human_scores, cosine_pred).statistic
+            )
+            dot_spearman_scores.append(
+                spearmanr(human_scores, dot_pred).statistic
+            )
+            dot_pearson_scores.append(
+                pearsonr(human_scores, dot_pred).statistic
+            )
+
+        scores = {
+            "cosine_spearman": float(np.mean(cosine_spearman_scores)),
+            "cosine_pearson": float(np.mean(cosine_pearson_scores)),
+            "dot_spearman": float(np.mean(dot_spearman_scores)),
+            "dot_pearson": float(np.mean(dot_pearson_scores)),
+            "pearson": float(np.mean(cosine_pearson_scores)),
+            "spearman": float(np.mean(cosine_spearman_scores)),
+        }
+
+        if self.rank == 0:
+            print(f"  {n_skipped} samples skipped (constant scores)")
+            for k, v in scores.items():
+                print(f"  {k}: {v:.4f}")
+
+        return {main_score: scores[main_score]}
+
+    # -------------------------------------------------------------------------
+    # Main evaluation loop
+    # -------------------------------------------------------------------------
+
     def evaluate(self, model, batch_size=64):
         results = defaultdict(list)
+        
+        n_tasks = len(self.datasets)
+        for i, (name, task_data) in enumerate(self.datasets.items()):
+            
+            dist.barrier()
+            start = time.time()
+            task_type = task_data["task_type"]
 
-        for name, task in self.datasets.items():
-            if self.rank == 0:
-                print(f"processing datasets {name}")
-
-            output_res = self.evaluate_one(
-                dataset=task["dataset"],
-                task_specific_scores=task["task_specific_scores"],
-                ignore_identical_ids=task["ignore_identical_ids"],
-                hf_split=task["hf_split"],
-                hf_subset=task["hf_subset"],
-                main_score=task["main_score"],
-                model=model,
-                batch_size=batch_size,
-            )
-            results[task["task_type"]].append({name: output_res})
+            if task_type == "Retrieval":
+                output_res = self.evaluate_one(
+                    dataset=task_data["dataset"],
+                    task_specific_scores=task_data["task_specific_scores"],
+                    ignore_identical_ids=task_data["ignore_identical_ids"],
+                    hf_split=task_data["hf_split"],
+                    hf_subset=task_data["hf_subset"],
+                    main_score=task_data["main_score"],
+                    model=model,
+                    batch_size=batch_size,
+                )
+            elif task_type == "PairClassification":
+                output_res = self.evaluate_one_pair_classification(
+                    task_data, model, batch_size
+                )
+            elif task_type == "MultilabelClassification":
+                output_res = self.evaluate_one_multilabel_classification(
+                    task_data, model, batch_size
+                )
+            elif task_type == "Clustering":
+                output_res = self.evaluate_one_clustering(
+                    task_data, model, batch_size
+                )
+            elif task_type == "Classification":
+                output_res = self.evaluate_one_classification(
+                    task_data, model, batch_size
+                )
+            elif task_type == "STS":
+                output_res = self.evaluate_one_sts(
+                    task_data, model, batch_size
+                )
+            elif task_type == "Summarization":
+                output_res = self.evaluate_one_summarization(
+                    task_data, model, batch_size
+                )
+            elif task_type == "Reranking":
+                output_res = self.evaluate_one(
+                    dataset=task_data["dataset"],
+                    task_specific_scores=task_data["task_specific_scores"],
+                    ignore_identical_ids=task_data["ignore_identical_ids"],
+                    hf_split=task_data["hf_split"],
+                    hf_subset=task_data["hf_subset"],
+                    main_score=task_data["main_score"],
+                    model=model,
+                    batch_size=batch_size,
+                )
+            else:
+                if self.rank == 0:
+                    print(f"  skipping unsupported task type: {task_type}")
+                continue
+                
+            dist.barrier()
+            if self.rank ==0:
+                duration = time.time()-start
+                print(f"{name} evaluated in {duration/60:.2f} min")
+            results[task_type].append({name: (output_res, })
 
         return results
