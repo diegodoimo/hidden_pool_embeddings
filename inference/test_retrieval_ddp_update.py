@@ -1153,11 +1153,11 @@ class evaluate_retrieval:
                 if self.rank == 0:
                     print(f"  skipping unsupported task type: {task_type}")
                 continue
-                
+
             dist.barrier()
             if self.rank ==0:
                 duration = time.time()-start
                 print(f"{name} evaluated in {duration/60:.2f} min")
-            results[task_type].append({name: (output_res, })
+            results[task_type].append({name: (output_res, duration)})
 
         return results
