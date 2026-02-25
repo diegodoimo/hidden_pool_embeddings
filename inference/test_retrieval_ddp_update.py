@@ -16,7 +16,9 @@ from inference.helpers import (
     collate_fn_with_padding,
     abs_task_preprocessing,
     last_token_pool,
+    mean_pool,
 )
+from inference.hard_negative_mining import estimate_chunk_sizes
 from inference.create_datasets import create_dataset
 from utils.helpers import _print_ram
 from collections import defaultdict
@@ -39,6 +41,7 @@ from scipy.stats import pearsonr, spearmanr
 from mteb._evaluators.text.summarization_evaluator import SummarizationEvaluator
 
 
+
 class evaluate_retrieval:
 
     def __init__(
@@ -48,6 +51,7 @@ class evaluate_retrieval:
         instruction_template,
         padding_side="right",
         new_inference_mode=True,
+        pool_fn=last_token_pool,
     ):
 
         self.world_size = dist.get_world_size()
@@ -57,8 +61,9 @@ class evaluate_retrieval:
         self.tasks = tasks
         self.padding_side = padding_side
         self.new_inference_mode = new_inference_mode
+        self.pool_fn = pool_fn
 
-        ti = time.time()
+        t1 = time.time()
         _print_ram(label="before loading datasets", rank=self.rank)
         self.datasets = self.prepare_datasets(instruction_template)
         dist.barrier()
@@ -605,7 +610,7 @@ class evaluate_retrieval:
             pad_token_id=self.tokenizer.pad_token_id,
             padding_side=self.padding_side,
             tokenizer=self.tokenizer,
-            eot_id=self.tokenizer.pad_token_id,
+            eot_id=self.tokenizer.eos_token_id,
         )
         sampler = LenghtSortedSampler(dataset)
         loader = DataLoader(
@@ -619,7 +624,8 @@ class evaluate_retrieval:
         dist.barrier()
         start = time.time()
         embeddings = encode(
-            model, loader, prompt_type=PromptType.query, world_size=self.world_size
+            model, loader, prompt_type=PromptType.query, world_size=self.world_size,
+            pool_fn=self.pool_fn,
         )
         dist.barrier()
         if self.rank == 0:
@@ -653,33 +659,27 @@ class evaluate_retrieval:
         query_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["queries"]["id"])}
         doc_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["corpus"]["id"])}
 
-        # print(f"rank {self.rank}: query_idx_to_id: {len(query_idx_to_id)}")
-        # print(f"rank {self.rank}: doc_idx_to_id: {len(query_idx_to_id)}")
 
         collate_fn = partial(
             collate_fn_with_padding,
             pad_token_id=self.tokenizer.pad_token_id,
             padding_side=self.padding_side,
             tokenizer=self.tokenizer,
-            eot_id=self.tokenizer.pad_token_id,
+            eot_id=self.tokenizer.eos_token_id,
         )
 
         sampler_queries = None
-        sampler_corpus = None
         if self.world_size > 1:
             sampler_queries = torch.utils.data.distributed.DistributedSampler(
                 dataset["queries"], shuffle=False, drop_last=False
-            )
-            sampler_corpus = torch.utils.data.distributed.DistributedSampler(
-                dataset["corpus"], shuffle=False, drop_last=False
             )
 
         if self.new_inference_mode:
             sampler_queries = LenghtSortedSampler(dataset["queries"])
 
-        if self.rank == 0:
-            print("num queries", len(dataset["queries"]))
-            print("num documents", len(dataset["queries"]))
+        # if self.rank == 0:
+        #     print("num queries", len(dataset["queries"]))
+        #     print("num documents", len(dataset["corpus"]))
 
         queries_loader = DataLoader(
             dataset["queries"],
@@ -697,11 +697,22 @@ class evaluate_retrieval:
             queries_loader,
             prompt_type=PromptType.query,
             world_size=self.world_size,
+            pool_fn=self.pool_fn,
         )
         dist.barrier()
-        if self.rank == 0:
-            print(f"time to encode queries: {time.time()-start}")
-        time.time()
+
+
+
+        chunk_size, query_chunk_size = estimate_chunk_sizes(query_embeddings)
+
+        # Broadcast chunk sizes from rank 0 so the search loop has the
+        # same number of iterations on every GPU (free_mem can differ).
+        _cs = torch.tensor(
+            [chunk_size, query_chunk_size], dtype=torch.long, device=f"cuda:{self.rank}"
+        )
+        dist.broadcast(_cs, src=0)
+        chunk_size, query_chunk_size = int(_cs[0].item()), int(_cs[1].item())
+        del _cs
 
         top_scores, top_indices = search(
             model=model,
@@ -711,13 +722,11 @@ class evaluate_retrieval:
             top_k=top_k,
             batch_size=batch_size,
             estract_positives=False,
-            chunk_size=2 * 10**3,
+            chunk_size=chunk_size,
+            pool_fn=self.pool_fn,
         )
 
         dist.barrier()
-        if self.rank == 0:
-            print(f"time to encode docs + search: {time.time()-start}")
-
 
         top_scores = top_scores.cpu()
         top_indices = top_indices.tolist()
@@ -938,7 +947,7 @@ class evaluate_retrieval:
         for i_exp in range(task_obj.n_experiments):
             if idxs is None:
                 idxs = list(range(len(train_labels)))
-            rng_state = np.random.RandomState(task_obj.seed)
+            rng_state = np.random.RandomState(task_obj.seed + i_exp)
             rng_state.shuffle(idxs)
 
             label_counter = defaultdict(int)
@@ -1044,8 +1053,13 @@ class evaluate_retrieval:
             dot_pred = []
             human_scores = []
 
+            embs_human_i_norm = embs_human_i / np.linalg.norm(
+                embs_human_i, axis=1, keepdims=True
+            )
+
             for emb_machine, gold_score in zip(embs_machine_i, gold_scores[i]):
-                cos_scores = emb_machine @ embs_human_i.T
+                emb_machine_norm = emb_machine / np.linalg.norm(emb_machine)
+                cos_scores = emb_machine_norm @ embs_human_i_norm.T
                 dot_scores = emb_machine @ embs_human_i.T
 
                 cosine_pred.append(float(np.max(cos_scores)))
@@ -1102,6 +1116,8 @@ class evaluate_retrieval:
             dist.barrier()
             start = time.time()
             task_type = task_data["task_type"]
+            if self.rank ==0: 
+                print(f"\nevaluating {name}")
 
             if task_type == "Retrieval":
                 output_res = self.evaluate_one(
@@ -1155,8 +1171,8 @@ class evaluate_retrieval:
                 continue
 
             dist.barrier()
-            if self.rank ==0:
-                duration = time.time()-start
+            duration = time.time() - start
+            if self.rank == 0:
                 print(f"{name} evaluated in {duration/60:.2f} min")
             results[task_type].append({name: (output_res, duration)})
 

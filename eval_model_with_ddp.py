@@ -10,8 +10,9 @@ from inference.create_datasets import (
     instruction_template_qwen3,
     instruction_template_embeddinggemma,
 )
+from inference.helpers import last_token_pool, mean_pool
 import mteb
-
+from datetime import timedelta
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -33,15 +34,17 @@ def main():
         ),  
     )
     torch.cuda.set_device(dist.get_rank())
-    
+
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name_or_path, use_fast=False, trust_remote_code=True
     )
 
     if "qwen3" in args.model_name_or_path.lower():
         instruction_template = instruction_template_qwen3
+        pool_fn = last_token_pool
     elif "embeddinggemma" in args.model_name_or_path.lower():
         instruction_template = instruction_template_embeddinggemma
+        pool_fn = mean_pool
 
     bench_dict = {
         "mteb_multilingual_v2": "MTEB(Multilingual, v2)",
@@ -53,8 +56,6 @@ def main():
         tasks = []
         for task in benchmark.tasks:
             tasks.append(task)
-            # if task.metadata.type == "Retrieval":
-            #     tasks.append(task)
     else:
         tasks = [mteb.get_task(args.task_name)]
 
@@ -64,6 +65,7 @@ def main():
         instruction_template=instruction_template,
         padding_side="right",
         new_inference_mode=True,
+        pool_fn=pool_fn,
     )
 
     model = AutoModel.from_pretrained(
