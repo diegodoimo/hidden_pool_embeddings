@@ -368,8 +368,9 @@ def main():
 
 
 def evaluate(model, evaluator):
-    results = evaluator.evaluate(model)
+    results, summary = evaluator.evaluate(model)
     print(results)
+    print(summary)
 
 
 if __name__ == "__main__":

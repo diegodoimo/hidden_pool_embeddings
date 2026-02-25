@@ -23,24 +23,19 @@ from utils.contrastive_datasets import (
     prepare_msmarco,
     collate_fn_with_padding,
     collate_fn_with_padding_joint,
+    collate_fn_with_hard_negatives,
+    load_hard_negatives_datasets,
     LengthBalancedDistributedSampler,
 )
 from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLossHardNegatives
 from typing import Callable
+from functools import partial
 
 from inference.test_retrieval_ddp_update import evaluate_retrieval
 from inference.create_datasets import (
     instruction_template_qwen3,
     instruction_template_embeddinggemma,
 )
-
-path = "results/datasets_negatives/qwen3_600m/retrieval/general_retrieval/arguana"
-dataset = Dataset.from_parquet(f"{path}/data.parquet")
-
-
-dataset["negative_title"][0]
-dataset["negative_text"][0]
-
 
 class Trainer:
     def __init__(self, args, model_config, len_dataloader):
@@ -179,14 +174,12 @@ class Trainer:
 
                 batch = {key: val.to(self.model.device) for key, val in batch.items()}
 
-                query_inputs = batch["query_token_ids"].to(self.model.device)
-                query_mask = batch["query_attention_mask"].to(self.model.device)
-                doc_inputs = batch["pos_token_ids"].to(self.model.device)
-                doc_mask = batch["pos_attention_mask"].to(self.model.device)
+                query_inputs = batch["query_token_ids"]
+                query_mask = batch["query_attention_mask"]
+                doc_inputs = batch["pos_token_ids"]
+                doc_mask = batch["pos_attention_mask"]
+                doc_ids = batch["pos_ids"]
 
-                doc_ids = batch["pos_ids"].to(self.model.device)
-
-                # same as before but the gradients will be sync
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 
                     query_embeddings = self.model(
@@ -196,11 +189,30 @@ class Trainer:
                         input_ids=doc_inputs, attention_mask=doc_mask
                     )
 
-                    loss = loss_fn(
-                        query_embeddings=query_embeddings,
-                        doc_embeddings=doc_embeddings,
-                        doc_ids=doc_ids,
-                    )
+                    if "neg_token_ids" in batch and isinstance(
+                        loss_fn, EmbeddingGemmaLossHardNegatives
+                    ):
+                        neg_inputs = batch["neg_token_ids"]
+                        neg_mask = batch["neg_attention_mask"]
+                        B, num_neg, seq_len_neg = neg_inputs.shape
+
+                        neg_embeddings = self.model(
+                            input_ids=neg_inputs.view(B * num_neg, seq_len_neg),
+                            attention_mask=neg_mask.view(B * num_neg, seq_len_neg),
+                        ).view(B, num_neg, -1)
+
+                        loss = loss_fn(
+                            query_embeddings=query_embeddings,
+                            doc_embeddings=doc_embeddings,
+                            hard_neg_embeddings=neg_embeddings,
+                            doc_ids=doc_ids,
+                        )
+                    else:
+                        loss = loss_fn(
+                            query_embeddings=query_embeddings,
+                            doc_embeddings=doc_embeddings,
+                            doc_ids=doc_ids,
+                        )
 
                 loss.backward()
                 total_loss += loss.detach().float()
@@ -240,7 +252,7 @@ class Trainer:
                             json.dump(stats, f, indent=4)
 
                 if completed_steps in eval_steps:
-                    results = evaluator.evaluate(self.model, batch_size=32)
+                    results, summary = evaluator.evaluate(self.model, batch_size=32)
 
                     if RANK == 0:
                         print(f"iter {completed_steps}.")
@@ -294,23 +306,26 @@ def main():
         print("loading train set ")
         start = time.time()
 
-    if RANK == 0:
-        print(f"msmarco loaded in {time.time()-start}")
-        print("matching query and positives")
-        start = time.time()
+    instruction_template = instruction_template_qwen3
+    if args.instruction_template == "embeddinggemma":
+        instruction_template = instruction_template_embeddinggemma
 
-    if RANK == 0:
-        print(f"msmarco prepared in {time.time()-start}")
-        start = time.time()
-        print("tokenizing dataset")
+    tokenized_dataset = load_hard_negatives_datasets(
+        base_dir=args.negatives_dir,
+        num_hard_negatives=args.num_hard_negatives,
+        tokenizer=tokenizer,
+        instruction_template=instruction_template,
+        max_query_len=args.max_query_len,
+        max_passage_len=args.max_passage_len,
+        rank=RANK,
+    )
 
     dist.barrier()
     if RANK == 0:
-        print(f"msmarco tokenized in {time.time()-start}")
+        print(f"datasets tokenized in {time.time()-start:.1f}s")
         start = time.time()
         print("dataloader preparation")
 
-    # 3. Create length-balanced sampler
     sampler = LengthBalancedDistributedSampler(
         tokenized_dataset,
         num_replicas=WORLD_SIZE,
@@ -319,16 +334,17 @@ def main():
         seed=42,
     )
 
-    # 4. Create DataLoader with correct pad_token_id
-    collate_fn = collate_fn_with_padding
-    if args.joint_batch:
-        collate_fn = collate_fn_with_padding_joint
+    collate_fn = partial(
+        collate_fn_with_hard_negatives,
+        pad_token_id=tokenizer.pad_token_id,
+        num_hard_negatives=args.num_hard_negatives,
+    )
 
     train_loader = DataLoader(
         tokenized_dataset,
-        batch_size=args.per_device_train_batch_size,  # Per-GPU batch size
+        batch_size=args.per_device_train_batch_size,
         sampler=sampler,
-        collate_fn=lambda batch: collate_fn(batch, pad_token_id=tokenizer.pad_token_id),
+        collate_fn=collate_fn,
         num_workers=args.num_workers,
         pin_memory=True,
     )
@@ -343,7 +359,9 @@ def main():
     )
 
     # Initialize loss and optimizer
-    loss_fn = EmbeddingGemmaLossHardNegatives(temperature=0.07)
+    loss_fn = EmbeddingGemmaLossHardNegatives(
+        temperature=0.07, num_hard_negatives=args.num_hard_negatives
+    )
     if WORLD_SIZE > 1 and args.distributed_loss:
         loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
 
@@ -359,9 +377,10 @@ def main():
         args=args,
     )
 
-    if args.only_eval:
-        results = evaluator.evaluate(trainer.model, batch_size=32)
+    if args.eval_only:
+        results, summary = evaluator.evaluate(trainer.model, batch_size=32)
         print(results)
+        print(summary)
     else:
         dist.barrier()
         trainer.train(

@@ -1,0 +1,80 @@
+============================================================
+Task type: Retrieval  (n=10)
+============================================================
+  ArguAna                                             ndcg_at_10: 38.74
+  CQADupstackGamingRetrieval                          ndcg_at_10: 37.29
+  CQADupstackUnixRetrieval                            ndcg_at_10: 25.13
+  ClimateFEVERHardNegatives                           ndcg_at_10: 16.05
+  FEVERHardNegatives                                  ndcg_at_10: 47.39
+  FiQA2018                                            ndcg_at_10: 22.94
+  HotpotQAHardNegatives                               ndcg_at_10: 33.57
+  SCIDOCS                                             ndcg_at_10: 17.38
+  TRECCOVID                                           ndcg_at_10: 72.03
+  Touche2020Retrieval.v3                              ndcg_at_10: 30.74
+  Average                                             34.13
+
+============================================================
+Task type: Clustering  (n=8)
+============================================================
+  ArXivHierarchicalClusteringP2P                      v_measure: 56.45
+  ArXivHierarchicalClusteringS2S                      v_measure: 56.58
+  BiorxivClusteringP2P.v2                             v_measure: 44.91
+  MedrxivClusteringP2P.v2                             v_measure: 40.71
+  MedrxivClusteringS2S.v2                             v_measure: 36.61
+  StackExchangeClustering.v2                          v_measure: 66.90
+  StackExchangeClusteringP2P.v2                       v_measure: 41.78
+  TwentyNewsgroupsClustering.v2                       v_measure: 45.89
+  Average                                             48.73
+
+============================================================
+Task type: Reranking  (n=1)
+============================================================
+  AskUbuntuDupQuestions                               map_at_1000: 27.34
+  Average                                             27.34
+
+============================================================
+Task type: STS  (n=9)
+============================================================
+  BIOSSES                                             cosine_spearman: 80.67
+  SICK-R                                              cosine_spearman: 65.62
+  STS12                                               cosine_spearman: 65.63
+  STS13                                               cosine_spearman: 79.57
+  STS14                                               cosine_spearman: 62.07
+  STS15                                               cosine_spearman: 72.33
+  STSBenchmark                                        cosine_spearman: 75.58
+  STS17                                               cosine_spearman: 78.97
+  STS22.v2                                            cosine_spearman: 47.19
+  Average                                             69.74
+
+============================================================
+Task type: Classification  (n=8)
+============================================================
+  Banking77Classification                             accuracy: 75.55
+  ImdbClassification                                  accuracy: 92.30
+  MTOPDomainClassification                            accuracy: 92.41
+  MassiveIntentClassification                         accuracy: 64.60
+  MassiveScenarioClassification                       accuracy: 71.58
+  ToxicConversationsClassification                    accuracy: 74.79
+  TweetSentimentExtractionClassification              accuracy: 70.51
+  AmazonCounterfactualClassification                  accuracy: 91.19
+  Average                                             79.12
+
+============================================================
+Task type: PairClassification  (n=3)
+============================================================
+  SprintDuplicateQuestions                            max_ap: 75.86
+  TwitterSemEval2015                                  max_ap: 49.81
+  TwitterURLCorpus                                    max_ap: 70.38
+  Average                                             65.35
+
+============================================================
+Task type: Summarization  (n=1)
+============================================================
+  SummEvalSummarization.v2                            cosine_spearman: 25.31
+  Average                                             25.31
+
+============================================================
+GLOBAL SUMMARY
+============================================================
+  Micro average (all tasks equally weighted):  56.01
+  Macro average (task-type averages averaged): 49.96

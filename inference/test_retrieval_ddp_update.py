@@ -223,11 +223,37 @@ class evaluate_retrieval:
             max_length=4096,
         )
 
+        relevant_docs = data_split["relevant_docs"]
+        removed_query_ids = (
+            set(queries_dataset.removed_ids) if queries_dataset.removed_ids else set()
+        )
+        removed_corpus_ids = (
+            set(corpus_dataset.removed_ids) if corpus_dataset.removed_ids else set()
+        )
+        if removed_query_ids or removed_corpus_ids:
+            if self.rank == 0:
+                print(
+                    f"  filtered {len(removed_query_ids)} queries, "
+                    f"{len(removed_corpus_ids)} corpus docs (>4096 tokens or empty)"
+                )
+            relevant_docs = {
+                qid: {
+                    did: s
+                    for did, s in docs.items()
+                    if did not in removed_corpus_ids
+                }
+                for qid, docs in relevant_docs.items()
+                if qid not in removed_query_ids
+            }
+            relevant_docs = {
+                qid: docs for qid, docs in relevant_docs.items() if docs
+            }
+
         datasets[task_name] = {
             "dataset": {
                 "queries": queries_dataset,
                 "corpus": corpus_dataset,
-                "relevant_docs": data_split["relevant_docs"],
+                "relevant_docs": relevant_docs,
             },
             "task_specific_scores": task.task_specific_scores,
             "ignore_identical_ids": task.ignore_identical_ids,
@@ -237,8 +263,13 @@ class evaluate_retrieval:
             "task_type": task.metadata.type,
         }
 
-    def _prepare_text_dataset(self, texts, task_metadata, instruction_template):
-        """Create a prompt-augmented HF dataset from raw texts for encoding."""
+    def _prepare_text_dataset(self, texts, task_metadata, instruction_template, max_length=8192):
+        """Create a prompt-augmented HF dataset from raw texts for encoding.
+
+        Returns:
+            (ds, removed_indices): the filtered dataset and the set of original
+            integer positions that were removed (too long or empty).
+        """
         dataset = HFDataset.from_dict(
             {"id": [str(i) for i in range(len(texts))], "text": texts}
         )
@@ -248,13 +279,26 @@ class evaluate_retrieval:
             instruction_template=instruction_template,
             tokenizer=self.tokenizer,
             prompt_type=PromptType.query,
-            max_length=100_000,
+            max_length=max_length,
         )
-        if len(ds) != len(texts) and self.rank == 0:
+        removed_indices = set(int(x) for x in ds.removed_ids) if ds.removed_ids else set()
+        if removed_indices and self.rank == 0:
             print(
-                f"  WARNING: {len(texts) - len(ds)} texts filtered during dataset creation"
+                f"  WARNING: {len(removed_indices)}/{len(texts)} texts filtered "
+                f"(>{max_length} tokens or empty)"
             )
-        return ds
+        return ds, removed_indices
+
+    @staticmethod
+    def _build_index_remap(n_original, removed_set):
+        """Build old-index -> new-index mapping after removing items."""
+        old_to_new = {}
+        new_idx = 0
+        for old_idx in range(n_original):
+            if old_idx not in removed_set:
+                old_to_new[old_idx] = new_idx
+                new_idx += 1
+        return old_to_new
 
     def _prepare_pair_classification(
         self, task, task_name, eval_split, instruction_template, datasets
@@ -292,9 +336,22 @@ class evaluate_retrieval:
                 f"  {n_dedup}/{len(all_sentences)} duplicate texts deduplicated"
             )
 
-        texts_ds = self._prepare_text_dataset(
+        texts_ds, removed = self._prepare_text_dataset(
             unique_texts, task.metadata, instruction_template
         )
+
+        if removed:
+            old_to_new = self._build_index_remap(len(unique_texts), removed)
+            valid_mask = [
+                indices1[i] not in removed and indices2[i] not in removed
+                for i in range(len(indices1))
+            ]
+            indices1 = [old_to_new[indices1[i]] for i in range(len(indices1)) if valid_mask[i]]
+            indices2 = [old_to_new[indices2[i]] for i in range(len(indices2)) if valid_mask[i]]
+            labels = [labels[i] for i in range(len(labels)) if valid_mask[i]]
+            if self.rank == 0:
+                n_removed = sum(1 for v in valid_mask if not v)
+                print(f"  {n_removed} pairs removed due to filtered texts")
 
         datasets[task_name] = {
             "dataset": {
@@ -358,12 +415,17 @@ class evaluate_retrieval:
         if self.rank == 0:
             print(f"  train: {len(train_texts)}, test: {len(test_texts)} samples")
 
-        train_ds = self._prepare_text_dataset(
+        train_ds, train_removed = self._prepare_text_dataset(
             train_texts, task.metadata, instruction_template
         )
-        test_ds = self._prepare_text_dataset(
+        test_ds, test_removed = self._prepare_text_dataset(
             test_texts, task.metadata, instruction_template
         )
+
+        if train_removed:
+            train_labels = [l for i, l in enumerate(train_labels) if i not in train_removed]
+        if test_removed:
+            test_labels = [l for i, l in enumerate(test_labels) if i not in test_removed]
 
         datasets[task_name] = {
             "dataset": {
@@ -415,9 +477,12 @@ class evaluate_retrieval:
         if self.rank == 0:
             print(f"  {len(sentences)} samples for clustering")
 
-        texts_ds = self._prepare_text_dataset(
+        texts_ds, removed = self._prepare_text_dataset(
             sentences, task.metadata, instruction_template
         )
+
+        if removed:
+            labels = [l for i, l in enumerate(labels) if i not in removed]
 
         datasets[task_name] = {
             "dataset": {
@@ -468,12 +533,17 @@ class evaluate_retrieval:
         if self.rank == 0:
             print(f"  train: {len(train_texts)}, test: {len(test_texts)} samples")
 
-        train_ds = self._prepare_text_dataset(
+        train_ds, train_removed = self._prepare_text_dataset(
             train_texts, task.metadata, instruction_template
         )
-        test_ds = self._prepare_text_dataset(
+        test_ds, test_removed = self._prepare_text_dataset(
             test_texts, task.metadata, instruction_template
         )
+
+        if train_removed:
+            train_labels = [l for i, l in enumerate(train_labels) if i not in train_removed]
+        if test_removed:
+            test_labels = [l for i, l in enumerate(test_labels) if i not in test_removed]
 
         datasets[task_name] = {
             "dataset": {
@@ -518,9 +588,22 @@ class evaluate_retrieval:
                 f"  {n_dedup}/{len(all_sentences)} duplicate texts deduplicated"
             )
 
-        texts_ds = self._prepare_text_dataset(
+        texts_ds, removed = self._prepare_text_dataset(
             unique_texts, task.metadata, instruction_template
         )
+
+        if removed:
+            old_to_new = self._build_index_remap(len(unique_texts), removed)
+            valid_mask = [
+                indices1[i] not in removed and indices2[i] not in removed
+                for i in range(len(indices1))
+            ]
+            indices1 = [old_to_new[indices1[i]] for i in range(len(indices1)) if valid_mask[i]]
+            indices2 = [old_to_new[indices2[i]] for i in range(len(indices2)) if valid_mask[i]]
+            normalized_scores = [normalized_scores[i] for i in range(len(normalized_scores)) if valid_mask[i]]
+            if self.rank == 0:
+                n_removed = sum(1 for v in valid_mask if not v)
+                print(f"  {n_removed} STS pairs removed due to filtered texts")
 
         datasets[task_name] = {
             "dataset": {
@@ -583,9 +666,48 @@ class evaluate_retrieval:
                 f"{sum(machine_lens)} machine summaries"
             )
 
-        texts_ds = self._prepare_text_dataset(
+        texts_ds, removed = self._prepare_text_dataset(
             unique_texts, task.metadata, instruction_template
         )
+
+        if removed:
+            old_to_new = self._build_index_remap(len(unique_texts), removed)
+            new_human_indices = []
+            new_machine_indices = []
+            new_human_lens = []
+            new_machine_lens = []
+            new_gold_scores = []
+            h_off, m_off = 0, 0
+            n_samples_orig = len(human_lens)
+            for i in range(n_samples_orig):
+                h_len = human_lens[i]
+                m_len = machine_lens[i]
+                s_h = human_indices[h_off:h_off + h_len]
+                s_m = machine_indices[m_off:m_off + m_len]
+                s_scores = normalized_scores[i]
+                kept_h = [idx for idx in s_h if idx not in removed]
+                kept_m_scores = [
+                    (idx, s_scores[j]) for j, idx in enumerate(s_m)
+                    if idx not in removed
+                ]
+                if kept_h and kept_m_scores:
+                    new_human_indices.extend(old_to_new[idx] for idx in kept_h)
+                    new_machine_indices.extend(old_to_new[idx] for idx, _ in kept_m_scores)
+                    new_human_lens.append(len(kept_h))
+                    new_machine_lens.append(len(kept_m_scores))
+                    new_gold_scores.append([s for _, s in kept_m_scores])
+                h_off += h_len
+                m_off += m_len
+            human_indices = new_human_indices
+            machine_indices = new_machine_indices
+            human_lens = new_human_lens
+            machine_lens = new_machine_lens
+            normalized_scores = new_gold_scores
+            if self.rank == 0 and len(human_lens) < n_samples_orig:
+                print(
+                    f"  {n_samples_orig - len(human_lens)} summarization samples "
+                    f"removed due to filtered texts"
+                )
 
         datasets[task_name] = {
             "dataset": {
@@ -633,8 +755,8 @@ class evaluate_retrieval:
             pool_fn=self.pool_fn,
         )
         dist.barrier()
-        if self.rank == 0:
-            print(f"  encoded {len(dataset)} samples in {time.time()-start:.2f}s")
+        # if self.rank == 0:
+        #     print(f"  encoded {len(dataset)} samples in {time.time()-start:.2f}s")
         return embeddings
 
 
@@ -819,10 +941,10 @@ class evaluate_retrieval:
 
         scores = task_obj._compute_metrics(distances, dataset["labels"])
 
-        if self.rank == 0:
-            for k, v in scores.items():
-                if k.startswith("max_"):
-                    print(f"  {k}: {v:.4f}")
+        # if self.rank == 0:
+        #     for k, v in scores.items():
+        #         if k.startswith("max_"):
+        #             print(f"  {k}: {v:.4f}")
 
         return {main_score: scores[main_score]}
 
@@ -833,13 +955,13 @@ class evaluate_retrieval:
         task_obj = task_data["task_obj"]
         main_score = task_data["main_score"]
 
-        if self.rank == 0:
-            print("  encoding train set...")
+        # if self.rank == 0:
+        #     print("  encoding train set...")
         train_embeddings = self._encode_dataset(
             model, dataset["train_texts"], batch_size
         )
-        if self.rank == 0:
-            print("  encoding test set...")
+        # if self.rank == 0:
+        #     print("  encoding test set...")
         test_embeddings = self._encode_dataset(
             model, dataset["test_texts"], batch_size
         )
@@ -871,17 +993,17 @@ class evaluate_retrieval:
             )
             scores.append(scores_exp)
 
-            if self.rank == 0:
-                print(
-                    f"  experiment {i_exp + 1}/{task_obj.n_experiments}: "
-                    f"f1={scores_exp['f1']:.4f}, lrap={scores_exp['lrap']:.4f}"
-                )
+            # if self.rank == 0:
+            #     print(
+            #         f"  experiment {i_exp + 1}/{task_obj.n_experiments}: "
+            #         f"f1={scores_exp['f1']:.4f}, lrap={scores_exp['lrap']:.4f}"
+            #     )
 
         avg_scores = {
             k: float(np.mean([s[k] for s in scores])) for k in scores[0]
         }
-        if self.rank == 0:
-            print(f"  avg {main_score}: {avg_scores.get(main_score, 'N/A')}")
+        # if self.rank == 0:
+        #     print(f"  avg {main_score}: {avg_scores.get(main_score, 'N/A')}")
 
         return {main_score: avg_scores[main_score]}
 
@@ -913,8 +1035,8 @@ class evaluate_retrieval:
         mean_v = float(np.mean(all_v))
         std_v = float(np.std(all_v))
 
-        if self.rank == 0:
-            print(f"  v_measure={mean_v:.4f} (std={std_v:.4f})")
+        # if self.rank == 0:
+        #     print(f"  v_measure={mean_v:.4f} (std={std_v:.4f})")
 
         return {main_score: mean_v}
 
@@ -974,11 +1096,11 @@ class evaluate_retrieval:
             scores_exp = task_obj._calculate_scores(test_labels, y_pred)
             scores.append(scores_exp)
 
-            if self.rank == 0:
-                print(
-                    f"  experiment {i_exp + 1}/{task_obj.n_experiments}: "
-                    f"accuracy={scores_exp['accuracy']:.4f}, f1={scores_exp['f1']:.4f}"
-                )
+            # if self.rank == 0:
+            #     print(
+            #         f"  experiment {i_exp + 1}/{task_obj.n_experiments}: "
+            #         f"accuracy={scores_exp['accuracy']:.4f}, f1={scores_exp['f1']:.4f}"
+            #     )
 
         avg_scores = {
             k: (
@@ -988,8 +1110,8 @@ class evaluate_retrieval:
             )
             for k in scores[0].keys()
         }
-        if self.rank == 0:
-            print(f"  avg {main_score}: {avg_scores.get(main_score, 'N/A')}")
+        # if self.rank == 0:
+        #     print(f"  avg {main_score}: {avg_scores.get(main_score, 'N/A')}")
 
         return {main_score: avg_scores[main_score]}
 
@@ -1019,9 +1141,9 @@ class evaluate_retrieval:
 
         scores = task_obj._calculate_scores(scores_dict, dataset["labels"])
 
-        if self.rank == 0:
-            for k, v in scores.items():
-                print(f"  {k}: {v:.4f}")
+        # if self.rank == 0:
+        #     for k, v in scores.items():
+        #         print(f"  {k}: {v:.4f}")
 
         return {main_score: scores[main_score]}
 
@@ -1102,16 +1224,52 @@ class evaluate_retrieval:
             "spearman": float(np.mean(cosine_spearman_scores)),
         }
 
-        if self.rank == 0:
-            print(f"  {n_skipped} samples skipped (constant scores)")
-            for k, v in scores.items():
-                print(f"  {k}: {v:.4f}")
+        # if self.rank == 0:
+        #     print(f"  {n_skipped} samples skipped (constant scores)")
+        #     for k, v in scores.items():
+        #         print(f"  {k}: {v:.4f}")
 
         return {main_score: scores[main_score]}
 
     # -------------------------------------------------------------------------
     # Main evaluation loop
     # -------------------------------------------------------------------------
+
+    @staticmethod
+    def compute_averages(results):
+        """Compute per-type, micro, and macro averages from the results dict.
+
+        Parameters
+        ----------
+        results : dict
+            Output of ``evaluate``: mapping task_type ->
+            [{task_name: (score_dict, duration)}].
+
+        Returns
+        -------
+        dict with keys:
+            - one key per task_type  -> average score over all tasks in that type
+            - "micro_average"        -> average over every individual task
+            - "macro_average"        -> average of the per-type averages
+        """
+        summary = {}
+        all_scores = []
+        type_averages = []
+
+        for task_type, task_list in results.items():
+            type_scores = []
+            for task_dict in task_list:
+                for _name, (score_dict, _duration) in task_dict.items():
+                    score = list(score_dict.values())[0]
+                    type_scores.append(score)
+            type_avg = float(sum(type_scores) / len(type_scores))
+            summary[task_type] = type_avg
+            all_scores.extend(type_scores)
+            type_averages.append(type_avg)
+
+        summary["micro_average"] = float(sum(all_scores) / len(all_scores))
+        summary["macro_average"] = float(sum(type_averages) / len(type_averages))
+        return summary
 
     def evaluate(self, model, batch_size=64):
         results = defaultdict(list)
@@ -1123,7 +1281,7 @@ class evaluate_retrieval:
             start = time.time()
             task_type = task_data["task_type"]
             if self.rank ==0: 
-                print(f"\nevaluating {name}")
+                print(f"\nevaluating {name} task {i}/{n_tasks}")
 
             if task_type == "Retrieval":
                 output_res = self.evaluate_one(
@@ -1182,4 +1340,5 @@ class evaluate_retrieval:
                 print(f"{name} evaluated in {duration/60:.2f} min")
             results[task_type].append({name: (output_res, duration)})
 
-        return results
+        summary = self.compute_averages(results)
+        return results, summary

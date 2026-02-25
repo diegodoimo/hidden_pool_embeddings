@@ -91,13 +91,16 @@ def main():
     model = DDP(model, device_ids=[LOCAL_RANK])
     model = torch.compile(model)
 
-    results = retrieval_evaluator.evaluate(model, batch_size=64)
+    results, summary = retrieval_evaluator.evaluate(model, batch_size=64)
 
     if rank == 0:
         print(results)
+        print(summary)
         label = args.benchmark if args.benchmark else args.task_name
         with open(f'{model_name}_{label}_results.json', 'w', encoding='utf-8') as f:
             json.dump(results, f, ensure_ascii=False, indent=4)
+        with open(f'{model_name}_{label}_summary.json', 'w', encoding='utf-8') as f:
+            json.dump(summary, f, ensure_ascii=False, indent=4)
 
     dist.destroy_process_group()
 

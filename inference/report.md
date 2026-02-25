@@ -83,3 +83,23 @@ Now routes eight task types: `"Retrieval"`, `"Reranking"` (both to `evaluate_one
 - `AbsTaskSummarization.text_column_name` / `human_summaries_column_name` / `machine_summaries_column_name` / `relevancy_column_name` / `min_score` / `max_score` (task attributes for column names and score normalization)
 - `SummarizationEvaluator` imported from `mteb._evaluators.text.summarization_evaluator` (available for reference; scoring logic is inlined to stay compatible with the DDP encoding pipeline)
 - `scipy.stats.pearsonr` / `spearmanr` (correlation computation, matching `SummarizationEvaluator._calculate_metrics`)
+
+---
+
+## Sequence Length Filtering (8192 tokens)
+
+Added filtering of all sequences exceeding 8192 tokens across every task type. The tokenization-aware filtering logic from `create_datasets.py` (`_remove_long_sequences`) was already in use for Retrieval; the change extends it uniformly and ensures label/pair/index consistency is maintained after removal.
+
+### Core changes
+
+- **`_prepare_text_dataset`** — `max_length` changed from `100_000` (effectively no filtering) to `8192`. Now returns a tuple `(dataset, removed_indices)` where `removed_indices` is a `set[int]` of original positional indices that were removed (too long or empty). All callers updated to unpack the tuple.
+- **`_build_index_remap(n_original, removed_set)`** — new static helper that builds an `old_idx → new_idx` mapping after items are removed from a deduplicated text list. Used by PairClassification, STS, and Summarization to remap their index arrays.
+- **`_prepare_retrieval`** — `max_length` changed from `4096` to `8192` for both queries and corpus. After filtering, removed query/corpus IDs are purged from `relevant_docs` (the qrels dict) so retrieval metrics are not penalized by queries that reference filtered documents. Queries left with no relevant docs after corpus filtering are also dropped.
+
+### Per-task pairing maintenance
+
+- **Classification / MultilabelClassification** — `train_labels` and `test_labels` are filtered in lockstep with their corresponding text datasets using the returned `removed_indices`.
+- **Clustering** — `labels` list is filtered to match the surviving texts.
+- **PairClassification** — after deduplication, pairs where either text was filtered are dropped. Remaining indices are remapped via `_build_index_remap` so they point to correct positions in the filtered dataset. Labels are filtered with the same pair mask.
+- **STS** — same dedup-aware logic as PairClassification: invalid pairs are dropped, indices remapped, and `normalized_scores` filtered.
+- **Summarization** — the most complex case. Per-sample human/machine summary index lists are walked: individual summaries pointing to removed texts are dropped, and samples that lose all human or all machine summaries are dropped entirely. `human_lens`, `machine_lens`, and `gold_scores` are rebuilt accordingly, and all surviving indices are remapped.
