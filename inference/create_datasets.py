@@ -31,8 +31,10 @@ def instruction_template_qwen3(prompt_type, task_metadata, text, title="") -> st
 
     if prompt_type == PromptType.query:
         if task_metadata.prompt is not None:
-            instruction = task_metadata.prompt["query"]
-            # just to mimick the broken mteb code
+            if isinstance(task_metadata.prompt, dict):
+                instruction = task_metadata.prompt["query"]
+            else:
+                instruction = task_metadata.prompt
             prompt = f"Instruct: {instruction.strip()}\nQuery:{text.strip()}"
         else:
             prompt = f"Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:{text.strip()}"

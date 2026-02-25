@@ -25,10 +25,15 @@ def parse_args():
 def main():
     args = parse_args()
 
-    dist.init_process_group("nccl")
-    rank = dist.get_rank()
-    torch.cuda.set_device(rank)
-
+    dist.init_process_group(
+        "nccl",
+        device_id=LOCAL_RANK,
+        timeout=timedelta(
+            seconds=60
+        ),  
+    )
+    torch.cuda.set_device(dist.get_rank())
+    
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name_or_path, use_fast=False, trust_remote_code=True
     )
