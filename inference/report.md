@@ -103,3 +103,20 @@ Added filtering of all sequences exceeding 8192 tokens across every task type. T
 - **PairClassification** — after deduplication, pairs where either text was filtered are dropped. Remaining indices are remapped via `_build_index_remap` so they point to correct positions in the filtered dataset. Labels are filtered with the same pair mask.
 - **STS** — same dedup-aware logic as PairClassification: invalid pairs are dropped, indices remapped, and `normalized_scores` filtered.
 - **Summarization** — the most complex case. Per-sample human/machine summary index lists are walked: individual summaries pointing to removed texts are dropped, and samples that lose all human or all machine summaries are dropped entirely. `human_lens`, `machine_lens`, and `gold_scores` are rebuilt accordingly, and all surviving indices are remapped.
+
+---
+
+## BitextMining
+
+- **`_prepare_bitext_mining`** — handles both **parallel** (`task.parallel_subsets=True`, language columns in one split) and **non-parallel** (standard `sentence1`/`sentence2` columns per subset) task formats, using `task._get_pairs()` from `AbsTaskBitextMining`. For non-parallel tasks, data is loaded via `abs_task_preprocessing`; for parallel tasks, data is loaded directly from `task.dataset[eval_split]` with `hf_subset="parallel"`. Extracts sentence pairs from the first pair in `_get_pairs()`, deduplicates all texts from both columns together (same hash-based approach as STS/PairClassification), stores `indices1` and `indices2` into the deduplicated set. Pairs where either sentence was filtered (too long or empty) are dropped, and surviving indices are remapped via `_build_index_remap`.
+- **`evaluate_one_bitext_mining`** — encodes all unique texts once via the DDP-aware `_encode_dataset`, reconstructs `emb1`/`emb2` arrays from the stored indices. Normalizes embeddings for cosine similarity (with zero-norm guards), then performs chunked nearest-neighbor search (1000 queries at a time) to find the top-1 most similar `sentence2` for each `sentence1`. Constructs the gold mapping `(i, i)` (positional pairing: `sentence1[i]` pairs with `sentence2[i]`) and delegates scoring to `task_obj._compute_metrics(nearest_neighbors, gold)` from `AbsTaskBitextMining`, which computes weighted **accuracy**, **precision**, **recall**, and **f1** using `sklearn.metrics`.
+
+## Updated `evaluate()` Dispatch (v4)
+
+Now routes nine task types: `"Retrieval"`, `"Reranking"` (both to `evaluate_one`), `"PairClassification"`, `"MultilabelClassification"`, `"Clustering"`, `"Classification"`, `"STS"`, `"Summarization"`, and `"BitextMining"`. Unsupported types are skipped with a warning.
+
+## Additional MTEB Reuse (BitextMining)
+
+- `AbsTaskBitextMining._get_pairs(parallel)` (resolves column names for parallel vs non-parallel tasks)
+- `AbsTaskBitextMining._compute_metrics(nearest_neighbors, gold)` (accuracy, precision, recall, f1 via sklearn)
+- `AbsTaskBitextMining.parallel_subsets` / `_DEFAULT_PAIR` (task configuration attributes)

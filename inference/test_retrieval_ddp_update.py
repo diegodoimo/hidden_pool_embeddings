@@ -80,14 +80,15 @@ class evaluate_retrieval:
         """Query HF Hub for the largest split size (rows) without downloading data.
 
         Inspects all dataset configs (e.g. corpus/queries for retrieval tasks)
-        and returns (max_rows, description_string).  Only metadata is fetched.
+        and returns (max_rows, total_rows, num_configs, description_string).
+        Only metadata is fetched.
         """
         from datasets import get_dataset_config_names, get_dataset_config_info
 
         ds_kwargs = dict(task.metadata.dataset)
         path = ds_kwargs.get("path")
         if not path:
-            return 0, ""
+            return 0, 0, 0, ""
         revision = ds_kwargs.get("revision")
 
         try:
@@ -95,9 +96,10 @@ class evaluate_retrieval:
         except Exception as e:
             if self.rank == 0:
                 print(f"  WARNING: could not list configs for {path}: {e}")
-            return 0, ""
+            return 0, 0, 0, ""
 
         max_rows = 0
+        total_rows = 0
         max_info = ""
         for config in configs:
             try:
@@ -106,16 +108,17 @@ class evaluate_retrieval:
                 )
                 if info.splits:
                     for split_name, split_info in info.splits.items():
+                        total_rows += split_info.num_examples
                         if split_info.num_examples > max_rows:
                             max_rows = split_info.num_examples
                             max_info = f"{config}/{split_name}"
             except Exception:
                 continue
 
-        return max_rows, max_info
+        return max_rows, total_rows, len(configs), max_info
 
     def prepare_datasets(
-        self, instruction_template, max_passage_len=4096, max_samples=1_000_000
+        self, instruction_template, max_passage_len=4096, max_samples=500_000
     ):
 
         datasets = {}
@@ -125,10 +128,7 @@ class evaluate_retrieval:
             task_type = task.metadata.type
 
             if self.rank == 0:
-                print(f"processing {task_name} {i}/{n_tasks}")
-
-            if self.rank == 0:
-                print(f"preparing {task_name} (type: {task_type})")
+                print(f"processing {task_name} (type: {task_type}) {i}/{n_tasks}")
 
             eval_splits = task.metadata.eval_splits
             if "test" in eval_splits:
@@ -138,19 +138,27 @@ class evaluate_retrieval:
             if self.rank == 0 and len(eval_splits) > 1:
                 print(f"  multiple eval_splits {eval_splits}, using '{eval_split}'")
 
-            max_rows, size_info = self._get_max_split_size_from_hub(task)
-            if max_rows > max_samples:
+            max_rows, total_rows, num_configs, size_info = (
+                self._get_max_split_size_from_hub(task)
+            )
+            if self.rank == 0 and total_rows == 0:
+                print(f"  (hub metadata unavailable, skipping size pre-check)")
+            if total_rows > max_samples:
                 if self.rank == 0:
                     print(
-                        f"  SKIPPING {task_name}: largest split has {max_rows} rows "
-                        f"({size_info}, limit={max_samples})"
+                        f"  SKIPPING {task_name}: total across {num_configs} configs "
+                        f"is {total_rows} rows (largest: {max_rows} in {size_info}, "
+                        f"limit={max_samples})"
                     )
                 continue
-            if self.rank == 0 and max_rows > 0:
-                print(f"  largest split: {max_rows} rows ({size_info})")
+
+            if self.rank == 0 and total_rows > 0:
+                print(
+                    f"  {num_configs} configs, {total_rows} total rows "
+                    f"(largest: {max_rows} in {size_info})"
+                )
 
             task.load_data()
-
             if task_type == "Retrieval":
                 self._prepare_retrieval(
                     task, task_name, eval_split, instruction_template, datasets
@@ -179,6 +187,10 @@ class evaluate_retrieval:
                 self._prepare_summarization(
                     task, task_name, eval_split, instruction_template, datasets
                 )
+            elif task_type == "BitextMining":
+                self._prepare_bitext_mining(
+                    task, task_name, eval_split, instruction_template, datasets
+                )
             elif task_type == "Reranking":
                 self._prepare_retrieval(
                     task, task_name, eval_split, instruction_template, datasets
@@ -198,71 +210,88 @@ class evaluate_retrieval:
         self, task, task_name, eval_split, instruction_template, datasets
     ):
         task.convert_v1_dataset_format_to_v2()
-        data_split, hf_subset = abs_task_preprocessing(task, eval_split)
+        subset_list = abs_task_preprocessing(task, eval_split)
 
-        data_split["relevant_docs"], data_split["queries"] = (
-            _filter_queries_without_positives(
-                data_split["relevant_docs"], data_split["queries"]
-            )
-        )
-
-        queries_dataset = create_dataset(
-            dataset=data_split["queries"],
-            task_metadata=task.metadata,
-            instruction_template=instruction_template,
-            tokenizer=self.tokenizer,
-            prompt_type=PromptType.query,
-            max_length=4096,
-        )
-
-        corpus_dataset = create_dataset(
-            dataset=data_split["corpus"],
-            task_metadata=task.metadata,
-            instruction_template=instruction_template,
-            tokenizer=self.tokenizer,
-            prompt_type=PromptType.document,
-            max_length=4096,
-        )
-
-        relevant_docs = data_split["relevant_docs"]
-        removed_query_ids = (
-            set(queries_dataset.removed_ids) if queries_dataset.removed_ids else set()
-        )
-        removed_corpus_ids = (
-            set(corpus_dataset.removed_ids) if corpus_dataset.removed_ids else set()
-        )
-        if removed_query_ids or removed_corpus_ids:
-            if self.rank == 0:
-                print(
-                    f"  filtered {len(removed_query_ids)} queries, "
-                    f"{len(removed_corpus_ids)} corpus docs (>4096 tokens or empty)"
+        for data_split, hf_subset in subset_list:
+            data_split["relevant_docs"], data_split["queries"] = (
+                _filter_queries_without_positives(
+                    data_split["relevant_docs"], data_split["queries"]
                 )
-            relevant_docs = {
-                qid: {
-                    did: s
-                    for did, s in docs.items()
-                    if did not in removed_corpus_ids
-                }
-                for qid, docs in relevant_docs.items()
-                if qid not in removed_query_ids
-            }
-            relevant_docs = {
-                qid: docs for qid, docs in relevant_docs.items() if docs
-            }
+            )
 
-        datasets[task_name] = {
-            "dataset": {
-                "queries": queries_dataset,
-                "corpus": corpus_dataset,
-                "relevant_docs": relevant_docs,
-            },
-            "task_specific_scores": task.task_specific_scores,
-            "ignore_identical_ids": task.ignore_identical_ids,
-            "hf_split": eval_split,
-            "main_score": task.metadata.main_score,
-            "hf_subset": hf_subset,
-            "task_type": task.metadata.type,
-        }
+            queries_dataset = create_dataset(
+                dataset=data_split["queries"],
+                task_metadata=task.metadata,
+                instruction_template=instruction_template,
+                tokenizer=self.tokenizer,
+                prompt_type=PromptType.query,
+                max_length=4096,
+            )
+
+            corpus_dataset = create_dataset(
+                dataset=data_split["corpus"],
+                task_metadata=task.metadata,
+                instruction_template=instruction_template,
+                tokenizer=self.tokenizer,
+                prompt_type=PromptType.document,
+                max_length=4096,
+            )
+
+            relevant_docs = data_split["relevant_docs"]
+            removed_query_ids = (
+                set(queries_dataset.removed_ids) if queries_dataset.removed_ids else set()
+            )
+            removed_corpus_ids = (
+                set(corpus_dataset.removed_ids) if corpus_dataset.removed_ids else set()
+            )
+            if removed_query_ids or removed_corpus_ids:
+                if self.rank == 0:
+                    print(
+                        f"  [{hf_subset}] filtered {len(removed_query_ids)} queries, "
+                        f"{len(removed_corpus_ids)} corpus docs (>4096 tokens or empty)"
+                    )
+                relevant_docs = {
+                    qid: {
+                        did: s
+                        for did, s in docs.items()
+                        if did not in removed_corpus_ids
+                    }
+                    for qid, docs in relevant_docs.items()
+                    if qid not in removed_query_ids
+                }
+                relevant_docs = {
+                    qid: docs for qid, docs in relevant_docs.items() if docs
+                }
+
+            valid_qids = set(relevant_docs.keys())
+            num_queries_lost = len(queries_dataset) - sum(
+                1 for qid in queries_dataset["id"] if qid in valid_qids
+            )
+            if num_queries_lost > 0:
+                if self.rank == 0:
+                    print(
+                        f"  [{hf_subset}] Note: {num_queries_lost} valid queries were excluded "
+                        f"because all their paired positives were removed"
+                    )
+                queries_dataset = queries_dataset.filter(
+                    lambda batch: [qid in valid_qids for qid in batch["id"]],
+                    batched=True,
+                )
+
+            entry_name = f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            datasets[entry_name] = {
+                "dataset": {
+                    "queries": queries_dataset,
+                    "corpus": corpus_dataset,
+                    "relevant_docs": relevant_docs,
+                },
+                "task_specific_scores": task.task_specific_scores,
+                "ignore_identical_ids": task.ignore_identical_ids,
+                "hf_split": eval_split,
+                "main_score": task.metadata.main_score,
+                "hf_subset": hf_subset,
+                "task_type": task.metadata.type,
+            }
 
     def _prepare_text_dataset(self, texts, task_metadata, instruction_template, max_length=8192):
         """Create a prompt-augmented HF dataset from raw texts for encoding.
@@ -304,69 +333,69 @@ class evaluate_retrieval:
     def _prepare_pair_classification(
         self, task, task_name, eval_split, instruction_template, datasets
     ):
-        data_split, hf_subset = abs_task_preprocessing(task, eval_split)
+        subset_list = abs_task_preprocessing(task, eval_split)
 
-        # v1 compatibility: some datasets store all pairs in a single row
-        if task.metadata.modalities == ["text"]:
-            if isinstance(data_split, HFDataset) and len(data_split) == 1:
-                data_split = data_split[0]
+        for data_split, hf_subset in subset_list:
+            if task.metadata.modalities == ["text"]:
+                if isinstance(data_split, HFDataset) and len(data_split) == 1:
+                    data_split = data_split[0]
 
-        input1_col = task.input1_column_name
-        input2_col = task.input2_column_name
-        label_col = task.label_column_name
+            input1_col = task.input1_column_name
+            input2_col = task.input2_column_name
+            label_col = task.label_column_name
 
-        sentence1 = list(data_split[input1_col])
-        sentence2 = list(data_split[input2_col])
-        labels = list(data_split[label_col])
+            sentence1 = list(data_split[input1_col])
+            sentence2 = list(data_split[input2_col])
+            labels = list(data_split[label_col])
 
-        # Deduplicate texts for efficient encoding
-        all_sentences = sentence1 + sentence2
-        unique_texts, text_to_idx = [], {}
-        for text in all_sentences:
-            h = hash(text)
-            if h not in text_to_idx:
-                text_to_idx[h] = len(unique_texts)
-                unique_texts.append(text)
+            all_sentences = sentence1 + sentence2
+            unique_texts, text_to_idx = [], {}
+            for text in all_sentences:
+                h = hash(text)
+                if h not in text_to_idx:
+                    text_to_idx[h] = len(unique_texts)
+                    unique_texts.append(text)
 
-        indices1 = [text_to_idx[hash(s)] for s in sentence1]
-        indices2 = [text_to_idx[hash(s)] for s in sentence2]
+            indices1 = [text_to_idx[hash(s)] for s in sentence1]
+            indices2 = [text_to_idx[hash(s)] for s in sentence2]
 
-        if self.rank == 0:
-            n_dedup = len(all_sentences) - len(unique_texts)
-            print(
-                f"  {n_dedup}/{len(all_sentences)} duplicate texts deduplicated"
+            if self.rank == 0:
+                n_dedup = len(all_sentences) - len(unique_texts)
+                print(
+                    f"  [{hf_subset}] {n_dedup}/{len(all_sentences)} duplicate texts deduplicated"
+                )
+
+            texts_ds, removed = self._prepare_text_dataset(
+                unique_texts, task.metadata, instruction_template
             )
 
-        texts_ds, removed = self._prepare_text_dataset(
-            unique_texts, task.metadata, instruction_template
-        )
+            if removed:
+                old_to_new = self._build_index_remap(len(unique_texts), removed)
+                valid_mask = [
+                    indices1[i] not in removed and indices2[i] not in removed
+                    for i in range(len(indices1))
+                ]
+                indices1 = [old_to_new[indices1[i]] for i in range(len(indices1)) if valid_mask[i]]
+                indices2 = [old_to_new[indices2[i]] for i in range(len(indices2)) if valid_mask[i]]
+                labels = [labels[i] for i in range(len(labels)) if valid_mask[i]]
+                if self.rank == 0:
+                    n_removed = sum(1 for v in valid_mask if not v)
+                    print(f"  [{hf_subset}] {n_removed} pairs removed due to filtered texts")
 
-        if removed:
-            old_to_new = self._build_index_remap(len(unique_texts), removed)
-            valid_mask = [
-                indices1[i] not in removed and indices2[i] not in removed
-                for i in range(len(indices1))
-            ]
-            indices1 = [old_to_new[indices1[i]] for i in range(len(indices1)) if valid_mask[i]]
-            indices2 = [old_to_new[indices2[i]] for i in range(len(indices2)) if valid_mask[i]]
-            labels = [labels[i] for i in range(len(labels)) if valid_mask[i]]
-            if self.rank == 0:
-                n_removed = sum(1 for v in valid_mask if not v)
-                print(f"  {n_removed} pairs removed due to filtered texts")
-
-        datasets[task_name] = {
-            "dataset": {
-                "texts": texts_ds,
-                "indices1": indices1,
-                "indices2": indices2,
-                "labels": labels,
-            },
-            "hf_split": eval_split,
-            "main_score": task.metadata.main_score,
-            "hf_subset": hf_subset,
-            "task_type": task.metadata.type,
-            "task_obj": task,
-        }
+            entry_name = f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            datasets[entry_name] = {
+                "dataset": {
+                    "texts": texts_ds,
+                    "indices1": indices1,
+                    "indices2": indices2,
+                    "labels": labels,
+                },
+                "hf_split": eval_split,
+                "main_score": task.metadata.main_score,
+                "hf_subset": hf_subset,
+                "task_type": task.metadata.type,
+                "task_obj": task,
+            }
 
     def _prepare_multilabel_classification(
         self, task, task_name, eval_split, instruction_template, datasets
@@ -380,122 +409,123 @@ class evaluate_retrieval:
         hf_subsets = (
             copy(task.hf_subsets) if task.hf_subsets else list(task.dataset.keys())
         )
-        assert len(hf_subsets) == 1, hf_subsets
-        hf_subset = hf_subsets[0]
 
-        if hf_subset not in task.dataset and hf_subset == "default":
-            ds = task.dataset
-        else:
-            ds = task.dataset[hf_subset]
+        for hf_subset in hf_subsets:
+            if hf_subset not in task.dataset and hf_subset == "default":
+                ds = task.dataset
+            else:
+                ds = task.dataset[hf_subset]
 
-        input_col = task.input_column_name
-        label_col = task.label_column_name
+            input_col = task.input_column_name
+            label_col = task.label_column_name
 
-        if isinstance(ds, DatasetDict):
-            ds = ds.select_columns([input_col, label_col])
+            if isinstance(ds, DatasetDict):
+                ds = ds.select_columns([input_col, label_col])
 
-        train_data = ds[task.train_split]
-        test_data = ds[eval_split]
+            train_data = ds[task.train_split]
+            test_data = ds[eval_split]
 
-        # Subsample test set to 2000 as MTEB does
-        try:
-            if len(test_data) > 2000:
-                split_ds = test_data.train_test_split(
-                    test_size=2000, seed=42, stratify_by_column=label_col
-                )
-                test_data = split_ds["test"]
-        except ValueError:
+            try:
+                if len(test_data) > 2000:
+                    split_ds = test_data.train_test_split(
+                        test_size=2000, seed=42, stratify_by_column=label_col
+                    )
+                    test_data = split_ds["test"]
+            except ValueError:
+                if self.rank == 0:
+                    print(f"  [{hf_subset}] Could not stratify test subsample, using full test set")
+
+            train_texts = list(train_data[input_col])
+            test_texts = list(test_data[input_col])
+            train_labels = list(train_data[label_col])
+            test_labels = list(test_data[label_col])
+
             if self.rank == 0:
-                print("  Could not stratify test subsample, using full test set")
+                print(f"  [{hf_subset}] train: {len(train_texts)}, test: {len(test_texts)} samples")
 
-        train_texts = list(train_data[input_col])
-        test_texts = list(test_data[input_col])
-        train_labels = list(train_data[label_col])
-        test_labels = list(test_data[label_col])
+            train_ds, train_removed = self._prepare_text_dataset(
+                train_texts, task.metadata, instruction_template
+            )
+            test_ds, test_removed = self._prepare_text_dataset(
+                test_texts, task.metadata, instruction_template
+            )
 
-        if self.rank == 0:
-            print(f"  train: {len(train_texts)}, test: {len(test_texts)} samples")
+            if train_removed:
+                train_labels = [l for i, l in enumerate(train_labels) if i not in train_removed]
+            if test_removed:
+                test_labels = [l for i, l in enumerate(test_labels) if i not in test_removed]
 
-        train_ds, train_removed = self._prepare_text_dataset(
-            train_texts, task.metadata, instruction_template
-        )
-        test_ds, test_removed = self._prepare_text_dataset(
-            test_texts, task.metadata, instruction_template
-        )
-
-        if train_removed:
-            train_labels = [l for i, l in enumerate(train_labels) if i not in train_removed]
-        if test_removed:
-            test_labels = [l for i, l in enumerate(test_labels) if i not in test_removed]
-
-        datasets[task_name] = {
-            "dataset": {
-                "train_texts": train_ds,
-                "test_texts": test_ds,
-                "train_labels": train_labels,
-                "test_labels": test_labels,
-            },
-            "hf_split": eval_split,
-            "main_score": task.metadata.main_score,
-            "hf_subset": hf_subset,
-            "task_type": task.metadata.type,
-            "task_obj": task,
-        }
+            entry_name = f"{task_name}/{hf_subset}" if len(hf_subsets) > 1 else task_name
+            datasets[entry_name] = {
+                "dataset": {
+                    "train_texts": train_ds,
+                    "test_texts": test_ds,
+                    "train_labels": train_labels,
+                    "test_labels": test_labels,
+                },
+                "hf_split": eval_split,
+                "main_score": task.metadata.main_score,
+                "hf_subset": hf_subset,
+                "task_type": task.metadata.type,
+                "task_obj": task,
+            }
 
     def _prepare_clustering(
         self, task, task_name, eval_split, instruction_template, datasets
     ):
-        data_split, hf_subset = abs_task_preprocessing(task, eval_split)
+        subset_list = abs_task_preprocessing(task, eval_split)
 
-        input_col = task.input_column_name
-        label_col = task.label_column_name
+        for data_split, hf_subset in subset_list:
+            input_col = task.input_column_name
+            label_col = task.label_column_name
 
-        sentences = list(data_split[input_col])
-        labels = list(data_split[label_col])
+            sentences = list(data_split[input_col])
+            labels = list(data_split[label_col])
 
-        if (
-            task.max_document_to_embed is not None
-            and task.max_fraction_of_documents_to_embed is not None
-        ):
-            raise ValueError(
-                "Both max_document_to_embed and max_fraction_of_documents_to_embed are set"
+            max_doc = getattr(task, "max_document_to_embed", None)
+            max_frac = getattr(task, "max_fraction_of_documents_to_embed", None)
+
+            if max_doc is not None and max_frac is not None:
+                raise ValueError(
+                    "Both max_document_to_embed and max_fraction_of_documents_to_embed are set"
+                )
+
+            if max_frac is not None:
+                max_docs = min(
+                    len(sentences),
+                    int(max_frac * len(sentences)),
+                )
+                indices = task.rng_state.sample(range(len(sentences)), k=max_docs)
+                sentences = [sentences[i] for i in indices]
+                labels = [labels[i] for i in indices]
+            elif max_doc is not None:
+                max_docs = min(len(sentences), max_doc)
+                indices = task.rng_state.sample(range(len(sentences)), k=max_docs)
+                sentences = [sentences[i] for i in indices]
+                labels = [labels[i] for i in indices]
+
+            if self.rank == 0:
+                print(f"  [{hf_subset}] {len(sentences)} samples for clustering")
+
+            texts_ds, removed = self._prepare_text_dataset(
+                sentences, task.metadata, instruction_template
             )
 
-        if task.max_fraction_of_documents_to_embed is not None:
-            max_docs = min(
-                len(sentences),
-                int(task.max_fraction_of_documents_to_embed * len(sentences)),
-            )
-            indices = task.rng_state.sample(range(len(sentences)), k=max_docs)
-            sentences = [sentences[i] for i in indices]
-            labels = [labels[i] for i in indices]
-        elif task.max_document_to_embed is not None:
-            max_docs = min(len(sentences), task.max_document_to_embed)
-            indices = task.rng_state.sample(range(len(sentences)), k=max_docs)
-            sentences = [sentences[i] for i in indices]
-            labels = [labels[i] for i in indices]
+            if removed:
+                labels = [l for i, l in enumerate(labels) if i not in removed]
 
-        if self.rank == 0:
-            print(f"  {len(sentences)} samples for clustering")
-
-        texts_ds, removed = self._prepare_text_dataset(
-            sentences, task.metadata, instruction_template
-        )
-
-        if removed:
-            labels = [l for i, l in enumerate(labels) if i not in removed]
-
-        datasets[task_name] = {
-            "dataset": {
-                "texts": texts_ds,
-                "labels": labels,
-            },
-            "hf_split": eval_split,
-            "main_score": task.metadata.main_score,
-            "hf_subset": hf_subset,
-            "task_type": task.metadata.type,
-            "task_obj": task,
-        }
+            entry_name = f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            datasets[entry_name] = {
+                "dataset": {
+                    "texts": texts_ds,
+                    "labels": labels,
+                },
+                "hf_split": eval_split,
+                "main_score": task.metadata.main_score,
+                "hf_subset": hf_subset,
+                "task_type": task.metadata.type,
+                "task_obj": task,
+            }
 
     def _prepare_classification(
         self, task, task_name, eval_split, instruction_template, datasets
@@ -509,222 +539,289 @@ class evaluate_retrieval:
         hf_subsets = (
             copy(task.hf_subsets) if task.hf_subsets else list(task.dataset.keys())
         )
-        assert len(hf_subsets) == 1, hf_subsets
-        hf_subset = hf_subsets[0]
 
-        if hf_subset not in task.dataset and hf_subset == "default":
-            ds = task.dataset
-        else:
-            ds = task.dataset[hf_subset]
+        for hf_subset in hf_subsets:
+            if hf_subset not in task.dataset and hf_subset == "default":
+                ds = task.dataset
+            else:
+                ds = task.dataset[hf_subset]
 
-        input_col = task.input_column_name
-        label_col = task.label_column_name
+            input_col = task.input_column_name
+            label_col = task.label_column_name
 
-        if isinstance(ds, DatasetDict):
-            ds = ds.select_columns([input_col, label_col])
+            if isinstance(ds, DatasetDict):
+                ds = ds.select_columns([input_col, label_col])
 
-        train_data = ds[task.train_split]
-        test_data = ds[eval_split]
+            train_data = ds[task.train_split]
+            test_data = ds[eval_split]
 
-        train_texts = list(train_data[input_col])
-        test_texts = list(test_data[input_col])
-        train_labels = list(train_data[label_col])
-        test_labels = list(test_data[label_col])
+            train_texts = list(train_data[input_col])
+            test_texts = list(test_data[input_col])
+            train_labels = list(train_data[label_col])
+            test_labels = list(test_data[label_col])
 
-        if self.rank == 0:
-            print(f"  train: {len(train_texts)}, test: {len(test_texts)} samples")
+            if self.rank == 0:
+                print(f"  [{hf_subset}] train: {len(train_texts)}, test: {len(test_texts)} samples")
 
-        train_ds, train_removed = self._prepare_text_dataset(
-            train_texts, task.metadata, instruction_template
-        )
-        test_ds, test_removed = self._prepare_text_dataset(
-            test_texts, task.metadata, instruction_template
-        )
+            train_ds, train_removed = self._prepare_text_dataset(
+                train_texts, task.metadata, instruction_template
+            )
+            test_ds, test_removed = self._prepare_text_dataset(
+                test_texts, task.metadata, instruction_template
+            )
 
-        if train_removed:
-            train_labels = [l for i, l in enumerate(train_labels) if i not in train_removed]
-        if test_removed:
-            test_labels = [l for i, l in enumerate(test_labels) if i not in test_removed]
+            if train_removed:
+                train_labels = [l for i, l in enumerate(train_labels) if i not in train_removed]
+            if test_removed:
+                test_labels = [l for i, l in enumerate(test_labels) if i not in test_removed]
 
-        datasets[task_name] = {
-            "dataset": {
-                "train_texts": train_ds,
-                "test_texts": test_ds,
-                "train_labels": train_labels,
-                "test_labels": test_labels,
-            },
-            "hf_split": eval_split,
-            "main_score": task.metadata.main_score,
-            "hf_subset": hf_subset,
-            "task_type": task.metadata.type,
-            "task_obj": task,
-        }
+            entry_name = f"{task_name}/{hf_subset}" if len(hf_subsets) > 1 else task_name
+            datasets[entry_name] = {
+                "dataset": {
+                    "train_texts": train_ds,
+                    "test_texts": test_ds,
+                    "train_labels": train_labels,
+                    "test_labels": test_labels,
+                },
+                "hf_split": eval_split,
+                "main_score": task.metadata.main_score,
+                "hf_subset": hf_subset,
+                "task_type": task.metadata.type,
+                "task_obj": task,
+            }
 
     def _prepare_sts(
         self, task, task_name, eval_split, instruction_template, datasets
     ):
-        data_split, hf_subset = abs_task_preprocessing(task, eval_split)
+        subset_list = abs_task_preprocessing(task, eval_split)
 
-        col1, col2 = task.column_names
+        for data_split, hf_subset in subset_list:
+            col1, col2 = task.column_names
 
-        sentence1 = list(data_split[col1])
-        sentence2 = list(data_split[col2])
-        raw_scores = list(data_split["score"])
-        normalized_scores = [task._normalize(s) for s in raw_scores]
+            sentence1 = list(data_split[col1])
+            sentence2 = list(data_split[col2])
+            raw_scores = list(data_split["score"])
+            normalized_scores = [task._normalize(s) for s in raw_scores]
 
-        all_sentences = sentence1 + sentence2
-        unique_texts, text_to_idx = [], {}
-        for text in all_sentences:
-            h = hash(text)
-            if h not in text_to_idx:
-                text_to_idx[h] = len(unique_texts)
-                unique_texts.append(text)
+            all_sentences = sentence1 + sentence2
+            unique_texts, text_to_idx = [], {}
+            for text in all_sentences:
+                h = hash(text)
+                if h not in text_to_idx:
+                    text_to_idx[h] = len(unique_texts)
+                    unique_texts.append(text)
 
-        indices1 = [text_to_idx[hash(s)] for s in sentence1]
-        indices2 = [text_to_idx[hash(s)] for s in sentence2]
+            indices1 = [text_to_idx[hash(s)] for s in sentence1]
+            indices2 = [text_to_idx[hash(s)] for s in sentence2]
 
-        if self.rank == 0:
-            n_dedup = len(all_sentences) - len(unique_texts)
-            print(
-                f"  {n_dedup}/{len(all_sentences)} duplicate texts deduplicated"
+            if self.rank == 0:
+                n_dedup = len(all_sentences) - len(unique_texts)
+                print(
+                    f"  [{hf_subset}] {n_dedup}/{len(all_sentences)} duplicate texts deduplicated"
+                )
+
+            texts_ds, removed = self._prepare_text_dataset(
+                unique_texts, task.metadata, instruction_template
             )
 
-        texts_ds, removed = self._prepare_text_dataset(
-            unique_texts, task.metadata, instruction_template
-        )
+            if removed:
+                old_to_new = self._build_index_remap(len(unique_texts), removed)
+                valid_mask = [
+                    indices1[i] not in removed and indices2[i] not in removed
+                    for i in range(len(indices1))
+                ]
+                indices1 = [old_to_new[indices1[i]] for i in range(len(indices1)) if valid_mask[i]]
+                indices2 = [old_to_new[indices2[i]] for i in range(len(indices2)) if valid_mask[i]]
+                normalized_scores = [normalized_scores[i] for i in range(len(normalized_scores)) if valid_mask[i]]
+                if self.rank == 0:
+                    n_removed = sum(1 for v in valid_mask if not v)
+                    print(f"  [{hf_subset}] {n_removed} STS pairs removed due to filtered texts")
 
-        if removed:
-            old_to_new = self._build_index_remap(len(unique_texts), removed)
-            valid_mask = [
-                indices1[i] not in removed and indices2[i] not in removed
-                for i in range(len(indices1))
-            ]
-            indices1 = [old_to_new[indices1[i]] for i in range(len(indices1)) if valid_mask[i]]
-            indices2 = [old_to_new[indices2[i]] for i in range(len(indices2)) if valid_mask[i]]
-            normalized_scores = [normalized_scores[i] for i in range(len(normalized_scores)) if valid_mask[i]]
-            if self.rank == 0:
-                n_removed = sum(1 for v in valid_mask if not v)
-                print(f"  {n_removed} STS pairs removed due to filtered texts")
-
-        datasets[task_name] = {
-            "dataset": {
-                "texts": texts_ds,
-                "indices1": indices1,
-                "indices2": indices2,
-                "labels": normalized_scores,
-            },
-            "hf_split": eval_split,
-            "main_score": task.metadata.main_score,
-            "hf_subset": hf_subset,
-            "task_type": task.metadata.type,
-            "task_obj": task,
-        }
+            entry_name = f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            datasets[entry_name] = {
+                "dataset": {
+                    "texts": texts_ds,
+                    "indices1": indices1,
+                    "indices2": indices2,
+                    "labels": normalized_scores,
+                },
+                "hf_split": eval_split,
+                "main_score": task.metadata.main_score,
+                "hf_subset": hf_subset,
+                "task_type": task.metadata.type,
+                "task_obj": task,
+            }
 
     def _prepare_summarization(
         self, task, task_name, eval_split, instruction_template, datasets
     ):
-        data_split, hf_subset = abs_task_preprocessing(task, eval_split)
+        subset_list = abs_task_preprocessing(task, eval_split)
 
-        text_col = task.text_column_name
-        human_col = task.human_summaries_column_name
-        machine_col = task.machine_summaries_column_name
-        relevance_col = task.relevancy_column_name
+        for data_split, hf_subset in subset_list:
+            text_col = task.text_column_name
+            human_col = task.human_summaries_column_name
+            machine_col = task.machine_summaries_column_name
+            relevance_col = task.relevancy_column_name
 
-        human_summaries = list(data_split[human_col])
-        machine_summaries = list(data_split[machine_col])
-        relevance = list(data_split[relevance_col])
+            human_summaries = list(data_split[human_col])
+            machine_summaries = list(data_split[machine_col])
+            relevance = list(data_split[relevance_col])
 
-        normalized_scores = [
-            ((np.array(x) - task.min_score) / (task.max_score - task.min_score)).tolist()
-            for x in relevance
-        ]
+            normalized_scores = [
+                ((np.array(x) - task.min_score) / (task.max_score - task.min_score)).tolist()
+                for x in relevance
+            ]
 
-        human_lens = [len(hs) for hs in human_summaries]
-        machine_lens = [len(ms) for ms in machine_summaries]
+            human_lens = [len(hs) for hs in human_summaries]
+            machine_lens = [len(ms) for ms in machine_summaries]
 
-        all_human = [s for hs in human_summaries for s in hs]
-        all_machine = [s for ms in machine_summaries for s in ms]
+            all_human = [s for hs in human_summaries for s in hs]
+            all_machine = [s for ms in machine_summaries for s in ms]
 
-        all_texts = all_human + all_machine
-        unique_texts, text_to_idx = [], {}
-        for text in all_texts:
-            h = hash(text)
-            if h not in text_to_idx:
-                text_to_idx[h] = len(unique_texts)
-                unique_texts.append(text)
+            all_texts = all_human + all_machine
+            unique_texts, text_to_idx = [], {}
+            for text in all_texts:
+                h = hash(text)
+                if h not in text_to_idx:
+                    text_to_idx[h] = len(unique_texts)
+                    unique_texts.append(text)
 
-        human_indices = [text_to_idx[hash(s)] for s in all_human]
-        machine_indices = [text_to_idx[hash(s)] for s in all_machine]
+            human_indices = [text_to_idx[hash(s)] for s in all_human]
+            machine_indices = [text_to_idx[hash(s)] for s in all_machine]
 
-        if self.rank == 0:
-            n_dedup = len(all_texts) - len(unique_texts)
-            print(
-                f"  {n_dedup}/{len(all_texts)} duplicate summaries deduplicated"
-            )
-            print(
-                f"  {len(human_summaries)} samples, "
-                f"{sum(human_lens)} human summaries, "
-                f"{sum(machine_lens)} machine summaries"
-            )
-
-        texts_ds, removed = self._prepare_text_dataset(
-            unique_texts, task.metadata, instruction_template
-        )
-
-        if removed:
-            old_to_new = self._build_index_remap(len(unique_texts), removed)
-            new_human_indices = []
-            new_machine_indices = []
-            new_human_lens = []
-            new_machine_lens = []
-            new_gold_scores = []
-            h_off, m_off = 0, 0
-            n_samples_orig = len(human_lens)
-            for i in range(n_samples_orig):
-                h_len = human_lens[i]
-                m_len = machine_lens[i]
-                s_h = human_indices[h_off:h_off + h_len]
-                s_m = machine_indices[m_off:m_off + m_len]
-                s_scores = normalized_scores[i]
-                kept_h = [idx for idx in s_h if idx not in removed]
-                kept_m_scores = [
-                    (idx, s_scores[j]) for j, idx in enumerate(s_m)
-                    if idx not in removed
-                ]
-                if kept_h and kept_m_scores:
-                    new_human_indices.extend(old_to_new[idx] for idx in kept_h)
-                    new_machine_indices.extend(old_to_new[idx] for idx, _ in kept_m_scores)
-                    new_human_lens.append(len(kept_h))
-                    new_machine_lens.append(len(kept_m_scores))
-                    new_gold_scores.append([s for _, s in kept_m_scores])
-                h_off += h_len
-                m_off += m_len
-            human_indices = new_human_indices
-            machine_indices = new_machine_indices
-            human_lens = new_human_lens
-            machine_lens = new_machine_lens
-            normalized_scores = new_gold_scores
-            if self.rank == 0 and len(human_lens) < n_samples_orig:
+            if self.rank == 0:
+                n_dedup = len(all_texts) - len(unique_texts)
                 print(
-                    f"  {n_samples_orig - len(human_lens)} summarization samples "
-                    f"removed due to filtered texts"
+                    f"  [{hf_subset}] {n_dedup}/{len(all_texts)} duplicate summaries deduplicated"
+                )
+                print(
+                    f"  [{hf_subset}] {len(human_summaries)} samples, "
+                    f"{sum(human_lens)} human summaries, "
+                    f"{sum(machine_lens)} machine summaries"
                 )
 
-        datasets[task_name] = {
-            "dataset": {
-                "texts": texts_ds,
-                "human_indices": human_indices,
-                "machine_indices": machine_indices,
-                "human_lens": human_lens,
-                "machine_lens": machine_lens,
-                "gold_scores": normalized_scores,
-            },
-            "hf_split": eval_split,
-            "main_score": task.metadata.main_score,
-            "hf_subset": hf_subset,
-            "task_type": task.metadata.type,
-            "task_obj": task,
-        }
+            texts_ds, removed = self._prepare_text_dataset(
+                unique_texts, task.metadata, instruction_template
+            )
+
+            if removed:
+                old_to_new = self._build_index_remap(len(unique_texts), removed)
+                new_human_indices = []
+                new_machine_indices = []
+                new_human_lens = []
+                new_machine_lens = []
+                new_gold_scores = []
+                h_off, m_off = 0, 0
+                n_samples_orig = len(human_lens)
+                for i in range(n_samples_orig):
+                    h_len = human_lens[i]
+                    m_len = machine_lens[i]
+                    s_h = human_indices[h_off:h_off + h_len]
+                    s_m = machine_indices[m_off:m_off + m_len]
+                    s_scores = normalized_scores[i]
+                    kept_h = [idx for idx in s_h if idx not in removed]
+                    kept_m_scores = [
+                        (idx, s_scores[j]) for j, idx in enumerate(s_m)
+                        if idx not in removed
+                    ]
+                    if kept_h and kept_m_scores:
+                        new_human_indices.extend(old_to_new[idx] for idx in kept_h)
+                        new_machine_indices.extend(old_to_new[idx] for idx, _ in kept_m_scores)
+                        new_human_lens.append(len(kept_h))
+                        new_machine_lens.append(len(kept_m_scores))
+                        new_gold_scores.append([s for _, s in kept_m_scores])
+                    h_off += h_len
+                    m_off += m_len
+                human_indices = new_human_indices
+                machine_indices = new_machine_indices
+                human_lens = new_human_lens
+                machine_lens = new_machine_lens
+                normalized_scores = new_gold_scores
+                if self.rank == 0 and len(human_lens) < n_samples_orig:
+                    print(
+                        f"  [{hf_subset}] {n_samples_orig - len(human_lens)} summarization samples "
+                        f"removed due to filtered texts"
+                    )
+
+            entry_name = f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            datasets[entry_name] = {
+                "dataset": {
+                    "texts": texts_ds,
+                    "human_indices": human_indices,
+                    "machine_indices": machine_indices,
+                    "human_lens": human_lens,
+                    "machine_lens": machine_lens,
+                    "gold_scores": normalized_scores,
+                },
+                "hf_split": eval_split,
+                "main_score": task.metadata.main_score,
+                "hf_subset": hf_subset,
+                "task_type": task.metadata.type,
+                "task_obj": task,
+            }
+
+    def _prepare_bitext_mining(
+        self, task, task_name, eval_split, instruction_template, datasets
+    ):
+        pairs = task._get_pairs(task.parallel_subsets)
+
+        if task.parallel_subsets:
+            subset_list = [( task.dataset[eval_split], "parallel")]
+        else:
+            subset_list = abs_task_preprocessing(task, eval_split)
+
+        for data_split, hf_subset in subset_list:
+            col1, col2 = pairs[0]
+            sentence1 = list(data_split[col1])
+            sentence2 = list(data_split[col2])
+
+            all_sentences = sentence1 + sentence2
+            unique_texts, text_to_idx = [], {}
+            for text in all_sentences:
+                h = hash(text)
+                if h not in text_to_idx:
+                    text_to_idx[h] = len(unique_texts)
+                    unique_texts.append(text)
+
+            indices1 = [text_to_idx[hash(s)] for s in sentence1]
+            indices2 = [text_to_idx[hash(s)] for s in sentence2]
+
+            if self.rank == 0:
+                n_dedup = len(all_sentences) - len(unique_texts)
+                print(
+                    f"  [{hf_subset}] {n_dedup}/{len(all_sentences)} duplicate texts deduplicated"
+                )
+                print(f"  [{hf_subset}] {len(sentence1)} sentence pairs for bitext mining")
+
+            texts_ds, removed = self._prepare_text_dataset(
+                unique_texts, task.metadata, instruction_template
+            )
+
+            if removed:
+                old_to_new = self._build_index_remap(len(unique_texts), removed)
+                valid_mask = [
+                    indices1[i] not in removed and indices2[i] not in removed
+                    for i in range(len(indices1))
+                ]
+                indices1 = [old_to_new[indices1[i]] for i in range(len(indices1)) if valid_mask[i]]
+                indices2 = [old_to_new[indices2[i]] for i in range(len(indices2)) if valid_mask[i]]
+                if self.rank == 0:
+                    n_removed = sum(1 for v in valid_mask if not v)
+                    print(f"  [{hf_subset}] {n_removed} pairs removed due to filtered texts")
+
+            entry_name = f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            datasets[entry_name] = {
+                "dataset": {
+                    "texts": texts_ds,
+                    "indices1": indices1,
+                    "indices2": indices2,
+                },
+                "hf_split": eval_split,
+                "main_score": task.metadata.main_score,
+                "hf_subset": hf_subset,
+                "task_type": task.metadata.type,
+                "task_obj": task,
+            }
 
     # -------------------------------------------------------------------------
     # Encoding helpers
@@ -1231,6 +1328,43 @@ class evaluate_retrieval:
 
         return {main_score: scores[main_score]}
 
+    @torch.inference_mode()
+    def evaluate_one_bitext_mining(self, task_data, model, batch_size):
+        model = model.eval()
+        dataset = task_data["dataset"]
+        task_obj = task_data["task_obj"]
+        main_score = task_data["main_score"]
+
+        embeddings = self._encode_dataset(model, dataset["texts"], batch_size)
+        embeddings_np = embeddings.cpu().numpy()
+
+        emb1 = embeddings_np[dataset["indices1"]]
+        emb2 = embeddings_np[dataset["indices2"]]
+
+        norms1 = np.linalg.norm(emb1, axis=1, keepdims=True)
+        norms2 = np.linalg.norm(emb2, axis=1, keepdims=True)
+        norms1[norms1 == 0] = 1
+        norms2[norms2 == 0] = 1
+        emb1_norm = emb1 / norms1
+        emb2_norm = emb2 / norms2
+
+        nearest_neighbors = []
+        chunk_size = 1000
+        for start in range(0, len(emb1_norm), chunk_size):
+            end = min(start + chunk_size, len(emb1_norm))
+            sim = emb1_norm[start:end] @ emb2_norm.T
+            top_idx = np.argmax(sim, axis=1)
+            top_scores = sim[np.arange(len(top_idx)), top_idx]
+            for idx, score in zip(top_idx, top_scores):
+                nearest_neighbors.append(
+                    {"corpus_id": int(idx), "score": float(score)}
+                )
+
+        gold = list(zip(range(len(emb1)), range(len(emb1))))
+        scores = task_obj._compute_metrics(nearest_neighbors, gold)
+
+        return {main_score: scores[main_score]}
+
     # -------------------------------------------------------------------------
     # Main evaluation loop
     # -------------------------------------------------------------------------
@@ -1316,6 +1450,10 @@ class evaluate_retrieval:
                 )
             elif task_type == "Summarization":
                 output_res = self.evaluate_one_summarization(
+                    task_data, model, batch_size
+                )
+            elif task_type == "BitextMining":
+                output_res = self.evaluate_one_bitext_mining(
                     task_data, model, batch_size
                 )
             elif task_type == "Reranking":

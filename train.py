@@ -25,17 +25,62 @@ from utils.contrastive_datasets import (
     collate_fn_with_padding_joint,
     collate_fn_with_hard_negatives,
     load_hard_negatives_datasets,
+    QWEN3_600M_10DATASET_SUBSET,
     LengthBalancedDistributedSampler,
 )
 from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLossHardNegatives
 from typing import Callable
 from functools import partial
 
+import mteb
 from inference.test_retrieval_ddp_update import evaluate_retrieval
 from inference.create_datasets import (
     instruction_template_qwen3,
     instruction_template_embeddinggemma,
 )
+from inference.helpers import last_token_pool, mean_pool
+
+# MTEB 20-task subset (mteb_20task_subset_selection.md) - minimizes eval time while preserving category averages
+TASK_DICT = {
+    "mteb_eng_v2_20": [
+        "SCIDOCS",
+        "CQADupstackGamingRetrieval",
+        "CQADupstackUnixRetrieval",
+        "HotpotQAHardNegatives",
+        "TRECCOVID",
+        "TwentyNewsgroupsClustering.v2",
+        "BiorxivClusteringP2P.v2",
+        "MedrxivClusteringS2S.v2",
+        "StackExchangeClustering.v2",
+        "AskUbuntuDupQuestions",
+        "BIOSSES",
+        "STS17",
+        "STS12",
+        "AmazonCounterfactualClassification",
+        "MassiveScenarioClassification",
+        "TweetSentimentExtractionClassification",
+        "MTOPDomainClassification",
+        "TwitterSemEval2015",
+        "SprintDuplicateQuestions",
+        "SummEvalSummarization.v2",
+    ],
+}
+
+def get_eval_tasks(eval_set):
+    """Return list of MTEB task objects for evaluation."""
+    if eval_set == "mteb_multilingual_v2":
+        benchmark = mteb.get_benchmark("MTEB(Multilingual, v2)")
+        tasks = [task for task in benchmark.tasks]
+    elif eval_set == "mteb_eng_v2":
+        benchmark = mteb.get_benchmark("MTEB(eng, v2)")
+        tasks = [task for task in benchmark.tasks]
+    elif eval_set == "mteb_eng_v2_20":
+        task_names = TASK_DICT["mteb_eng_v2_20"]
+        tasks = [mteb.get_task(name) for name in task_names]
+    else:
+        raise ValueError(f"Unknown eval_set: {eval_set}")
+    return tasks
+
 
 class Trainer:
     def __init__(self, args, model_config, len_dataloader):
@@ -83,7 +128,7 @@ class Trainer:
         self.model = self.model.to(self.device)
 
         self.model = DDP(self.model, device_ids=[self.local_rank])
-        # self.model = torch.compile(self.model)
+        self.model = torch.compile(self.model)
         # self.model.compile(mode="reduce-overhead")
 
         # self.model.compile(
@@ -252,11 +297,11 @@ class Trainer:
                             json.dump(stats, f, indent=4)
 
                 if completed_steps in eval_steps:
-                    results, summary = evaluator.evaluate(self.model, batch_size=32)
+                    results, summary = evaluator.evaluate(self.model, batch_size=64)
 
                     if RANK == 0:
                         print(f"iter {completed_steps}.")
-
+                        stats["test_perf"][completed_steps] = summary
                         with open(
                             f"{args.output_dir}/train_logs{filename}.json", "w"
                         ) as f:
@@ -274,8 +319,6 @@ class Trainer:
                     )
 
             if RANK == 0:
-                print(f"iter {completed_steps}. vqa accuracy {stats['vqa_acc']}")
-                print(f"iter {completed_steps}. coco cider {stats['coco_cider']}")
                 with open(f"{args.output_dir}/train_logs{filename}.json", "w") as f:
                     json.dump(stats, f, indent=4)
 
@@ -310,7 +353,7 @@ def main():
     if args.instruction_template == "embeddinggemma":
         instruction_template = instruction_template_embeddinggemma
 
-    tokenized_dataset = load_hard_negatives_datasets(
+    train_dataset = load_hard_negatives_datasets(
         base_dir=args.negatives_dir,
         num_hard_negatives=args.num_hard_negatives,
         tokenizer=tokenizer,
@@ -318,6 +361,7 @@ def main():
         max_query_len=args.max_query_len,
         max_passage_len=args.max_passage_len,
         rank=RANK,
+        datasets_subset=args.datasets_subset,
     )
 
     dist.barrier()
@@ -327,7 +371,7 @@ def main():
         print("dataloader preparation")
 
     sampler = LengthBalancedDistributedSampler(
-        tokenized_dataset,
+        train_dataset,
         num_replicas=WORLD_SIZE,
         rank=RANK,
         shuffle=False,
@@ -341,7 +385,7 @@ def main():
     )
 
     train_loader = DataLoader(
-        tokenized_dataset,
+        train_dataset,
         batch_size=args.per_device_train_batch_size,
         sampler=sampler,
         collate_fn=collate_fn,
@@ -350,12 +394,27 @@ def main():
     )
 
     # **************************************
+
+    eval_tasks = get_eval_tasks(args.eval_set)
+
+    if args.instruction_template == "embeddinggemma":
+        pool_fn = mean_pool
+        add_special_tokens = True
+        eot_id = None
+    else:
+        pool_fn = last_token_pool
+        add_special_tokens = False
+        eot_id = tokenizer.pad_token_id
+
     evaluator = evaluate_retrieval(
-        tasks=["ArguAna"],
+        tasks=eval_tasks,
         tokenizer=tokenizer,
-        instruction_template=instruction_template_embeddinggemma,
+        instruction_template=instruction_template,
         padding_side="right",
         new_inference_mode=True,
+        pool_fn=pool_fn,
+        add_special_tokens=add_special_tokens,
+        eot_id=eot_id,
     )
 
     # Initialize loss and optimizer

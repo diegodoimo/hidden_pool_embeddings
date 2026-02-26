@@ -1,0 +1,336 @@
+{
+    "Retrieval": [
+        {
+            "ArguAna": [
+                {
+                    "ndcg_at_10": 0.58549
+                },
+                175.46899604797363
+            ]
+        },
+        {
+            "CQADupstackGamingRetrieval": [
+                {
+                    "ndcg_at_10": 0.59974
+                },
+                14.894546508789062
+            ]
+        },
+        {
+            "CQADupstackUnixRetrieval": [
+                {
+                    "ndcg_at_10": 0.41612
+                },
+                24.287264585494995
+            ]
+        },
+        {
+            "ClimateFEVERHardNegatives": [
+                {
+                    "ndcg_at_10": 0.30214
+                },
+                56.841944217681885
+            ]
+        },
+        {
+            "FEVERHardNegatives": [
+                {
+                    "ndcg_at_10": 0.74258
+                },
+                39.4361526966095
+            ]
+        },
+        {
+            "FiQA2018": [
+                {
+                    "ndcg_at_10": 0.4326
+                },
+                16.855823516845703
+            ]
+        },
+        {
+            "HotpotQAHardNegatives": [
+                {
+                    "ndcg_at_10": 0.69911
+                },
+                36.48355460166931
+            ]
+        },
+        {
+            "SCIDOCS": [
+                {
+                    "ndcg_at_10": 0.18667
+                },
+                11.699162483215332
+            ]
+        },
+        {
+            "TRECCOVID": [
+                {
+                    "ndcg_at_10": 0.75852
+                },
+                42.60425806045532
+            ]
+        },
+        {
+            "Touche2020Retrieval.v3": [
+                {
+                    "ndcg_at_10": 0.46622
+                },
+                169.86498641967773
+            ]
+        }
+    ],
+    "Clustering": [
+        {
+            "ArXivHierarchicalClusteringP2P": [
+                {
+                    "v_measure": 0.6400116376690491
+                },
+                47.88716197013855
+            ]
+        },
+        {
+            "ArXivHierarchicalClusteringS2S": [
+                {
+                    "v_measure": 0.6048380059540056
+                },
+                3.3365328311920166
+            ]
+        },
+        {
+            "BiorxivClusteringP2P.v2": [
+                {
+                    "v_measure": 0.5087421685580682
+                },
+                3.1258318424224854
+            ]
+        },
+        {
+            "MedrxivClusteringP2P.v2": [
+                {
+                    "v_measure": 0.42979932862213877
+                },
+                4.052475214004517
+            ]
+        },
+        {
+            "MedrxivClusteringS2S.v2": [
+                {
+                    "v_measure": 0.41704064925124634
+                },
+                3.264777183532715
+            ]
+        },
+        {
+            "StackExchangeClustering.v2": [
+                {
+                    "v_measure": 0.6804634994415014
+                },
+                5.533975124359131
+            ]
+        },
+        {
+            "StackExchangeClusteringP2P.v2": [
+                {
+                    "v_measure": 0.46889291820012147
+                },
+                10.56167221069336
+            ]
+        },
+        {
+            "TwentyNewsgroupsClustering.v2": [
+                {
+                    "v_measure": 0.5229779346272778
+                },
+                2.0722713470458984
+            ]
+        }
+    ],
+    "Reranking": [
+        {
+            "AskUbuntuDupQuestions": [
+                {
+                    "map_at_1000": 0.36697
+                },
+                3.2471067905426025
+            ]
+        }
+    ],
+    "STS": [
+        {
+            "BIOSSES": [
+                {
+                    "cosine_spearman": 0.8344105788761451
+                },
+                0.44486069679260254
+            ]
+        },
+        {
+            "SICK-R": [
+                {
+                    "cosine_spearman": 0.8206119586999452
+                },
+                1.0152223110198975
+            ]
+        },
+        {
+            "STS12": [
+                {
+                    "cosine_spearman": 0.8084047985134487
+                },
+                0.8396475315093994
+            ]
+        },
+        {
+            "STS13": [
+                {
+                    "cosine_spearman": 0.8800714392128377
+                },
+                0.6449146270751953
+            ]
+        },
+        {
+            "STS14": [
+                {
+                    "cosine_spearman": 0.8498950072871354
+                },
+                0.9588634967803955
+            ]
+        },
+        {
+            "STS15": [
+                {
+                    "cosine_spearman": 0.8936545352077822
+                },
+                0.8638722896575928
+            ]
+        },
+        {
+            "STSBenchmark": [
+                {
+                    "cosine_spearman": 0.8877995411507239
+                },
+                0.6110484600067139
+            ]
+        },
+        {
+            "STS17": [
+                {
+                    "cosine_spearman": 0.8967783182244434
+                },
+                0.4520683288574219
+            ]
+        },
+        {
+            "STS22.v2": [
+                {
+                    "cosine_spearman": 0.6117096669106024
+                },
+                50.967957735061646
+            ]
+        }
+    ],
+    "Classification": [
+        {
+            "Banking77Classification": [
+                {
+                    "accuracy": 0.9098376623376623
+                },
+                26.89479660987854
+            ]
+        },
+        {
+            "ImdbClassification": [
+                {
+                    "accuracy": 0.9169599999999999
+                },
+                35.42191958427429
+            ]
+        },
+        {
+            "MTOPDomainClassification": [
+                {
+                    "accuracy": 0.9916324669402645
+                },
+                11.883916139602661
+            ]
+        },
+        {
+            "MassiveIntentClassification": [
+                {
+                    "accuracy": 0.8535642232683255
+                },
+                13.571297645568848
+            ]
+        },
+        {
+            "MassiveScenarioClassification": [
+                {
+                    "accuracy": 0.9102555480833894
+                },
+                2.723951816558838
+            ]
+        },
+        {
+            "ToxicConversationsClassification": [
+                {
+                    "accuracy": 0.830419921875
+                },
+                6.2095787525177
+            ]
+        },
+        {
+            "TweetSentimentExtractionClassification": [
+                {
+                    "accuracy": 0.6941709111488399
+                },
+                3.7249791622161865
+            ]
+        },
+        {
+            "AmazonCounterfactualClassification": [
+                {
+                    "accuracy": 0.9125373134328358
+                },
+                1.44161057472229
+            ]
+        }
+    ],
+    "PairClassification": [
+        {
+            "SprintDuplicateQuestions": [
+                {
+                    "max_ap": 0.9061133847899154
+                },
+                3.2007956504821777
+            ]
+        },
+        {
+            "TwitterSemEval2015": [
+                {
+                    "max_ap": 0.774447055813295
+                },
+                2.0911946296691895
+            ]
+        },
+        {
+            "TwitterURLCorpus": [
+                {
+                    "max_ap": 0.8670802905080517
+                },
+                5.005810976028442
+            ]
+        }
+    ],
+    "Summarization": [
+        {
+            "SummEvalSummarization.v2": [
+                {
+                    "cosine_spearman": 0.3757674062071264
+                },
+                0.8028428554534912
+            ]
+        }
+    ]
+}

@@ -25,7 +25,6 @@ TASK_PROMPTS = {
     "Summarization": "task: summarization | query: ",
 }
 
-
 def instruction_template_qwen3(prompt_type, task_metadata, text, title="") -> str:
     # text = row["text"]
 
@@ -75,43 +74,6 @@ def _is_valid_row(text: str) -> bool:
     if not text or not text.strip():
         return False
     return True
-
-
-# def _remove_long_sequences(rows, tokenizer, max_length):
-#     """Remove rows where the tokenized prompt exceeds max_length.
-
-#     Returns:
-#         tuple: (keep_mask, removed_long_ids, removed_empty_ids)
-#             - keep_mask: list of booleans indicating which rows to keep
-#             - removed_long_ids: list of IDs that were removed due to length
-#             - removed_empty_ids: list of IDs that were removed due to being empty
-#     """
-#     keep_mask = []
-#     removed_long_ids = []
-#     removed_empty_ids = []
-
-#     # rows is a batched dictionary: {"id": [...], "text": [...], "prompt": [...]}
-#     for i, (prompt, text) in enumerate(zip(rows["prompt"], rows["text"])):
-
-#         if not _is_valid_row(text):
-#             keep_mask.append(False)
-#             removed_empty_ids.append(rows["id"][i])
-#             continue
-
-#         # Fast path: if char length is very short, definitely keep
-#         if len(prompt) <= max_length:
-#             keep_mask.append(True)
-#         else:
-#             # Must tokenize to check actual token length
-#             token_length = len(tokenizer.encode(prompt, add_special_tokens=False))
-#             if token_length > max_length:
-#                 keep_mask.append(False)
-#                 removed_long_ids.append(rows["id"][i])
-#             else:
-#                 keep_mask.append(True)
-
-#     return keep_mask, removed_long_ids, removed_empty_ids
-
 
 def _remove_long_sequences(rows, tokenizer, max_length):
     """Remove rows where the tokenized prompt exceeds max_length."""

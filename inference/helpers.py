@@ -79,6 +79,7 @@ def mean_pool(last_hidden_states, attention_mask):
 
 
 def abs_task_preprocessing(task, eval_split):
+    """Return a list of (data_split, hf_subset) tuples – one per subset."""
 
     subsets_to_run = None
     task.dataset = cast(dict[HFSubset, DatasetDict], task.dataset)
@@ -88,16 +89,17 @@ def abs_task_preprocessing(task, eval_split):
     else:
         hf_subsets = copy(task.hf_subsets)
 
-    if subsets_to_run is not None:  # allow overwrites of pre-filtering
+    if subsets_to_run is not None:
         hf_subsets = [s for s in hf_subsets if s in subsets_to_run]
 
+    result = []
     for hf_subset in hf_subsets:
         if hf_subset not in task.dataset and hf_subset == "default":
             data_split = task.dataset[eval_split]
         else:
             data_split = task.dataset[hf_subset][eval_split]
-    assert len(hf_subsets) == 1, hf_subsets
-    return data_split, hf_subset
+        result.append((data_split, hf_subset))
+    return result
 
 
 @torch.inference_mode()

@@ -1,0 +1,121 @@
+==============================================================================================================
+QWEN3_600M DATASET SUMMARY: entries with 15 hard negatives
+==============================================================================================================
+
+--------------------------------------------------------------------------------------------------------------
+  Retrieval
+--------------------------------------------------------------------------------------------------------------
+  sub_category                   dataset                            num_triples    num_with_15_neg
+  ------------------------------ ------------------------------ --------------- ------------------
+  general_retrieval              stackexchange                        4,747,552          2,254,748
+  open_domain_qa                 gooaq                                3,012,496            835,543
+  general_retrieval              msmarco                                540,188            343,430
+  domain_specific_qa             pubmedqa                               273,518            270,696
+  domain_specific_qa             amazonqa                             2,507,114            229,121
+  paraphrase_detection           stackexchange_dup_p2p                  250,519            186,027
+  open_domain_qa                 hotpotqa                               180,894            124,775
+  fact_verification              fever                                  148,161            122,771
+  open_domain_qa                 eli5                                   325,475            114,468
+  open_domain_qa                 yahooanswers                         1,198,260            107,515
+  open_domain_qa                 naturalquestions                       100,231             96,171
+  open_domain_qa                 squad                                   98,169             85,246
+  paraphrase_detection           qqp                                    149,263             48,610
+  general_retrieval              mrtydi                                  49,089             33,130
+  scientific_doc_retrieval       specter                                380,142             26,883
+  paraphrase_detection           stackexchange_dup_s2s                  304,525             25,678
+  general_retrieval              arguana                                 21,673             20,687
+  open_domain_qa                 triviaqa                                73,346             19,459
+  paraphrase_detection           stackoverflow_dup                       19,847             15,134
+  general_retrieval              nfcorpus                               121,960              9,415
+  domain_specific_qa             fiqa2018                                15,367              7,183
+  fact_verification              scifact                                    919                434
+                                 TOTAL Retrieval                     14,518,708          4,977,124
+
+--------------------------------------------------------------------------------------------------------------
+  Summarization
+--------------------------------------------------------------------------------------------------------------
+  sub_category                   dataset                            num_triples    num_with_15_neg
+  ------------------------------ ------------------------------ --------------- ------------------
+  summarization                  cnndm                                  300,478            294,709
+  summarization                  sentence_compression                   180,000            172,279
+  summarization                  xsum                                   215,257            155,513
+  summarization                  wikihow                                213,566            155,486
+                                 TOTAL Summarization                    909,301            777,987
+
+--------------------------------------------------------------------------------------------------------------
+  STS
+--------------------------------------------------------------------------------------------------------------
+  sub_category                   dataset                            num_triples    num_with_15_neg
+  ------------------------------ ------------------------------ --------------- ------------------
+  stsbenchmark                   stsbenchmark                             3,339              2,559
+  sts12                          sts12                                    1,859              1,859
+  sts22                          sts22                                    1,554              1,159
+                                 TOTAL STS                                6,752              5,577
+
+--------------------------------------------------------------------------------------------------------------
+  NLI
+--------------------------------------------------------------------------------------------------------------
+  sub_category                   dataset                            num_triples    num_with_15_neg
+  ------------------------------ ------------------------------ --------------- ------------------
+  xnli                           xnli                                 1,796,768            934,084
+  mnli                           mnli                                   134,332            115,633
+  snli                           snli                                   152,819             36,893
+  anli                           anli                                     9,694              2,832
+                                 TOTAL NLI                            2,093,613          1,089,442
+
+  Clustering: no training datasets
+  Reranking: no training datasets
+  Classification: no training datasets
+  PairClassification: no training datasets
+
+==============================================================================================================
+ALL DATASETS SORTED BY DECREASING num_with_15_hard_negatives
+==============================================================================================================
+  task_type       sub_category                   dataset                            num_triples    num_with_15_neg
+  --------------- ------------------------------ ------------------------------ --------------- ------------------
+  Retrieval       general_retrieval              stackexchange                        4,747,552          2,254,748
+  NLI             xnli                           xnli                                 1,796,768            934,084
+  Retrieval       open_domain_qa                 gooaq                                3,012,496            835,543
+  Retrieval       general_retrieval              msmarco                                540,188            343,430
+  Summarization   summarization                  cnndm                                  300,478            294,709
+  Retrieval       domain_specific_qa             pubmedqa                               273,518            270,696
+  Retrieval       domain_specific_qa             amazonqa                             2,507,114            229,121
+  Retrieval       paraphrase_detection           stackexchange_dup_p2p                  250,519            186,027
+  Summarization   summarization                  sentence_compression                   180,000            172,279
+  Summarization   summarization                  xsum                                   215,257            155,513
+  Summarization   summarization                  wikihow                                213,566            155,486
+  Retrieval       open_domain_qa                 hotpotqa                               180,894            124,775
+  Retrieval       fact_verification              fever                                  148,161            122,771
+  NLI             mnli                           mnli                                   134,332            115,633
+  Retrieval       open_domain_qa                 eli5                                   325,475            114,468
+  Retrieval       open_domain_qa                 yahooanswers                         1,198,260            107,515
+  Retrieval       open_domain_qa                 naturalquestions                       100,231             96,171
+  Retrieval       open_domain_qa                 squad                                   98,169             85,246
+  Retrieval       paraphrase_detection           qqp                                    149,263             48,610
+  NLI             snli                           snli                                   152,819             36,893
+  Retrieval       general_retrieval              mrtydi                                  49,089             33,130
+  Retrieval       scientific_doc_retrieval       specter                                380,142             26,883
+  Retrieval       paraphrase_detection           stackexchange_dup_s2s                  304,525             25,678
+  Retrieval       general_retrieval              arguana                                 21,673             20,687
+  Retrieval       open_domain_qa                 triviaqa                                73,346             19,459
+  Retrieval       paraphrase_detection           stackoverflow_dup                       19,847             15,134
+  Retrieval       general_retrieval              nfcorpus                               121,960              9,415
+  Retrieval       domain_specific_qa             fiqa2018                                15,367              7,183
+  NLI             anli                           anli                                     9,694              2,832
+  STS             stsbenchmark                   stsbenchmark                             3,339              2,559
+  STS             sts12                          sts12                                    1,859              1,859
+  STS             sts22                          sts22                                    1,554              1,159
+  Retrieval       fact_verification              scifact                                    919                434
+
+==============================================================================================================
+TOTALS BY TASK TYPE
+==============================================================================================================
+  task_type                     num_triples    num_with_15_neg
+  ------------------------- --------------- ------------------
+  Retrieval                      14,518,708          4,977,124
+  NLI                             2,093,613          1,089,442
+  Summarization                     909,301            777,987
+  STS                                 6,752              5,577
+  ------------------------- --------------- ------------------
+  GRAND TOTAL                    17,528,374          6,850,130
+
