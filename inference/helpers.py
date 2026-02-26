@@ -18,7 +18,6 @@ from utils.helpers import print_memory_consumed, return_formatted
 
 # ***********************************************************************************************
 
-
 def last_token_pool(last_hidden_states, attention_mask):
     left_padding = attention_mask[:, -1].sum() == attention_mask.shape[0]
     if left_padding:

@@ -19,7 +19,6 @@ from utils.helpers import print_memory_consumed, save_model, get_cpt_steps
 from utils.gemma3model import get_model
 from utils.optimizer import get_scheduler_optimizer
 from utils.contrastive_datasets import (
-    collate_fn_with_hard_negatives,
     load_hard_negatives_datasets,
     QWEN3_600M_10DATASET_SUBSET,
 )
@@ -221,31 +220,25 @@ class Trainer:
 
                 query_inputs = batch["query_token_ids"]
                 query_mask = batch["query_attention_mask"]
-                doc_inputs = batch["pos_token_ids"]
-                doc_mask = batch["pos_attention_mask"]
+                all_doc_inputs = batch["all_doc_token_ids"]
+                all_doc_mask = batch["all_doc_attention_mask"]
                 doc_ids = batch["pos_ids"]
+                B = batch["batch_size"]
+                num_neg = batch["num_hard_negatives"]
 
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 
                     query_embeddings = self.model(
                         input_ids=query_inputs, attention_mask=query_mask
                     )
-                    doc_embeddings = self.model(
-                        input_ids=doc_inputs, attention_mask=doc_mask
+                    # Single forward for all docs (positives + negatives)
+                    all_doc_embeddings = self.model(
+                        input_ids=all_doc_inputs, attention_mask=all_doc_mask
                     )
+                    doc_embeddings = all_doc_embeddings[:B]
+                    neg_embeddings = all_doc_embeddings[B:].view(B, num_neg, -1)
 
-                    if "neg_token_ids" in batch and isinstance(
-                        loss_fn, EmbeddingGemmaLossHardNegatives
-                    ):
-                        neg_inputs = batch["neg_token_ids"]
-                        neg_mask = batch["neg_attention_mask"]
-                        B, num_neg, seq_len_neg = neg_inputs.shape
-
-                        neg_embeddings = self.model(
-                            input_ids=neg_inputs.view(B * num_neg, seq_len_neg),
-                            attention_mask=neg_mask.view(B * num_neg, seq_len_neg),
-                        ).view(B, num_neg, -1)
-
+                    if isinstance(loss_fn, EmbeddingGemmaLossHardNegatives):
                         loss = loss_fn(
                             query_embeddings=query_embeddings,
                             doc_embeddings=doc_embeddings,
@@ -366,7 +359,7 @@ def main():
 
     dist.barrier()
     if RANK == 0:
-        print(f"datasets tokenized in {time.time()-start:.1f}s")
+        print(f"datasets prepared in {time.time()-start:.1f}s")
         start = time.time()
         print("dataloader preparation")
 
@@ -378,10 +371,23 @@ def main():
         seed=42,
     )
 
+    if args.instruction_template == "embeddinggemma":
+        add_special_tokens = True
+        eot_id = None
+    else:
+        add_special_tokens = False
+        eot_id = tokenizer.pad_token_id
+
     collate_fn = partial(
         collate_fn_with_hard_negatives,
         pad_token_id=tokenizer.pad_token_id,
         num_hard_negatives=args.num_hard_negatives,
+        padding_side="left",
+        tokenizer=tokenizer,
+        max_query_len=args.max_query_len,
+        max_passage_len=args.max_passage_len,
+        eot_id=eot_id,
+        add_special_tokens=add_special_tokens,
     )
 
     train_loader = DataLoader(
@@ -399,12 +405,8 @@ def main():
 
     if args.instruction_template == "embeddinggemma":
         pool_fn = mean_pool
-        add_special_tokens = True
-        eot_id = None
     else:
         pool_fn = last_token_pool
-        add_special_tokens = False
-        eot_id = tokenizer.pad_token_id
 
     evaluator = evaluate_retrieval(
         tasks=eval_tasks,

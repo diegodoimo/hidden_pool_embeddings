@@ -129,6 +129,97 @@ def _remove_long_sequences(rows, tokenizer, max_length):
     return keep_mask.tolist(), removed_long_ids, removed_empty_ids
 
 
+def _remove_long_sequences_hard_negatives(
+    rows,
+    tokenizer,
+    max_query_len,
+    max_passage_len,
+):
+    """Remove hard-negative rows where any prompt exceeds max length.
+
+    Mirrors the logic of _remove_long_sequences but for (query, positive, negatives)
+    triples. Expects rows with: query_prompt, positive_prompt, negative_prompts,
+    query_text, positive_text, positive_id.
+    """
+    n = len(rows["query_prompt"])
+    ids = np.array(rows["positive_id"])
+    query_texts = np.array(rows["query_text"])
+    positive_texts = np.array(rows["positive_text"])
+
+    # Vectorized empty check (mirror _remove_long_sequences)
+    valid_query = np.array([bool(t and str(t).strip()) for t in query_texts])
+    valid_positive = np.array([bool(t and str(t).strip()) for t in positive_texts])
+    valid_text_mask = valid_query & valid_positive
+    removed_empty_ids = ids[~valid_text_mask].tolist()
+
+    query_prompts = rows["query_prompt"]
+    positive_prompts = rows["positive_prompt"]
+    negative_prompts = rows["negative_prompts"]
+
+    # Flatten all prompts for batch length checking
+    all_prompts = []
+    all_max_lengths = []
+    for i in range(n):
+        all_prompts.append(query_prompts[i])
+        all_max_lengths.append(max_query_len)
+        all_prompts.append(positive_prompts[i])
+        all_max_lengths.append(max_passage_len)
+        for p in negative_prompts[i]:
+            all_prompts.append(p)
+            all_max_lengths.append(max_passage_len)
+
+    # Pre-filter by character length (fast heuristic)
+    char_lengths = np.array([len(p) for p in all_prompts])
+    max_lengths_arr = np.array(all_max_lengths)
+    definitely_valid = char_lengths <= max_lengths_arr
+    needs_tokenization = (char_lengths > max_lengths_arr) & np.ones(
+        len(all_prompts), dtype=bool
+    )
+
+    prompts_to_check = [all_prompts[i] for i in np.where(needs_tokenization)[0]]
+    max_lens_to_check = [all_max_lengths[i] for i in np.where(needs_tokenization)[0]]
+
+    if prompts_to_check:
+        tokenized = tokenizer(
+            prompts_to_check,
+            add_special_tokens=False,
+            return_attention_mask=False,
+            truncation=False,
+        )
+        token_lengths = np.array([len(ids) for ids in tokenized["input_ids"]])
+        too_long_mask = np.array(
+            [tl > ml for tl, ml in zip(token_lengths, max_lens_to_check)]
+        )
+        check_indices = np.where(needs_tokenization)[0]
+        too_long_flat_indices = set(check_indices[too_long_mask])
+    else:
+        too_long_flat_indices = set()
+
+    # Map flat indices back to row indices: [q0, p0, n0_0..n0_k, q1, p1, n1_0..n1_k, ...]
+    flat_idx = 0
+    row_valid = np.ones(n, dtype=bool)
+    for i in range(n):
+        # query
+        if flat_idx in too_long_flat_indices:
+            row_valid[i] = False
+        flat_idx += 1
+        # positive
+        if flat_idx in too_long_flat_indices:
+            row_valid[i] = False
+        flat_idx += 1
+        # negatives
+        for _ in negative_prompts[i]:
+            if flat_idx in too_long_flat_indices:
+                row_valid[i] = False
+            flat_idx += 1
+
+    removed_long_ids = ids[~row_valid].tolist()
+
+    # Final keep mask
+    keep_mask = valid_text_mask & row_valid
+    return keep_mask.tolist(), removed_long_ids, removed_empty_ids
+
+
 def _build_prompt(
     rows,
     tokenizer,

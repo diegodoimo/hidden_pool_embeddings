@@ -3,6 +3,7 @@ import numpy as np
 import os
 import glob
 import hashlib
+import time
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 from datasets import Dataset, concatenate_datasets
@@ -11,6 +12,11 @@ from mteb.types import PromptType
 from torch.utils.data import DistributedSampler
 
 from functools import partial
+
+from inference.create_datasets import (
+    _build_prompt,
+    _remove_long_sequences_hard_negatives,
+)
 
 # taken from embeddinggemma
 # https://github.com/huggingface/transformers/blob/bdee0889714e9cb3e53d3b1b2a626919479d356c/src/transformers/models/gemma3/convert_gemma3_weights.py#L700C1-L715C10
@@ -116,103 +122,136 @@ def _str_to_int_id(s: str) -> int:
     return int(hashlib.md5(s.encode()).hexdigest()[:15], 16)
 
 
-def tokenize_hard_negatives_batch(
+def _build_prompts_hard_negatives_batch(
     examples,
     tokenizer,
     instruction_template,
     task_metadata,
+    num_hard_negatives,
+):
+    """Build prompts for (query, positive, negatives) using create_datasets._build_prompt.
+
+    Mirrors the create_dataset flow: uses _build_prompt for query, positive, and negatives.
+    """
+    batch_size = len(examples["query_text"])
+    eot_id = tokenizer.pad_token_id
+
+    # Query prompts (mirror create_dataset: map with _build_prompt)
+    q_rows = {
+        "text": examples["query_text"],
+        "id": examples.get("query_id", [str(i) for i in range(batch_size)]),
+    }
+    query_result = _build_prompt(
+        q_rows, tokenizer, instruction_template, PromptType.query, task_metadata, eot_id
+    )
+    query_prompts = query_result["prompt"]
+
+    # Positive prompts
+    pos_titles = examples.get("positive_title", None)
+    if pos_titles is None:
+        pos_titles = [""] * batch_size
+    p_rows = {
+        "text": examples["positive_text"],
+        "id": examples["positive_id"],
+        "title": pos_titles,
+    }
+    pos_result = _build_prompt(
+        p_rows,
+        tokenizer,
+        instruction_template,
+        PromptType.document,
+        task_metadata,
+        eot_id,
+    )
+    positive_prompts = pos_result["prompt"]
+
+    # Negative prompts: flatten, build, unflatten
+    all_neg_texts = []
+    all_neg_ids = []
+    all_neg_titles = []
+    for i in range(batch_size):
+        neg_texts = examples["negative_text"][i][:num_hard_negatives]
+        neg_titles_col = examples.get("negative_title", None)
+        if neg_titles_col and neg_titles_col[i]:
+            neg_titles = neg_titles_col[i][:num_hard_negatives]
+        else:
+            neg_titles = [""] * len(neg_texts)
+        all_neg_texts.extend(neg_texts)
+        all_neg_ids.extend([f"{i}_{j}" for j in range(len(neg_texts))])
+        all_neg_titles.extend(neg_titles)
+
+    if all_neg_texts:
+        n_rows = {"text": all_neg_texts, "id": all_neg_ids, "title": all_neg_titles}
+        neg_result = _build_prompt(
+            n_rows,
+            tokenizer,
+            instruction_template,
+            PromptType.document,
+            task_metadata,
+            eot_id,
+        )
+        neg_prompts_flat = neg_result["prompt"]
+        # Unflatten
+        idx = 0
+        negative_prompts = []
+        for i in range(batch_size):
+            n = min(len(examples["negative_text"][i]), num_hard_negatives)
+            negative_prompts.append(neg_prompts_flat[idx : idx + n])
+            idx += n
+    else:
+        negative_prompts = [[] for _ in range(batch_size)]
+
+    return {
+        "query_prompt": query_prompts,
+        "positive_prompt": positive_prompts,
+        "negative_prompts": negative_prompts,
+    }
+
+
+def _add_lengths_and_dataset_name(
+    examples,
+    tokenizer,
     max_query_len,
     max_passage_len,
     num_hard_negatives,
     dataset_name,
 ):
-    """Tokenize a batch of (query, positive, negatives) triples.
+    """Add dataset_name and token lengths for sorting. Keeps prompts for collate tokenization."""
+    batch_size = len(examples["query_prompt"])
 
-    Mirrors the prompt-building logic from create_datasets._build_prompt
-    and the tokenization from contrastive_datasets.tokenize_batch.
-    """
-    batch_size = len(examples["query_text"])
-
-    # --- Build prompts ---
-    query_prompts = [
-        instruction_template(PromptType.query, task_metadata, text)
-        for text in examples["query_text"]
-    ]
-
-    pos_titles = examples.get("positive_title", None)
-    if pos_titles is None:
-        pos_titles = [""] * batch_size
-
-    pos_prompts = [
-        instruction_template(
-            PromptType.document, task_metadata, text, title=title or ""
-        )
-        for text, title in zip(examples["positive_text"], pos_titles)
-    ]
-
-    # --- Tokenize queries and positives (batch) ---
     query_encs = tokenizer(
-        query_prompts,
+        examples["query_prompt"],
         max_length=max_query_len,
         truncation=True,
         padding=False,
         return_attention_mask=False,
     )
     pos_encs = tokenizer(
-        pos_prompts,
+        examples["positive_prompt"],
         max_length=max_passage_len,
         truncation=True,
         padding=False,
         return_attention_mask=False,
     )
 
-    # --- Process negatives per example ---
-    neg_titles_col = examples.get("negative_title", None)
-    all_neg_token_ids = []
     all_avg_neg_len = []
-
     for i in range(batch_size):
-        neg_texts = examples["negative_text"][i][:num_hard_negatives]
-
-        if neg_titles_col and neg_titles_col[i]:
-            neg_titles = neg_titles_col[i][:num_hard_negatives]
-        else:
-            neg_titles = [""] * len(neg_texts)
-
-        neg_prompts = [
-            instruction_template(
-                PromptType.document, task_metadata, text, title=title or ""
+        neg_prompts = examples["negative_prompts"][i][:num_hard_negatives]
+        if neg_prompts:
+            neg_encs = tokenizer(
+                neg_prompts,
+                max_length=max_passage_len,
+                truncation=True,
+                padding=False,
+                return_attention_mask=False,
             )
-            for text, title in zip(neg_texts, neg_titles)
-        ]
+            avg_len = np.mean([len(n) for n in neg_encs["input_ids"]])
+        else:
+            avg_len = len(pos_encs["input_ids"][i])
+        all_avg_neg_len.append(avg_len)
 
-        neg_encs = tokenizer(
-            neg_prompts,
-            max_length=max_passage_len,
-            truncation=True,
-            padding=False,
-            return_attention_mask=False,
-        )
-        neg_ids_list = neg_encs["input_ids"]
-
-        # Pad with the positive if not enough negatives
-        while len(neg_ids_list) < num_hard_negatives:
-            neg_ids_list.append(pos_encs["input_ids"][i])
-
-        neg_ids_list = neg_ids_list[:num_hard_negatives]
-        all_neg_token_ids.append(neg_ids_list)
-        all_avg_neg_len.append(np.mean([len(n) for n in neg_ids_list]))
-
-    # --- Assemble result ---
-    pos_ids = [
-        _str_to_int_id(f"{dataset_name}/{pid}") for pid in examples["positive_id"]
-    ]
-
-    result = {
-        "query_token_ids": query_encs["input_ids"],
-        "pos_token_ids": pos_encs["input_ids"],
-        "neg_token_ids": all_neg_token_ids,
-        "pos_ids": pos_ids,
+    return {
+        "dataset_name": [dataset_name] * batch_size,
         "query_len": [len(ids) for ids in query_encs["input_ids"]],
         "pos_len": [len(ids) for ids in pos_encs["input_ids"]],
         "total_len": [
@@ -222,7 +261,6 @@ def tokenize_hard_negatives_batch(
             for i in range(batch_size)
         ],
     }
-    return result
 
 
 # Example subset of 10 datasets from results/datasets_negatives/qwen3_600m leaf folders.
@@ -252,6 +290,11 @@ def load_hard_negatives_datasets(
     datasets_subset: Optional[List[str]] = None,
 ):
     """Load and tokenize all hard-negative parquet datasets under *base_dir*.
+
+    Mirrors the logic of create_datasets.create_dataset:
+    1. Map: build prompts using _build_prompt (via _build_prompts_hard_negatives_batch)
+    2. Filter: remove long sequences using _remove_long_sequences_hard_negatives
+    3. Map: tokenize the prompts
 
     Args:
         base_dir: Root directory containing dataset subdirs with data.parquet
@@ -313,24 +356,63 @@ def load_hard_negatives_datasets(
         if len(ds) == 0:
             continue
 
-        tok_fn = partial(
-            tokenize_hard_negatives_batch,
+        # Step 1: Build prompts (mirror create_dataset: map with _build_prompt)
+        start = time.time()
+        build_fn = partial(
+            _build_prompts_hard_negatives_batch,
             tokenizer=tokenizer,
             instruction_template=instruction_template,
             task_metadata=task_metadata,
+            num_hard_negatives=num_hard_negatives,
+        )
+        ds = ds.map(build_fn, batched=True, batch_size=10000)
+        if rank == 0:
+            print(f"    prompt constructed in {(time.time()-start)/60:.2f}min")
+
+        # Step 2: Filter long sequences (mirror create_dataset: filter with _remove_long_sequences)
+        all_removed_long_ids = []
+        all_removed_empty_ids = []
+
+        def filter_wrapper(rows):
+            keep_mask, removed_long, removed_empty = _remove_long_sequences_hard_negatives(
+                rows, tokenizer, max_query_len, max_passage_len
+            )
+            all_removed_long_ids.extend(removed_long)
+            all_removed_empty_ids.extend(removed_empty)
+            return keep_mask
+
+        start = time.time()
+        ds = ds.filter(filter_wrapper, batched=True, batch_size=10000)
+        if rank == 0:
+            print(f"    dataset filtered in {(time.time()-start)/60:.2f}min")
+
+        if len(ds) == 0:
+            continue
+
+        # Step 3: Add lengths and dataset_name for sorting (tokenization done in collate)
+        len_fn = partial(
+            _add_lengths_and_dataset_name,
+            tokenizer=tokenizer,
             max_query_len=max_query_len,
             max_passage_len=max_passage_len,
             num_hard_negatives=num_hard_negatives,
             dataset_name=ds_name,
         )
-
-        tokenized = ds.map(
-            tok_fn,
-            batched=True,
-            batch_size=1000,
-            remove_columns=ds.column_names,
-        )
-        all_datasets.append(tokenized)
+        ds = ds.map(len_fn, batched=True, batch_size=1000)
+        # Keep only columns needed for collate
+        cols_to_keep = {
+            "query_prompt",
+            "positive_prompt",
+            "negative_prompts",
+            "positive_id",
+            "dataset_name",
+            "query_len",
+            "pos_len",
+            "total_len",
+        }
+        cols_to_remove = [c for c in ds.column_names if c not in cols_to_keep]
+        ds = ds.remove_columns(cols_to_remove)
+        all_datasets.append(ds)
 
     combined = concatenate_datasets(all_datasets)
     combined = combined.sort("total_len", reverse=True)
