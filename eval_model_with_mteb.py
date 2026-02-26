@@ -19,6 +19,8 @@ tasks = []
 for task in benchmark.tasks:
     tasks.append(task.metadata.name)
 
+
+len(tasks)
 benchmarks = mteb.get_benchmarks()
 
 for benchmark in benchmarks:

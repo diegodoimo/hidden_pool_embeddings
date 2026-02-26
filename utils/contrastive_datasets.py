@@ -9,7 +9,7 @@ from datasets import Dataset, concatenate_datasets
 from mteb.types import PromptType
 
 from torch.utils.data import DistributedSampler
-from torch.nn.utils.rnn import pad_sequence
+
 from functools import partial
 
 # taken from embeddinggemma
@@ -32,123 +32,10 @@ TASK_PROMPTS = {
 }
 
 
-class LengthBalancedDistributedSampler(DistributedSampler):
-    """
-    Distributed sampler that ensures each GPU gets batches with balanced lengths.
-
-    Strategy: Sort by length, then interleave across GPUs so each gets a mix of short/long examples.
-    """
-
-    def __init__(
-        self, dataset, num_replicas=None, rank=None, shuffle=True, seed=0, drop_last=False
-    ):
-        super().__init__(dataset, num_replicas, rank, shuffle, seed, drop_last)
-
-    def __iter__(self):
-        if self.shuffle:
-            # Shuffle within buckets to add randomness while maintaining balance
-            g = torch.Generator()
-            g.manual_seed(self.seed + self.epoch)
-
-            # Create bucket-shuffled indices
-            bucket_size = self.num_replicas * 100  # Each bucket = 100 batches per GPU
-            indices = []
-
-            for start in range(0, len(self.dataset), bucket_size):
-                end = min(start + bucket_size, len(self.dataset))
-                bucket = list(range(start, end))
-                # Shuffle within bucket
-                bucket_indices = torch.tensor(bucket)[
-                    torch.randperm(len(bucket), generator=g)
-                ].tolist()
-                indices.extend(bucket_indices)
-        else:
-            indices = list(range(len(self.dataset)))
-
-        # Distribute indices round-robin to ensure balanced lengths across GPUs
-        # GPU 0 gets: 0, num_replicas, 2*num_replicas, ...
-        # GPU 1 gets: 1, num_replicas+1, 2*num_replicas+1, ...
-        indices = indices[self.rank :: self.num_replicas]
-
-        # Pad if needed
-        if not self.drop_last:
-            padding_size = self.num_samples - len(indices)
-            if padding_size > 0:
-                indices += indices[:padding_size]
-        else:
-            indices = indices[: self.num_samples]
-
-        return iter(indices)
-
-
-def collate_fn_with_padding(batch, pad_token_id=0):
-    """
-    Collate function that pads sequences and creates attention masks.
-
-    Args:
-        batch: List of examples from dataset
-        pad_token_id: Token ID used for padding (usually 0)
-
-    Returns:
-        Dict with padded input_ids and attention_masks
-    """
-    query_token_ids = [torch.tensor(item["query_token_ids"]) for item in batch]
-    pos_token_ids = [torch.tensor(item["pos_token_ids"]) for item in batch]
-    pos_ids = torch.cat([torch.tensor([item["pos_ids"]]) for item in batch])
-
-    # Handle neg_token_ids (list of lists)
-
-    # Pad queries and create attention masks
-    query_token_ids_padded = pad_sequence(
-        query_token_ids, batch_first=True, padding_value=pad_token_id
-    )
-    query_attention_mask = (query_token_ids_padded != pad_token_id).long()
-
-    # Pad positive passages and create attention masks
-    pos_token_ids_padded = pad_sequence(pos_token_ids, batch_first=True, padding_value=pad_token_id)
-    pos_attention_mask = (pos_token_ids_padded != pad_token_id).long()
-
-    return {
-        "query_token_ids": query_token_ids_padded,
-        "query_attention_mask": query_attention_mask,
-        "pos_token_ids": pos_token_ids_padded,
-        "pos_attention_mask": pos_attention_mask,
-        "pos_ids": pos_ids,
-    }
-
-
-def collate_fn_with_padding_joint(batch, pad_token_id=0):
-    """
-    Collate function that pads sequences and creates attention masks.
-
-    Args:
-        batch: List of examples from dataset
-        pad_token_id: Token ID used for padding (usually 0)
-
-    Returns:
-        Dict with padded input_ids and attention_masks
-    """
-
-    inputs_token_ids = [torch.tensor(item["query_token_ids"]) for item in batch]
-    inputs_token_ids.extend([torch.tensor(item["pos_token_ids"]) for item in batch])
-    pos_ids = torch.cat([torch.tensor([item["pos_ids"]]) for item in batch])
-
-    # Pad inputs and create attention masks
-    inputs_token_ids_padded = pad_sequence(
-        inputs_token_ids, batch_first=True, padding_value=pad_token_id
-    )
-    inputs_attention_mask = (inputs_token_ids_padded != pad_token_id).long()
-
-    return {
-        "query_token_ids": inputs_token_ids,
-        "query_attention_mask": inputs_attention_mask,
-        "pos_ids": pos_ids,
-    }
-
-
 # ---------------------------------------------------------------------------
 # Hard negatives dataset loading and tokenization
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class TrainTaskMetadata:
@@ -218,6 +105,7 @@ def _load_parquet_safe(path):
         return Dataset.from_parquet(path)
     except (TypeError, Exception):
         import pyarrow.parquet as pq
+
         table = pq.read_table(path)
         table = table.replace_schema_metadata({})
         return Dataset(table)
@@ -317,8 +205,7 @@ def tokenize_hard_negatives_batch(
 
     # --- Assemble result ---
     pos_ids = [
-        _str_to_int_id(f"{dataset_name}/{pid}")
-        for pid in examples["positive_id"]
+        _str_to_int_id(f"{dataset_name}/{pid}") for pid in examples["positive_id"]
     ]
 
     result = {
@@ -341,7 +228,7 @@ def tokenize_hard_negatives_batch(
 # Example subset of 10 datasets from results/datasets_negatives/qwen3_600m leaf folders.
 # Use as datasets_subset=QWEN3_600M_10DATASET_SUBSET to restrict training to these.
 QWEN3_600M_DATASET_SUBSET = [
-    #"retrieval/general_retrieval/msmarco",
+    # "retrieval/general_retrieval/msmarco",
     "retrieval/general_retrieval/nfcorpus",
     "retrieval/general_retrieval/arguana",
     "retrieval/domain_specific_qa/fiqa2018",
@@ -390,11 +277,14 @@ def load_hard_negatives_datasets(
     if datasets_subset is not None:
         subset_set = set(datasets_subset)
         parquet_files = [
-            p for p in parquet_files
+            p
+            for p in parquet_files
             if os.path.relpath(os.path.dirname(p), base_dir) in subset_set
         ]
         if rank == 0:
-            print(f"Restricted to {len(parquet_files)} datasets (subset of {len(datasets_subset)} requested)")
+            print(
+                f"Restricted to {len(parquet_files)} datasets (subset of {len(datasets_subset)} requested)"
+            )
 
     if rank == 0:
         print(f"Found {len(parquet_files)} datasets under {base_dir}")
@@ -416,7 +306,9 @@ def load_hard_negatives_datasets(
         )
 
         if rank == 0:
-            print(f"    {len(ds)} examples after filtering (>= {num_hard_negatives} negatives)")
+            print(
+                f"    {len(ds)} examples after filtering (>= {num_hard_negatives} negatives)"
+            )
 
         if len(ds) == 0:
             continue
@@ -451,52 +343,3 @@ def load_hard_negatives_datasets(
         print(f"Avg doc len: {np.mean(combined['pos_len']):.0f}")
 
     return combined
-
-
-def collate_fn_with_hard_negatives(batch, pad_token_id=0, num_hard_negatives=8):
-    """Collate function for batches that include hard negatives.
-
-    Returns padded tensors for queries, positives, and negatives with their
-    attention masks.
-    """
-    query_token_ids = [torch.tensor(item["query_token_ids"]) for item in batch]
-    pos_token_ids = [torch.tensor(item["pos_token_ids"]) for item in batch]
-    pos_ids = torch.tensor([item["pos_ids"] for item in batch], dtype=torch.long)
-
-    # Pad queries
-    query_padded = pad_sequence(
-        query_token_ids, batch_first=True, padding_value=pad_token_id
-    )
-    query_mask = (query_padded != pad_token_id).long()
-
-    # Pad positives
-    pos_padded = pad_sequence(
-        pos_token_ids, batch_first=True, padding_value=pad_token_id
-    )
-    pos_mask = (pos_padded != pad_token_id).long()
-
-    # Flatten all negatives across the batch, pad, then reshape
-    all_neg_seqs = []
-    for item in batch:
-        for neg in item["neg_token_ids"]:
-            all_neg_seqs.append(torch.tensor(neg))
-
-    neg_padded = pad_sequence(
-        all_neg_seqs, batch_first=True, padding_value=pad_token_id
-    )
-    neg_mask = (neg_padded != pad_token_id).long()
-
-    batch_size = len(batch)
-    neg_seq_len = neg_padded.size(1)
-    neg_padded = neg_padded.view(batch_size, num_hard_negatives, neg_seq_len)
-    neg_mask = neg_mask.view(batch_size, num_hard_negatives, neg_seq_len)
-
-    return {
-        "query_token_ids": query_padded,
-        "query_attention_mask": query_mask,
-        "pos_token_ids": pos_padded,
-        "pos_attention_mask": pos_mask,
-        "neg_token_ids": neg_padded,
-        "neg_attention_mask": neg_mask,
-        "pos_ids": pos_ids,
-    }

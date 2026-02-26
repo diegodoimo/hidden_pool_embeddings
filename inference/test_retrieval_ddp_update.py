@@ -10,7 +10,7 @@ import torch.distributed as dist
 from mteb._evaluators.retrieval_metrics import calculate_retrieval_scores
 import torch.nn.functional as F
 from mteb._evaluators.retrieval_metrics import make_score_dict
-from utils.sorted_sampler import LenghtSortedSampler
+from utils.dataloader_helpers import LenghtSortedSampler
 from inference.helpers import (
     search,
     encode,
@@ -40,7 +40,6 @@ from mteb.abstasks.clustering import _evaluate_clustering_bootstrapped
 from mteb._evaluators.pair_classification_evaluator import PairClassificationDistances
 from scipy.stats import pearsonr, spearmanr
 from mteb._evaluators.text.summarization_evaluator import SummarizationEvaluator
-
 
 
 class evaluate_retrieval:
@@ -73,7 +72,7 @@ class evaluate_retrieval:
         self.datasets = self.prepare_datasets(instruction_template)
         dist.barrier()
         _print_ram(label="after loading datastes", rank=self.rank)
-        if self.rank ==0:
+        if self.rank == 0:
             print(f"datsets prepared in {(time.time()-t1)/60:.2f} min")
 
     def _get_max_split_size_from_hub(self, task):
@@ -239,7 +238,9 @@ class evaluate_retrieval:
 
             relevant_docs = data_split["relevant_docs"]
             removed_query_ids = (
-                set(queries_dataset.removed_ids) if queries_dataset.removed_ids else set()
+                set(queries_dataset.removed_ids)
+                if queries_dataset.removed_ids
+                else set()
             )
             removed_corpus_ids = (
                 set(corpus_dataset.removed_ids) if corpus_dataset.removed_ids else set()
@@ -278,7 +279,9 @@ class evaluate_retrieval:
                     batched=True,
                 )
 
-            entry_name = f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            entry_name = (
+                f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            )
             datasets[entry_name] = {
                 "dataset": {
                     "queries": queries_dataset,
@@ -293,7 +296,9 @@ class evaluate_retrieval:
                 "task_type": task.metadata.type,
             }
 
-    def _prepare_text_dataset(self, texts, task_metadata, instruction_template, max_length=8192):
+    def _prepare_text_dataset(
+        self, texts, task_metadata, instruction_template, max_length=8192
+    ):
         """Create a prompt-augmented HF dataset from raw texts for encoding.
 
         Returns:
@@ -311,7 +316,9 @@ class evaluate_retrieval:
             prompt_type=PromptType.query,
             max_length=max_length,
         )
-        removed_indices = set(int(x) for x in ds.removed_ids) if ds.removed_ids else set()
+        removed_indices = (
+            set(int(x) for x in ds.removed_ids) if ds.removed_ids else set()
+        )
         if removed_indices and self.rank == 0:
             print(
                 f"  WARNING: {len(removed_indices)}/{len(texts)} texts filtered "
@@ -375,14 +382,26 @@ class evaluate_retrieval:
                     indices1[i] not in removed and indices2[i] not in removed
                     for i in range(len(indices1))
                 ]
-                indices1 = [old_to_new[indices1[i]] for i in range(len(indices1)) if valid_mask[i]]
-                indices2 = [old_to_new[indices2[i]] for i in range(len(indices2)) if valid_mask[i]]
+                indices1 = [
+                    old_to_new[indices1[i]]
+                    for i in range(len(indices1))
+                    if valid_mask[i]
+                ]
+                indices2 = [
+                    old_to_new[indices2[i]]
+                    for i in range(len(indices2))
+                    if valid_mask[i]
+                ]
                 labels = [labels[i] for i in range(len(labels)) if valid_mask[i]]
                 if self.rank == 0:
                     n_removed = sum(1 for v in valid_mask if not v)
-                    print(f"  [{hf_subset}] {n_removed} pairs removed due to filtered texts")
+                    print(
+                        f"  [{hf_subset}] {n_removed} pairs removed due to filtered texts"
+                    )
 
-            entry_name = f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            entry_name = (
+                f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            )
             datasets[entry_name] = {
                 "dataset": {
                     "texts": texts_ds,
@@ -433,7 +452,9 @@ class evaluate_retrieval:
                     test_data = split_ds["test"]
             except ValueError:
                 if self.rank == 0:
-                    print(f"  [{hf_subset}] Could not stratify test subsample, using full test set")
+                    print(
+                        f"  [{hf_subset}] Could not stratify test subsample, using full test set"
+                    )
 
             train_texts = list(train_data[input_col])
             test_texts = list(test_data[input_col])
@@ -441,7 +462,9 @@ class evaluate_retrieval:
             test_labels = list(test_data[label_col])
 
             if self.rank == 0:
-                print(f"  [{hf_subset}] train: {len(train_texts)}, test: {len(test_texts)} samples")
+                print(
+                    f"  [{hf_subset}] train: {len(train_texts)}, test: {len(test_texts)} samples"
+                )
 
             train_ds, train_removed = self._prepare_text_dataset(
                 train_texts, task.metadata, instruction_template
@@ -451,11 +474,17 @@ class evaluate_retrieval:
             )
 
             if train_removed:
-                train_labels = [l for i, l in enumerate(train_labels) if i not in train_removed]
+                train_labels = [
+                    l for i, l in enumerate(train_labels) if i not in train_removed
+                ]
             if test_removed:
-                test_labels = [l for i, l in enumerate(test_labels) if i not in test_removed]
+                test_labels = [
+                    l for i, l in enumerate(test_labels) if i not in test_removed
+                ]
 
-            entry_name = f"{task_name}/{hf_subset}" if len(hf_subsets) > 1 else task_name
+            entry_name = (
+                f"{task_name}/{hf_subset}" if len(hf_subsets) > 1 else task_name
+            )
             datasets[entry_name] = {
                 "dataset": {
                     "train_texts": train_ds,
@@ -514,7 +543,9 @@ class evaluate_retrieval:
             if removed:
                 labels = [l for i, l in enumerate(labels) if i not in removed]
 
-            entry_name = f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            entry_name = (
+                f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            )
             datasets[entry_name] = {
                 "dataset": {
                     "texts": texts_ds,
@@ -561,7 +592,9 @@ class evaluate_retrieval:
             test_labels = list(test_data[label_col])
 
             if self.rank == 0:
-                print(f"  [{hf_subset}] train: {len(train_texts)}, test: {len(test_texts)} samples")
+                print(
+                    f"  [{hf_subset}] train: {len(train_texts)}, test: {len(test_texts)} samples"
+                )
 
             train_ds, train_removed = self._prepare_text_dataset(
                 train_texts, task.metadata, instruction_template
@@ -571,11 +604,17 @@ class evaluate_retrieval:
             )
 
             if train_removed:
-                train_labels = [l for i, l in enumerate(train_labels) if i not in train_removed]
+                train_labels = [
+                    l for i, l in enumerate(train_labels) if i not in train_removed
+                ]
             if test_removed:
-                test_labels = [l for i, l in enumerate(test_labels) if i not in test_removed]
+                test_labels = [
+                    l for i, l in enumerate(test_labels) if i not in test_removed
+                ]
 
-            entry_name = f"{task_name}/{hf_subset}" if len(hf_subsets) > 1 else task_name
+            entry_name = (
+                f"{task_name}/{hf_subset}" if len(hf_subsets) > 1 else task_name
+            )
             datasets[entry_name] = {
                 "dataset": {
                     "train_texts": train_ds,
@@ -590,9 +629,7 @@ class evaluate_retrieval:
                 "task_obj": task,
             }
 
-    def _prepare_sts(
-        self, task, task_name, eval_split, instruction_template, datasets
-    ):
+    def _prepare_sts(self, task, task_name, eval_split, instruction_template, datasets):
         subset_list = abs_task_preprocessing(task, eval_split)
 
         for data_split, hf_subset in subset_list:
@@ -630,14 +667,30 @@ class evaluate_retrieval:
                     indices1[i] not in removed and indices2[i] not in removed
                     for i in range(len(indices1))
                 ]
-                indices1 = [old_to_new[indices1[i]] for i in range(len(indices1)) if valid_mask[i]]
-                indices2 = [old_to_new[indices2[i]] for i in range(len(indices2)) if valid_mask[i]]
-                normalized_scores = [normalized_scores[i] for i in range(len(normalized_scores)) if valid_mask[i]]
+                indices1 = [
+                    old_to_new[indices1[i]]
+                    for i in range(len(indices1))
+                    if valid_mask[i]
+                ]
+                indices2 = [
+                    old_to_new[indices2[i]]
+                    for i in range(len(indices2))
+                    if valid_mask[i]
+                ]
+                normalized_scores = [
+                    normalized_scores[i]
+                    for i in range(len(normalized_scores))
+                    if valid_mask[i]
+                ]
                 if self.rank == 0:
                     n_removed = sum(1 for v in valid_mask if not v)
-                    print(f"  [{hf_subset}] {n_removed} STS pairs removed due to filtered texts")
+                    print(
+                        f"  [{hf_subset}] {n_removed} STS pairs removed due to filtered texts"
+                    )
 
-            entry_name = f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            entry_name = (
+                f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            )
             datasets[entry_name] = {
                 "dataset": {
                     "texts": texts_ds,
@@ -668,7 +721,9 @@ class evaluate_retrieval:
             relevance = list(data_split[relevance_col])
 
             normalized_scores = [
-                ((np.array(x) - task.min_score) / (task.max_score - task.min_score)).tolist()
+                (
+                    (np.array(x) - task.min_score) / (task.max_score - task.min_score)
+                ).tolist()
                 for x in relevance
             ]
 
@@ -716,17 +771,20 @@ class evaluate_retrieval:
                 for i in range(n_samples_orig):
                     h_len = human_lens[i]
                     m_len = machine_lens[i]
-                    s_h = human_indices[h_off:h_off + h_len]
-                    s_m = machine_indices[m_off:m_off + m_len]
+                    s_h = human_indices[h_off : h_off + h_len]
+                    s_m = machine_indices[m_off : m_off + m_len]
                     s_scores = normalized_scores[i]
                     kept_h = [idx for idx in s_h if idx not in removed]
                     kept_m_scores = [
-                        (idx, s_scores[j]) for j, idx in enumerate(s_m)
+                        (idx, s_scores[j])
+                        for j, idx in enumerate(s_m)
                         if idx not in removed
                     ]
                     if kept_h and kept_m_scores:
                         new_human_indices.extend(old_to_new[idx] for idx in kept_h)
-                        new_machine_indices.extend(old_to_new[idx] for idx, _ in kept_m_scores)
+                        new_machine_indices.extend(
+                            old_to_new[idx] for idx, _ in kept_m_scores
+                        )
                         new_human_lens.append(len(kept_h))
                         new_machine_lens.append(len(kept_m_scores))
                         new_gold_scores.append([s for _, s in kept_m_scores])
@@ -743,7 +801,9 @@ class evaluate_retrieval:
                         f"removed due to filtered texts"
                     )
 
-            entry_name = f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            entry_name = (
+                f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            )
             datasets[entry_name] = {
                 "dataset": {
                     "texts": texts_ds,
@@ -766,7 +826,7 @@ class evaluate_retrieval:
         pairs = task._get_pairs(task.parallel_subsets)
 
         if task.parallel_subsets:
-            subset_list = [( task.dataset[eval_split], "parallel")]
+            subset_list = [(task.dataset[eval_split], "parallel")]
         else:
             subset_list = abs_task_preprocessing(task, eval_split)
 
@@ -791,7 +851,9 @@ class evaluate_retrieval:
                 print(
                     f"  [{hf_subset}] {n_dedup}/{len(all_sentences)} duplicate texts deduplicated"
                 )
-                print(f"  [{hf_subset}] {len(sentence1)} sentence pairs for bitext mining")
+                print(
+                    f"  [{hf_subset}] {len(sentence1)} sentence pairs for bitext mining"
+                )
 
             texts_ds, removed = self._prepare_text_dataset(
                 unique_texts, task.metadata, instruction_template
@@ -803,13 +865,25 @@ class evaluate_retrieval:
                     indices1[i] not in removed and indices2[i] not in removed
                     for i in range(len(indices1))
                 ]
-                indices1 = [old_to_new[indices1[i]] for i in range(len(indices1)) if valid_mask[i]]
-                indices2 = [old_to_new[indices2[i]] for i in range(len(indices2)) if valid_mask[i]]
+                indices1 = [
+                    old_to_new[indices1[i]]
+                    for i in range(len(indices1))
+                    if valid_mask[i]
+                ]
+                indices2 = [
+                    old_to_new[indices2[i]]
+                    for i in range(len(indices2))
+                    if valid_mask[i]
+                ]
                 if self.rank == 0:
                     n_removed = sum(1 for v in valid_mask if not v)
-                    print(f"  [{hf_subset}] {n_removed} pairs removed due to filtered texts")
+                    print(
+                        f"  [{hf_subset}] {n_removed} pairs removed due to filtered texts"
+                    )
 
-            entry_name = f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            entry_name = (
+                f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
+            )
             datasets[entry_name] = {
                 "dataset": {
                     "texts": texts_ds,
@@ -849,14 +923,16 @@ class evaluate_retrieval:
         dist.barrier()
         start = time.time()
         embeddings = encode(
-            model, loader, prompt_type=PromptType.query, world_size=self.world_size,
+            model,
+            loader,
+            prompt_type=PromptType.query,
+            world_size=self.world_size,
             pool_fn=self.pool_fn,
         )
         dist.barrier()
         # if self.rank == 0:
         #     print(f"  encoded {len(dataset)} samples in {time.time()-start:.2f}s")
         return embeddings
-
 
     # -------------------------------------------------------------------------
     # Per-task-type evaluation
@@ -883,7 +959,6 @@ class evaluate_retrieval:
 
         query_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["queries"]["id"])}
         doc_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["corpus"]["id"])}
-
 
         collate_fn = partial(
             collate_fn_with_padding,
@@ -926,8 +1001,6 @@ class evaluate_retrieval:
             pool_fn=self.pool_fn,
         )
         dist.barrier()
-
-
 
         chunk_size, query_chunk_size = estimate_chunk_sizes(query_embeddings)
 
@@ -1060,9 +1133,7 @@ class evaluate_retrieval:
         )
         # if self.rank == 0:
         #     print("  encoding test set...")
-        test_embeddings = self._encode_dataset(
-            model, dataset["test_texts"], batch_size
-        )
+        test_embeddings = self._encode_dataset(model, dataset["test_texts"], batch_size)
 
         X_train_all = train_embeddings.cpu().numpy()
         X_test = test_embeddings.cpu().numpy()
@@ -1079,16 +1150,12 @@ class evaluate_retrieval:
                 train_labels, task_obj.samples_per_label, None
             )
             X_train = X_train_all[sample_indices]
-            y_train = binarizer.transform(
-                [train_labels[idx] for idx in sample_indices]
-            )
+            y_train = binarizer.transform([train_labels[idx] for idx in sample_indices])
 
             y_pred, classifier = _evaluate_classifier(
                 X_train, y_train, X_test, task_obj.evaluator
             )
-            scores_exp = task_obj._calculate_scores(
-                y_test, y_pred, X_test, classifier
-            )
+            scores_exp = task_obj._calculate_scores(y_test, y_pred, X_test, classifier)
             scores.append(scores_exp)
 
             # if self.rank == 0:
@@ -1097,9 +1164,7 @@ class evaluate_retrieval:
             #         f"f1={scores_exp['f1']:.4f}, lrap={scores_exp['lrap']:.4f}"
             #     )
 
-        avg_scores = {
-            k: float(np.mean([s[k] for s in scores])) for k in scores[0]
-        }
+        avg_scores = {k: float(np.mean([s[k] for s in scores])) for k in scores[0]}
         # if self.rank == 0:
         #     print(f"  avg {main_score}: {avg_scores.get(main_score, 'N/A')}")
 
@@ -1151,9 +1216,7 @@ class evaluate_retrieval:
         )
         # if self.rank == 0:
         #     print("  encoding test set...")
-        test_embeddings = self._encode_dataset(
-            model, dataset["test_texts"], batch_size
-        )
+        test_embeddings = self._encode_dataset(model, dataset["test_texts"], batch_size)
 
         X_train_all = train_embeddings.cpu().numpy()
         X_test = test_embeddings.cpu().numpy()
@@ -1163,9 +1226,7 @@ class evaluate_retrieval:
 
         evaluator_model = task_obj.evaluator_model
         if "random_state" in evaluator_model.get_params():
-            evaluator_model = evaluator_model.set_params(
-                random_state=task_obj.seed
-            )
+            evaluator_model = evaluator_model.set_params(random_state=task_obj.seed)
 
         scores = []
         idxs = None
@@ -1302,15 +1363,9 @@ class evaluate_retrieval:
             cosine_spearman_scores.append(
                 spearmanr(human_scores, cosine_pred).statistic
             )
-            cosine_pearson_scores.append(
-                pearsonr(human_scores, cosine_pred).statistic
-            )
-            dot_spearman_scores.append(
-                spearmanr(human_scores, dot_pred).statistic
-            )
-            dot_pearson_scores.append(
-                pearsonr(human_scores, dot_pred).statistic
-            )
+            cosine_pearson_scores.append(pearsonr(human_scores, cosine_pred).statistic)
+            dot_spearman_scores.append(spearmanr(human_scores, dot_pred).statistic)
+            dot_pearson_scores.append(pearsonr(human_scores, dot_pred).statistic)
 
         scores = {
             "cosine_spearman": float(np.mean(cosine_spearman_scores)),
@@ -1356,9 +1411,7 @@ class evaluate_retrieval:
             top_idx = np.argmax(sim, axis=1)
             top_scores = sim[np.arange(len(top_idx)), top_idx]
             for idx, score in zip(top_idx, top_scores):
-                nearest_neighbors.append(
-                    {"corpus_id": int(idx), "score": float(score)}
-                )
+                nearest_neighbors.append({"corpus_id": int(idx), "score": float(score)})
 
         gold = list(zip(range(len(emb1)), range(len(emb1))))
         scores = task_obj._compute_metrics(nearest_neighbors, gold)
@@ -1407,14 +1460,14 @@ class evaluate_retrieval:
 
     def evaluate(self, model, batch_size=64):
         results = defaultdict(list)
-        
+
         n_tasks = len(self.datasets)
         for i, (name, task_data) in enumerate(self.datasets.items()):
-            
+
             dist.barrier()
             start = time.time()
             task_type = task_data["task_type"]
-            if self.rank ==0: 
+            if self.rank == 0:
                 print(f"\nevaluating {name} task {i}/{n_tasks}")
 
             if task_type == "Retrieval":
@@ -1437,17 +1490,13 @@ class evaluate_retrieval:
                     task_data, model, batch_size
                 )
             elif task_type == "Clustering":
-                output_res = self.evaluate_one_clustering(
-                    task_data, model, batch_size
-                )
+                output_res = self.evaluate_one_clustering(task_data, model, batch_size)
             elif task_type == "Classification":
                 output_res = self.evaluate_one_classification(
                     task_data, model, batch_size
                 )
             elif task_type == "STS":
-                output_res = self.evaluate_one_sts(
-                    task_data, model, batch_size
-                )
+                output_res = self.evaluate_one_sts(task_data, model, batch_size)
             elif task_type == "Summarization":
                 output_res = self.evaluate_one_summarization(
                     task_data, model, batch_size

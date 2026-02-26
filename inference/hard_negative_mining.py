@@ -12,13 +12,11 @@ from datasets import Dataset, Features, Value, Sequence
 from tasks.load_datasets import load_task_data
 from tasks import get_task
 from tasks.task_categories import get_category_path
-from utils.sorted_sampler import LenghtSortedSampler
+from utils.dataloader_helpers import LenghtSortedSampler, collate_fn_with_padding
 from pathlib import Path
 import time
-from .helpers import encode, search, collate_fn_with_padding
-from collections import Counter
+from inference.helpers import encode, search
 from dataclasses import dataclass
-from datasets import DatasetInfo
 import json
 from utils.helpers import print_memory_consumed, return_formatted
 
@@ -49,7 +47,7 @@ def estimate_chunk_sizes(query_embeddings, max_corpus_chunk=5 * 10**4):
     dim = query_embeddings.shape[1]
 
     bytes_per_doc = dim * elem_size  # one corpus embedding vector
-    budget = int(0.8* free_mem)
+    budget = int(0.8 * free_mem)
     queries_on_cpu = not query_embeddings.is_cuda
 
     if queries_on_cpu:
@@ -309,6 +307,7 @@ class HardNegativesMiner:
         eot_id=None,
     ):
         from .helpers import last_token_pool as _default_pool
+
         self.world_size = dist.get_world_size()
         self.rank = dist.get_rank()
 
@@ -425,7 +424,7 @@ class HardNegativesMiner:
             )
 
             corpus_ids_set = set(corpus_dataset["id"])
-            
+
             # Check that filtered pairs only contain valid IDs
             assert set(filtered_qrels["query_id"]).issubset(
                 set(unique_queries_dataset["id"])

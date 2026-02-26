@@ -11,52 +11,12 @@ from mteb.types import PromptType
 
 import torch.distributed as dist
 import torch.nn.functional as F
-from utils.sorted_sampler import LenghtSortedSampler
+from utils.dataloader_helpers import LenghtSortedSampler
 import time
 import numpy as np
 from utils.helpers import print_memory_consumed, return_formatted
 
 # ***********************************************************************************************
-
-
-def collate_fn_with_padding(
-    batch, pad_token_id=0, padding_side="right", tokenizer=None, eot_id=None,
-    add_special_tokens=False,
-):
-
-    input_text = [item["prompt"] for item in batch]
-    tokens = tokenizer(
-        input_text,
-        add_special_tokens=add_special_tokens,
-        return_attention_mask=False,
-    )["input_ids"]
-    if eot_id is not None:
-        query_token_ids = [torch.tensor(tok + [eot_id]) for tok in tokens]
-    else:
-        query_token_ids = [torch.tensor(tok) for tok in tokens]
-
-    query_attention_mask = [torch.ones_like(input_ids) for input_ids in query_token_ids]
-
-    # Pad queries and create attention masks
-    query_token_ids_padded = pad_sequence(
-        query_token_ids,
-        batch_first=True,
-        padding_value=pad_token_id,
-        padding_side=padding_side,
-    )
-
-    query_attention_mask = pad_sequence(
-        query_attention_mask,
-        batch_first=True,
-        padding_value=0,
-        padding_side=padding_side,
-    )
-
-    assert query_token_ids_padded.dtype == torch.int64, batch
-    return {
-        "input_ids": query_token_ids_padded,
-        "attention_mask": query_attention_mask,
-    }
 
 
 def last_token_pool(last_hidden_states, attention_mask):
@@ -119,7 +79,7 @@ def search(
     batch_size=64,
     chunk_size=10**4,
     query_chunk_size=None,
-    print_every=2*10**5,
+    print_every=2 * 10**5,
     verbose=False,
     pool_fn=last_token_pool,
 ):
@@ -179,18 +139,19 @@ def search(
     # ========================================================================
 
     # Build mapping from corpus_id to corpus_index (only for positives)
-    
 
     # Build inverted index: positive_corpus_idx -> list of (query_idx, qrel_idx)
     if estract_positives:
-        assert n_positives> 0
+        assert n_positives > 0
         assert qrels_query_ids is not None
         assert qrels_positive_ids is not None
         assert unique_query_ids is not None
         assert unique_query_id_to_idx is not None
         assert corpus_ids is not None
 
-        corpus_id_to_idx = {pid: idx for idx, pid in enumerate(corpus_ids[:n_positives])}
+        corpus_id_to_idx = {
+            pid: idx for idx, pid in enumerate(corpus_ids[:n_positives])
+        }
         positive_to_queries = {}
         for qrel_idx, (qid, pid) in enumerate(zip(qrels_query_ids, qrels_positive_ids)):
             corpus_idx = corpus_id_to_idx.get(pid)
@@ -235,7 +196,7 @@ def search(
         # t0 = time.time()
 
         if (i + 1) % interval == 0:
-            #print(rank)
+            # print(rank)
             if rank == 0:
                 print(
                     f"processed {return_formatted(chunk_idx)}/{return_formatted(N_corpus)} samples in {(time.time()-start)/60:.2f} mins"
@@ -322,7 +283,6 @@ def search(
 
     if rank == 0 and verbose:
         print("\nGathering top scores top indices from all GPUs...")
-
 
     # Distributed merging for top-k results
     if world_size > 1:
@@ -485,7 +445,12 @@ def update_query_positive_score(
 
 @torch.inference_mode()
 def encode(
-    model, loader, world_size, prompt_type, divided_by_chunks=False, stream_to_cpu=False,
+    model,
+    loader,
+    world_size,
+    prompt_type,
+    divided_by_chunks=False,
+    stream_to_cpu=False,
     pool_fn=last_token_pool,
 ):
 

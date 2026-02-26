@@ -8,7 +8,6 @@ from datasets import disable_progress_bars
 
 disable_progress_bars()
 
-
 # EMBEDDINGGEMMA
 TASK_PROMPTS = {
     "document": "title: {title} | text: ",
@@ -24,6 +23,7 @@ TASK_PROMPTS = {
     "STS": "task: sentence similarity | query: ",
     "Summarization": "task: summarization | query: ",
 }
+
 
 def instruction_template_qwen3(prompt_type, task_metadata, text, title="") -> str:
     # text = row["text"]
@@ -49,9 +49,10 @@ def instruction_template_qwen3(prompt_type, task_metadata, text, title="") -> st
 
     return prompt
 
+
 def instruction_template_embeddinggemma(prompt_type, task_metadata, text, title=""):
 
-    #text = row["text"]
+    # text = row["text"]
 
     # we do not use  task specific instruction in embeddinggemma
     if prompt_type == PromptType.query:
@@ -59,21 +60,23 @@ def instruction_template_embeddinggemma(prompt_type, task_metadata, text, title=
         prompt = f"{instruction.strip()} {text.strip()}"
 
     elif prompt_type == PromptType.document:
-        
+
         if len(title) > 0:
             instruction = TASK_PROMPTS["document"].format(title=title)
         else:
             instruction = TASK_PROMPTS["Retrieval-document"]
-        
+
         prompt = f"{instruction.strip()} {text.strip()}"
 
     return prompt
+
 
 def _is_valid_row(text: str) -> bool:
     """Check if a dataset row has non-empty text content."""
     if not text or not text.strip():
         return False
     return True
+
 
 def _remove_long_sequences(rows, tokenizer, max_length):
     """Remove rows where the tokenized prompt exceeds max_length."""
@@ -170,7 +173,12 @@ def _build_prompt(
 
 
 def create_dataset(
-    dataset, task_metadata, instruction_template, tokenizer, prompt_type, max_length
+    dataset,
+    task_metadata,
+    instruction_template,
+    tokenizer,
+    prompt_type,
+    max_length,
 ):
     """Create dataset.
 
@@ -275,8 +283,6 @@ def filter_qrels_by_length(
     if not removed_query_ids and not removed_positive_ids:
         return qrels_dataset
 
-
-
     # --- Previous approach (kept for reference) ---
     # pd.Series(qrels_dataset["query_id"]) first decodes the internal Arrow column
     # into 14M Python string objects, then wraps them in a Series — that
@@ -284,11 +290,15 @@ def filter_qrels_by_length(
     # The fix: operate directly on the underlying Arrow table so the data
     # never leaves C++ memory.
     import pandas as pd
-    
+
     removed_query_set = set(removed_query_ids)
     removed_positive_set = set(removed_positive_ids)
-    query_valid = ~pd.Series(qrels_dataset["query_id"]).isin(removed_query_set).to_numpy()
-    positive_valid = ~pd.Series(qrels_dataset["positive_id"]).isin(removed_positive_set).to_numpy()
+    query_valid = (
+        ~pd.Series(qrels_dataset["query_id"]).isin(removed_query_set).to_numpy()
+    )
+    positive_valid = (
+        ~pd.Series(qrels_dataset["positive_id"]).isin(removed_positive_set).to_numpy()
+    )
     keep_mask = query_valid & positive_valid
     valid_indices = np.where(keep_mask)[0].tolist()
     return qrels_dataset.select(valid_indices)
@@ -299,7 +309,6 @@ def filter_qrels_by_length(
     # table.filter() applies the boolean mask without going through Python.
 
     # SOME ERROR AFFTECT THE BELOW CODE
-
 
     # import pyarrow as pa
     # import pyarrow.compute as pc
@@ -321,7 +330,4 @@ def filter_qrels_by_length(
     # )
     # keep_mask = pc.and_(query_keep, positive_keep)
 
-    #return Dataset(arrow_table.filter(keep_mask))
-
-
-
+    # return Dataset(arrow_table.filter(keep_mask))

@@ -19,14 +19,13 @@ from utils.helpers import print_memory_consumed, save_model, get_cpt_steps
 from utils.gemma3model import get_model
 from utils.optimizer import get_scheduler_optimizer
 from utils.contrastive_datasets import (
-    msmarco_dataset,
-    prepare_msmarco,
-    collate_fn_with_padding,
-    collate_fn_with_padding_joint,
     collate_fn_with_hard_negatives,
     load_hard_negatives_datasets,
     QWEN3_600M_10DATASET_SUBSET,
-    LengthBalancedDistributedSampler,
+)
+from utils.dataloader_helpers import (
+    collate_fn_with_padding,
+    collate_fn_with_hard_negatives,
 )
 from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLossHardNegatives
 from typing import Callable
@@ -65,6 +64,7 @@ TASK_DICT = {
         "SummEvalSummarization.v2",
     ],
 }
+
 
 def get_eval_tasks(eval_set):
     """Return list of MTEB task objects for evaluation."""
