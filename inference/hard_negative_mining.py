@@ -2,7 +2,7 @@ import os
 import torch
 from torch.utils.data import DataLoader
 from mteb.types import PromptType
-from inference.create_datasets import create_dataset, filter_qrels_by_length
+from utils.create_datasets import create_dataset, filter_qrels_by_length
 
 from functools import partial
 import numpy as np

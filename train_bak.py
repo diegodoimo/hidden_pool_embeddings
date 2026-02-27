@@ -18,7 +18,7 @@ from utils.arguments import parse_args
 from utils.helpers import print_memory_consumed, save_model, get_cpt_steps
 from utils.model import get_model
 from utils.optimizer import get_scheduler_optimizer
-from utils.contrastive_datasets import (
+from utils.create_datasets import (
     msmarco_dataset,
     prepare_msmarco,
     collate_fn_with_padding,
@@ -108,7 +108,9 @@ class Trainer:
         if args.out_filename != "":
             filename = "_" + args.out_filename
 
-        eval_steps, _ = get_cpt_steps(int(args.eval_steps), args.max_train_steps, logspace=False)
+        eval_steps, _ = get_cpt_steps(
+            int(args.eval_steps), args.max_train_steps, logspace=False
+        )
         checkpointing_steps, _ = get_cpt_steps(
             args.checkpointing_steps, args.max_train_steps, logspace=False
         )
@@ -178,8 +180,12 @@ class Trainer:
                 # same as before but the gradients will be sync
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 
-                    query_embeddings = self.model(input_ids=query_inputs, attention_mask=query_mask)
-                    doc_embeddings = self.model(input_ids=doc_inputs, attention_mask=doc_mask)
+                    query_embeddings = self.model(
+                        input_ids=query_inputs, attention_mask=query_mask
+                    )
+                    doc_embeddings = self.model(
+                        input_ids=doc_inputs, attention_mask=doc_mask
+                    )
 
                     loss = loss_fn(
                         query_embeddings=query_embeddings,
@@ -189,7 +195,9 @@ class Trainer:
 
                 loss.backward()
                 total_loss += loss.detach().float()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.clip_grad_thresh)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), args.clip_grad_thresh
+                )
                 self.optimizer.step()
                 self.lr_scheduler.step()
                 self.optimizer.zero_grad()
@@ -217,7 +225,9 @@ class Trainer:
                                 Time: {int(total_time//3600)} h {(total_time%3600)/60: .2f} min"
                         )
 
-                        with open(f"{args.output_dir}/train_logs{filename}.json", "w") as f:
+                        with open(
+                            f"{args.output_dir}/train_logs{filename}.json", "w"
+                        ) as f:
                             json.dump(stats, f, indent=4)
 
                 if completed_steps in eval_steps:
@@ -227,7 +237,9 @@ class Trainer:
                     if RANK == 0:
                         print(f"iter {completed_steps}.")
 
-                        with open(f"{args.output_dir}/train_logs{filename}.json", "w") as f:
+                        with open(
+                            f"{args.output_dir}/train_logs{filename}.json", "w"
+                        ) as f:
                             json.dump(stats, f, indent=4)
 
                 if completed_steps in checkpointing_steps and args.save_checkpoint:
@@ -237,7 +249,9 @@ class Trainer:
                     output_dir = f"{len(checkpointing_steps)}ckpts{filename}/step_{completed_steps}"
                     if args.output_dir is not None:
                         output_dir = os.path.join(args.output_dir, output_dir)
-                    save_model(self.model, output_dir, RANK=RANK, dist_type=args.dist_type)
+                    save_model(
+                        self.model, output_dir, RANK=RANK, dist_type=args.dist_type
+                    )
 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 stats = evaluate(self.model, evaluator)

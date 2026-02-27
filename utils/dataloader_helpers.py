@@ -108,7 +108,7 @@ def collate_fn_with_padding(
         add_special_tokens=add_special_tokens,
         return_attention_mask=False,
     )["input_ids"]
-    
+
     if eot_id is not None:
         query_token_ids = [torch.tensor(tok + [eot_id]) for tok in tokens]
     else:
@@ -141,13 +141,14 @@ def collate_fn_with_padding(
 def _str_to_int_id(s: str) -> int:
     """Deterministic hash of a string to a positive 63-bit integer."""
     import hashlib
+
     return int(hashlib.md5(s.encode()).hexdigest()[:15], 16)
 
 
 def collate_fn_with_hard_negatives(
     batch,
     pad_token_id=0,
-    num_hard_negatives=8,
+    num_hard_negatives=7,
     padding_side="right",
     tokenizer=None,
     max_query_len=256,
@@ -173,6 +174,7 @@ def collate_fn_with_hard_negatives(
         add_special_tokens=add_special_tokens,
         return_attention_mask=False,
     )["input_ids"]
+
     if eot_id is not None:
         query_token_ids = [torch.tensor(tok + [eot_id]) for tok in query_encs]
     else:
@@ -197,25 +199,24 @@ def collate_fn_with_hard_negatives(
     all_neg_token_ids = []
     for i, item in enumerate(batch):
         neg_prompts = item["negative_prompts"][:num_hard_negatives]
-        if neg_prompts:
-            neg_encs = tokenizer(
-                neg_prompts,
-                max_length=max_passage_len,
-                truncation=True,
-                padding=False,
-                add_special_tokens=add_special_tokens,
-                return_attention_mask=False,
-            )["input_ids"]
-            if eot_id is not None:
-                neg_ids = [tok + [eot_id] for tok in neg_encs]
-            else:
-                neg_ids = neg_encs
+
+        neg_encs = tokenizer(
+            neg_prompts,
+            max_length=max_passage_len,
+            truncation=True,
+            padding=False,
+            add_special_tokens=add_special_tokens,
+            return_attention_mask=False,
+        )["input_ids"]
+        if eot_id is not None:
+            neg_ids = [tok + [eot_id] for tok in neg_encs]
         else:
-            neg_ids = []
-        pad_filler = pos_encs[i] + ([eot_id] if eot_id is not None else [])
-        while len(neg_ids) < num_hard_negatives:
-            neg_ids.append(pad_filler)
-        neg_ids = neg_ids[:num_hard_negatives]
+            neg_ids = neg_encs
+
+        # pad_filler = pos_encs[i] + ([eot_id] if eot_id is not None else [])
+        # while len(neg_ids) < num_hard_negatives:
+        #     neg_ids.append(pad_filler)
+        # neg_ids = neg_ids[:num_hard_negatives]
         all_neg_token_ids.extend([torch.tensor(n) for n in neg_ids])
 
     # pos_ids from dataset_name and positive_id
@@ -266,5 +267,4 @@ def collate_fn_with_hard_negatives(
         "all_doc_attention_mask": all_doc_mask,
         "pos_ids": pos_ids,
         "num_hard_negatives": num_hard_negatives,
-        "batch_size": batch_size,
     }
