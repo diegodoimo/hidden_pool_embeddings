@@ -9,7 +9,6 @@ from torch.utils.data.sampler import Sampler
 import numpy as np
 from torch.nn.utils.rnn import pad_sequence
 
-__all__ = ["DistributedSampler"]
 
 _T_co = TypeVar("_T_co", covariant=True)
 
@@ -151,8 +150,6 @@ def collate_fn_with_hard_negatives(
     num_hard_negatives=7,
     padding_side="right",
     tokenizer=None,
-    max_query_len=256,
-    max_passage_len=512,
     eot_id=None,
     add_special_tokens=False,
 ):
@@ -162,15 +159,11 @@ def collate_fn_with_hard_negatives(
     padded tensors for queries and all docs (positives + negatives concatenated)
     for a single forward pass.
     """
-    batch_size = len(batch)
 
     # Tokenize queries (like collate_fn_with_padding)
     query_prompts = [item["query_prompt"] for item in batch]
     query_encs = tokenizer(
         query_prompts,
-        max_length=max_query_len,
-        truncation=True,
-        padding=False,
         add_special_tokens=add_special_tokens,
         return_attention_mask=False,
     )["input_ids"]
@@ -184,9 +177,6 @@ def collate_fn_with_hard_negatives(
     pos_prompts = [item["positive_prompt"] for item in batch]
     pos_encs = tokenizer(
         pos_prompts,
-        max_length=max_passage_len,
-        truncation=True,
-        padding=False,
         add_special_tokens=add_special_tokens,
         return_attention_mask=False,
     )["input_ids"]
@@ -202,21 +192,15 @@ def collate_fn_with_hard_negatives(
 
         neg_encs = tokenizer(
             neg_prompts,
-            max_length=max_passage_len,
-            truncation=True,
-            padding=False,
             add_special_tokens=add_special_tokens,
             return_attention_mask=False,
         )["input_ids"]
+
         if eot_id is not None:
             neg_ids = [tok + [eot_id] for tok in neg_encs]
         else:
             neg_ids = neg_encs
 
-        # pad_filler = pos_encs[i] + ([eot_id] if eot_id is not None else [])
-        # while len(neg_ids) < num_hard_negatives:
-        #     neg_ids.append(pad_filler)
-        # neg_ids = neg_ids[:num_hard_negatives]
         all_neg_token_ids.extend([torch.tensor(n) for n in neg_ids])
 
     # pos_ids from dataset_name and positive_id

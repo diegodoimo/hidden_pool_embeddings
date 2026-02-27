@@ -87,19 +87,36 @@ def parse_args():
     parser.add_argument("--cls_query_pooling", action="store_true")
     parser.add_argument("--joint_batch", action="store_true")
 
-    parser.add_argument("--negatives_dir", type=str, default=None,
-        help="Path to directory containing hard negative datasets (e.g. results/datasets_negatives/qwen3_600m)")
-    parser.add_argument("--datasets_subset", type=str, nargs="+", default=None,
+    parser.add_argument(
+        "--negatives_dir",
+        type=str,
+        default=None,
+        help="Path to directory containing hard negative datasets (e.g. results/datasets_negatives/qwen3_600m)",
+    )
+    parser.add_argument(
+        "--datasets_subset",
+        type=str,
+        nargs="+",
+        default=None,
         help="Optional list of dataset names to restrict loading (e.g. retrieval/general_retrieval/msmarco). "
-             "Use with contrastive_datasets.QWEN3_600M_10DATASET_SUBSET for a 10-dataset example.")
+        "Use with contrastive_datasets.QWEN3_600M_10DATASET_SUBSET for a 10-dataset example.",
+    )
     parser.add_argument("--num_hard_negatives", type=int, default=8)
     parser.add_argument("--max_query_len", type=int, default=256)
     parser.add_argument("--max_passage_len", type=int, default=512)
-    parser.add_argument("--instruction_template", type=str, default="qwen3",
-        choices=["qwen3", "embeddinggemma"])
-    parser.add_argument("--eval_set", type=str, default="mteb_eng_v2_20",
+    parser.add_argument(
+        "--instruction_template",
+        type=str,
+        default="qwen3",
+        choices=["qwen3", "embeddinggemma"],
+    )
+    parser.add_argument(
+        "--eval_set",
+        type=str,
+        default="mteb_eng_v2_20",
         choices=["mteb_multilingual_v2", "mteb_eng_v2", "mteb_eng_v2_20"],
-        help="MTEB evaluation set: full eng/multilingual or reduced 20-task subset")
+        help="MTEB evaluation set: full eng/multilingual or reduced 20-task subset",
+    )
 
     args = parser.parse_args()
     return args

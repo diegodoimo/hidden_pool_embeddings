@@ -29,7 +29,7 @@ from safetensors.torch import load_file
 from peft import TaskType
 
 from models.t5gemma2 import T5Gemma2Encoder
-from models.gemma3model import (
+from models.modules import (
     MeanPooling,
     Projection,
     Normalize,
@@ -191,29 +191,35 @@ def load_t5gemma2_encoder(
 # ---------------------------------------------------------------------------
 
 
-def get_model(args, model_config=None):
+def get_model_t5gemma2_model(
+    model_name_or_path,
+    activation_checkpointing,
+    attention_pooling,
+    cls_query_pooling,
+    attention_dim,
+):
     """
     Build a T5Gemma2-based embedding model, mirroring the interface of
     ``gemma3model.get_model``.
     """
     encoder = load_t5gemma2_encoder(
-        model_name_or_path=args.model_name_or_path,
+        model_name_or_path=model_name_or_path,
         torch_dtype=torch.bfloat16,
     )
 
-    if args.activation_checkpointing:
+    if activation_checkpointing:
         encoder.config.use_cache = False
 
-    if args.attention_pooling:
-        if args.cls_query_pooling:
+    if attention_pooling:
+        if cls_query_pooling:
             model = EmbeddingT5Gemma2HiddenPoolCLS(
                 encoder,
-                attention_dim=args.attention_dim,
+                attention_dim=attention_dim,
             )
         else:
             model = EmbeddingT5Gemma2HiddenPool(
                 encoder,
-                attention_dim=args.attention_dim,
+                attention_dim=attention_dim,
             )
     else:
         model = EmbeddingT5Gemma2(encoder)

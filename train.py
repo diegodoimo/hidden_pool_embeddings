@@ -8,78 +8,34 @@ from torch.utils.data import DataLoader
 import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
 from argparse import ArgumentParser
-
-from transformers import GemmaTokenizerFast
-from transformers import AutoConfig
+from transformers import AutoConfig, AutoTokenizer
 from peft import LoraConfig, TaskType, get_peft_model
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from utils.arguments import parse_args
 from utils.helpers import print_memory_consumed, save_model, get_cpt_steps
-from utils.gemma3model import get_model
+from models.t5gemma2model import get_model_t5gemma2_model
 from utils.optimizer import get_scheduler_optimizer
 from utils.create_datasets import (
-    load_hard_negatives_datasets,
-    QWEN3_600M_10DATASET_SUBSET,
+    create_hard_negatives_datasets,
+    QWEN3_600M_DATASET_SUBSET,
+    get_eval_tasks,
 )
 from utils.dataloader_helpers import collate_fn_with_hard_negatives
 from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLossHardNegatives
 from typing import Callable
 from functools import partial
 
-import mteb
 from inference.test_retrieval_ddp_update import evaluate_retrieval
-from inference.create_datasets import (
+from utils.create_datasets import (
     instruction_template_qwen3,
     instruction_template_embeddinggemma,
 )
 from inference.helpers import last_token_pool, mean_pool
 
-# MTEB 20-task subset (mteb_20task_subset_selection.md) - minimizes eval time while preserving category averages
-TASK_DICT = {
-    "mteb_eng_v2_20": [
-        "SCIDOCS",
-        "CQADupstackGamingRetrieval",
-        "CQADupstackUnixRetrieval",
-        "HotpotQAHardNegatives",
-        "TRECCOVID",
-        "TwentyNewsgroupsClustering.v2",
-        "BiorxivClusteringP2P.v2",
-        "MedrxivClusteringS2S.v2",
-        "StackExchangeClustering.v2",
-        "AskUbuntuDupQuestions",
-        "BIOSSES",
-        "STS17",
-        "STS12",
-        "AmazonCounterfactualClassification",
-        "MassiveScenarioClassification",
-        "TweetSentimentExtractionClassification",
-        "MTOPDomainClassification",
-        "TwitterSemEval2015",
-        "SprintDuplicateQuestions",
-        "SummEvalSummarization.v2",
-    ],
-}
-
-
-def get_eval_tasks(eval_set):
-    """Return list of MTEB task objects for evaluation."""
-    if eval_set == "mteb_multilingual_v2":
-        benchmark = mteb.get_benchmark("MTEB(Multilingual, v2)")
-        tasks = [task for task in benchmark.tasks]
-    elif eval_set == "mteb_eng_v2":
-        benchmark = mteb.get_benchmark("MTEB(eng, v2)")
-        tasks = [task for task in benchmark.tasks]
-    elif eval_set == "mteb_eng_v2_20":
-        task_names = TASK_DICT["mteb_eng_v2_20"]
-        tasks = [mteb.get_task(name) for name in task_names]
-    else:
-        raise ValueError(f"Unknown eval_set: {eval_set}")
-    return tasks
-
 
 class Trainer:
-    def __init__(self, args, model_config, len_dataloader):
+    def __init__(self, args, len_dataloader):
 
         self.rank = dist.get_rank()
         self.local_rank = int(os.environ.get("LOCAL_RANK", 0))
@@ -93,7 +49,13 @@ class Trainer:
         if self.rank == 0:
             os.makedirs(args.output_dir, exist_ok=True)
 
-        self.model, task_type, lora_modules = get_model(args, model_config)
+        self.model, task_type, lora_modules = get_model_t5gemma2_model(
+            model_name_or_path=args.model_name_or_path,
+            activation_checkpointing=args.activation_checkpointing,
+            attention_pooling=args.attention_pooling,
+            cls_query_pooling=args.cls_query_pooling,
+            attention_dim=256,
+        )
 
         if args.activation_checkpointing:
             # Disable cache first
@@ -288,7 +250,7 @@ class Trainer:
                             json.dump(stats, f, indent=4)
 
                 if completed_steps in eval_steps:
-                    results, summary = evaluator.evaluate(self.model, batch_size=64)
+                    _, summary = evaluator.evaluate(self.model, batch_size=64)
 
                     if RANK == 0:
                         print(f"iter {completed_steps}.")
@@ -328,13 +290,7 @@ def main():
     args.batch_size = WORLD_SIZE * args.per_device_train_batch_size
     args.gradient_accumulation_steps = 1
 
-    # load embeddinggemma tokenizer. The following should be alredy implemented as defaults
-    tokenizer = GemmaTokenizerFast.from_pretrained(
-        args.model_name_or_path,
-        add_bos_token=True,
-        add_eos_token=True,
-        padding_side="left",
-    )
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
 
     if RANK == 0:
         print("loading train set ")
@@ -344,21 +300,18 @@ def main():
     if args.instruction_template == "embeddinggemma":
         instruction_template = instruction_template_embeddinggemma
 
-    train_dataset = load_hard_negatives_datasets(
+    train_dataset = create_hard_negatives_datasets(
         base_dir=args.negatives_dir,
         num_hard_negatives=args.num_hard_negatives,
         tokenizer=tokenizer,
         instruction_template=instruction_template,
-        max_query_len=args.max_query_len,
-        max_passage_len=args.max_passage_len,
         rank=RANK,
-        datasets_subset=QWEN3_600M_10DATASET_SUBSET,
+        datasets_subset=QWEN3_600M_DATASET_SUBSET,
     )
 
     dist.barrier()
     if RANK == 0:
         print(f"datasets prepared in {time.time()-start:.1f}s")
-        start = time.time()
         print("dataloader preparation")
 
     sampler = DistributedSampler(
@@ -369,21 +322,30 @@ def main():
         seed=42,
     )
 
-    if args.instruction_template == "embeddinggemma":
+    if "qwen3" in args.model_name_or_path.lower():
+        model_name = "qwen3_embedding"
+        instruction_template = instruction_template_qwen3
+        pool_fn = last_token_pool
+        add_special_tokens = False
+        eot_id = tokenizer.pad_token_id
+    elif "embeddinggemma" in args.model_name_or_path.lower():
+        model_name = "embeddinggemma"
+        instruction_template = instruction_template_embeddinggemma
+        pool_fn = mean_pool
         add_special_tokens = True
         eot_id = None
     else:
-        add_special_tokens = False
-        eot_id = tokenizer.pad_token_id
+        raise ValueError(
+            f"Unrecognized model '{args.model_name_or_path}'. "
+            "Expected a path containing 'qwen3' or 'embeddinggemma'."
+        )
 
     collate_fn = partial(
         collate_fn_with_hard_negatives,
         pad_token_id=tokenizer.pad_token_id,
         num_hard_negatives=args.num_hard_negatives,
-        padding_side="left",
+        padding_side="right",
         tokenizer=tokenizer,
-        max_query_len=args.max_query_len,
-        max_passage_len=args.max_passage_len,
         eot_id=eot_id,
         add_special_tokens=add_special_tokens,
     )
@@ -400,11 +362,6 @@ def main():
     # **************************************
 
     eval_tasks = get_eval_tasks(args.eval_set)
-
-    if args.instruction_template == "embeddinggemma":
-        pool_fn = mean_pool
-    else:
-        pool_fn = last_token_pool
 
     evaluator = evaluate_retrieval(
         tasks=eval_tasks,

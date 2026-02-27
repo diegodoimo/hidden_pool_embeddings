@@ -13,11 +13,7 @@ from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 
 from functools import partial
-
-# from inference.create_datasets import (
-#     _build_prompt,
-#     _remove_long_sequences_hard_negatives,
-# )
+import mteb
 
 # taken from embeddinggemma
 # https://github.com/huggingface/transformers/blob/bdee0889714e9cb3e53d3b1b2a626919479d356c/src/transformers/models/gemma3/convert_gemma3_weights.py#L700C1-L715C10
@@ -70,6 +66,49 @@ QWEN3_600M_DATASET_SUBSET = [
     "sts/stsbenchmark",
     "nli/snli",
 ]
+
+
+# MTEB 20-task subset (mteb_20task_subset_selection.md) - minimizes eval time while preserving category averages
+TASK_DICT = {
+    "mteb_eng_v2_20": [
+        "SCIDOCS",
+        "CQADupstackGamingRetrieval",
+        "CQADupstackUnixRetrieval",
+        "HotpotQAHardNegatives",
+        "TRECCOVID",
+        "TwentyNewsgroupsClustering.v2",
+        "BiorxivClusteringP2P.v2",
+        "MedrxivClusteringS2S.v2",
+        "StackExchangeClustering.v2",
+        "AskUbuntuDupQuestions",
+        "BIOSSES",
+        "STS17",
+        "STS12",
+        "AmazonCounterfactualClassification",
+        "MassiveScenarioClassification",
+        "TweetSentimentExtractionClassification",
+        "MTOPDomainClassification",
+        "TwitterSemEval2015",
+        "SprintDuplicateQuestions",
+        "SummEvalSummarization.v2",
+    ],
+}
+
+
+def get_eval_tasks(eval_set):
+    """Return list of MTEB task objects for evaluation."""
+    if eval_set == "mteb_multilingual_v2":
+        benchmark = mteb.get_benchmark("MTEB(Multilingual, v2)")
+        tasks = list(benchmark.tasks)
+    elif eval_set == "mteb_eng_v2":
+        benchmark = mteb.get_benchmark("MTEB(eng, v2)")
+        tasks = list(benchmark.tasks)
+    elif eval_set == "mteb_eng_v2_20":
+        task_names = TASK_DICT["mteb_eng_v2_20"]
+        tasks = [mteb.get_task(name) for name in task_names]
+    else:
+        raise ValueError(f"Unknown eval_set: {eval_set}")
+    return tasks
 
 
 @dataclass
@@ -197,13 +236,6 @@ def instruction_template_embeddinggemma(prompt_type, task_metadata, text, title=
     return prompt
 
 
-def _is_valid_row(text: str) -> bool:
-    """Check if a dataset row has non-empty text content."""
-    if not text or not text.strip():
-        return False
-    return True
-
-
 def filter_qrels_by_length(
     removed_query_ids,
     removed_positive_ids,
@@ -289,61 +321,6 @@ def filter_qrels_by_length(
     # return Dataset(arrow_table.filter(keep_mask))
 
 
-def _add_lengths_and_dataset_name(
-    examples,
-    tokenizer,
-    max_query_len,
-    max_passage_len,
-    num_hard_negatives,
-    dataset_name,
-):
-    """Add dataset_name and token lengths for sorting. Keeps prompts for collate tokenization."""
-    batch_size = len(examples["query_prompt"])
-
-    query_encs = tokenizer(
-        examples["query_prompt"],
-        max_length=max_query_len,
-        truncation=True,
-        padding=False,
-        return_attention_mask=False,
-    )
-    pos_encs = tokenizer(
-        examples["positive_prompt"],
-        max_length=max_passage_len,
-        truncation=True,
-        padding=False,
-        return_attention_mask=False,
-    )
-
-    all_avg_neg_len = []
-    for i in range(batch_size):
-        neg_prompts = examples["negative_prompts"][i][:num_hard_negatives]
-        if neg_prompts:
-            neg_encs = tokenizer(
-                neg_prompts,
-                max_length=max_passage_len,
-                truncation=True,
-                padding=False,
-                return_attention_mask=False,
-            )
-            avg_len = np.mean([len(n) for n in neg_encs["input_ids"]])
-        else:
-            avg_len = len(pos_encs["input_ids"][i])
-        all_avg_neg_len.append(avg_len)
-
-    return {
-        "dataset_name": [dataset_name] * batch_size,
-        "query_len": [len(ids) for ids in query_encs["input_ids"]],
-        "pos_len": [len(ids) for ids in pos_encs["input_ids"]],
-        "total_len": [
-            len(query_encs["input_ids"][i])
-            + len(pos_encs["input_ids"][i])
-            + int(all_avg_neg_len[i] * num_hard_negatives)
-            for i in range(batch_size)
-        ],
-    }
-
-
 def _remove_long_sequences(rows, tokenizer, max_length):
     """Remove rows where the tokenized prompt exceeds max_length."""
 
@@ -392,97 +369,6 @@ def _remove_long_sequences(rows, tokenizer, max_length):
         within_limit = check_indices[~too_long_mask]
         keep_mask[within_limit] = True
 
-    return keep_mask.tolist(), removed_long_ids, removed_empty_ids
-
-
-def _remove_long_sequences_hard_negatives(
-    rows,
-    tokenizer,
-    max_query_len,
-    max_passage_len,
-):
-    """Remove hard-negative rows where any prompt exceeds max length.
-
-    Mirrors the logic of _remove_long_sequences but for (query, positive, negatives)
-    triples. Expects rows with: query_prompt, positive_prompt, negative_prompts,
-    query_text, positive_text, positive_id.
-    """
-    n = len(rows["query_prompt"])
-    ids = np.array(rows["positive_id"])
-    query_texts = np.array(rows["query_text"])
-    positive_texts = np.array(rows["positive_text"])
-
-    # Vectorized empty check (mirror _remove_long_sequences)
-    valid_query = np.array([bool(t and str(t).strip()) for t in query_texts])
-    valid_positive = np.array([bool(t and str(t).strip()) for t in positive_texts])
-    valid_text_mask = valid_query & valid_positive
-    removed_empty_ids = ids[~valid_text_mask].tolist()
-
-    query_prompts = rows["query_prompt"]
-    positive_prompts = rows["positive_prompt"]
-    negative_prompts = rows["negative_prompts"]
-
-    # Flatten all prompts for batch length checking
-    all_prompts = []
-    all_max_lengths = []
-    for i in range(n):
-        all_prompts.append(query_prompts[i])
-        all_max_lengths.append(max_query_len)
-        all_prompts.append(positive_prompts[i])
-        all_max_lengths.append(max_passage_len)
-        for p in negative_prompts[i]:
-            all_prompts.append(p)
-            all_max_lengths.append(max_passage_len)
-
-    # Pre-filter by character length (fast heuristic)
-    char_lengths = np.array([len(p) for p in all_prompts])
-    max_lengths_arr = np.array(all_max_lengths)
-    definitely_valid = char_lengths <= max_lengths_arr
-    needs_tokenization = (char_lengths > max_lengths_arr) & np.ones(
-        len(all_prompts), dtype=bool
-    )
-
-    prompts_to_check = [all_prompts[i] for i in np.where(needs_tokenization)[0]]
-    max_lens_to_check = [all_max_lengths[i] for i in np.where(needs_tokenization)[0]]
-
-    if prompts_to_check:
-        tokenized = tokenizer(
-            prompts_to_check,
-            add_special_tokens=False,
-            return_attention_mask=False,
-            truncation=False,
-        )
-        token_lengths = np.array([len(ids) for ids in tokenized["input_ids"]])
-        too_long_mask = np.array(
-            [tl > ml for tl, ml in zip(token_lengths, max_lens_to_check)]
-        )
-        check_indices = np.where(needs_tokenization)[0]
-        too_long_flat_indices = set(check_indices[too_long_mask])
-    else:
-        too_long_flat_indices = set()
-
-    # Map flat indices back to row indices: [q0, p0, n0_0..n0_k, q1, p1, n1_0..n1_k, ...]
-    flat_idx = 0
-    row_valid = np.ones(n, dtype=bool)
-    for i in range(n):
-        # query
-        if flat_idx in too_long_flat_indices:
-            row_valid[i] = False
-        flat_idx += 1
-        # positive
-        if flat_idx in too_long_flat_indices:
-            row_valid[i] = False
-        flat_idx += 1
-        # negatives
-        for _ in negative_prompts[i]:
-            if flat_idx in too_long_flat_indices:
-                row_valid[i] = False
-            flat_idx += 1
-
-    removed_long_ids = ids[~row_valid].tolist()
-
-    # Final keep mask
-    keep_mask = valid_text_mask & row_valid
     return keep_mask.tolist(), removed_long_ids, removed_empty_ids
 
 
@@ -711,8 +597,6 @@ def create_hard_negatives_datasets(
     num_hard_negatives,
     tokenizer,
     instruction_template,
-    max_query_len=256,
-    max_passage_len=512,
     rank=0,
     datasets_subset: Optional[List[str]] = None,
 ):

@@ -6,10 +6,11 @@ from transformers import AutoConfig
 from peft import TaskType
 
 # modified version with mean pool
-from utils.gemma3textmodel import Gemma3TextModel
+from models.gemma3textmodel import Gemma3TextModel
+from models.modules import MeanPooling, Projection, Normalize
 
 
-def get_model(args, model_config):
+def get_gemma3_model(args, model_config):
 
     config = model_config
     if model_config is None:
@@ -66,177 +67,6 @@ def get_model(args, model_config):
     return model, task_type, lora_modules
 
 
-def gated_attention_forward(
-    query_weight: torch.Tensor,
-    U_states: torch.Tensor,
-    V_states: torch.Tensor,
-    hidden_states: torch.Tensor,
-    scaling: float,
-    dropout: float = 0.0,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Gated attention pooling over a sequence of hidden states.
-
-    Args:
-        query_weight: (1, head_dim) learned query vector per head
-        U_states: (B, num_heads, seq_len, head_dim) - sigmoid gate
-        V_states: (B, num_heads, seq_len, head_dim) - tanh gate
-        hidden_states: (B, num_heads, seq_len, head_dim) - values
-        scaling: attention scaling factor
-        dropout: dropout probability
-
-    Returns:
-        attn_output: (B, seq_len, num_heads * head_dim)
-        attn_weights: (B, num_heads, 1, seq_len)
-    """
-    gating_mechanism = (
-        torch.tanh(V_states.float()) * torch.sigmoid(U_states.float())
-    ).to(hidden_states.dtype)
-
-    # query_weight: (1, head_dim), gating: (B, heads, seq, head_dim)
-    # matmul: (B, heads, 1, head_dim) @ (B, heads, head_dim, seq) -> (B, heads, 1, seq)
-    attn_weights = (
-        torch.matmul(
-            query_weight.unsqueeze(0).unsqueeze(0), gating_mechanism.transpose(2, 3)
-        )
-        * scaling
-    )
-
-    # upcast attention to fp32
-    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
-        hidden_states.dtype
-    )
-    attn_weights = nn.functional.dropout(attn_weights, p=dropout)
-    # (B, heads, 1, seq) @ (B, heads, seq, head_dim) -> (B, heads, 1, head_dim)
-    attn_output = torch.matmul(attn_weights, hidden_states)
-    # (B, heads, 1, head_dim) -> (B, 1, heads * head_dim)
-    attn_output = attn_output.squeeze(2).transpose(1, 2).contiguous()
-    batch_size = attn_output.shape[0]
-    attn_output = attn_output.reshape(batch_size, -1)  # (B, heads * head_dim)
-    return attn_output, attn_weights
-
-
-class GatedAttention(nn.Module):
-    def __init__(
-        self,
-        hidden_size: int,
-        num_attention_heads: int = 1,
-        head_dim: int = None,
-    ):
-        """
-        Gated Attention mechanism for pooling a sequence of hidden-layer
-        representations into a single vector.
-
-        Args:
-            hidden_size (int): The dimension of each hidden representation.
-            num_attention_heads (int): Number of attention heads (default 1).
-            head_dim (int): Per-head dimension.  Defaults to hidden_size // num_attention_heads.
-        """
-        super().__init__()
-
-        self.num_attention_heads = num_attention_heads
-        if head_dim is None:
-            head_dim = hidden_size // num_attention_heads
-        self.head_dim = head_dim
-
-        # Gating projections
-        self.U = nn.Linear(hidden_size, num_attention_heads * head_dim, bias=False)
-        self.V = nn.Linear(hidden_size, num_attention_heads * head_dim, bias=False)
-
-        # Value projection
-        self.W = nn.Linear(hidden_size, num_attention_heads * head_dim, bias=False)
-
-        # Learned query vector per head: (1, head_dim)
-        self.w = nn.Parameter(torch.randn(1, head_dim))
-
-        # Output projection back to hidden_size
-        self.o_proj = nn.Linear(num_attention_heads * head_dim, hidden_size, bias=False)
-
-    def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Pool a sequence of representations into a single vector via gated attention.
-
-        Args:
-            hidden_states: (B, K, D) where K is the number of layer representations.
-
-        Returns:
-            pooled: (B, D) - the aggregated representation.
-            attn_weights: (B, num_heads, 1, K) - attention weights over layers.
-        """
-        input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, self.num_attention_heads, self.head_dim)
-
-        # Project and reshape to (B, num_heads, K, head_dim)
-        U_states = self.U(hidden_states).view(hidden_shape).transpose(1, 2)
-        V_states = self.V(hidden_states).view(hidden_shape).transpose(1, 2)
-        value_states = self.W(hidden_states).view(hidden_shape).transpose(1, 2)
-
-        attn_output, attn_weights = gated_attention_forward(
-            query_weight=self.w,
-            U_states=U_states,
-            V_states=V_states,
-            hidden_states=value_states,
-            scaling=self.head_dim**-0.5,
-            dropout=0.0,
-        )
-
-        # Project back to hidden_size
-        attn_output = self.o_proj(attn_output)  # (B, D)
-        return attn_output, attn_weights
-
-
-class Normalize(nn.Module):
-    """Normalizes embeddings to unit length (L2 norm)"""
-
-    def forward(self, embeddings: Tensor) -> Tensor:
-        return F.normalize(embeddings, p=2, dim=1)
-
-
-class Projection(nn.Module):
-
-    def __init__(self, input_dim, hidden_dim):
-        super().__init__()
-
-        self.up = nn.Linear(in_features=input_dim, out_features=hidden_dim, bias=False)
-        self.down = nn.Linear(
-            in_features=hidden_dim, out_features=input_dim, bias=False
-        )
-
-    def forward(self, hidden_states):
-        hidden_states = self.up(hidden_states)
-        hidden_states = self.down(hidden_states)
-        return hidden_states
-
-
-class MeanPooling(nn.Module):
-    def __init__(self, eps=1e-9):
-        super().__init__()
-        self.eps = eps
-
-    def forward(self, hidden_states, attention_mask):
-        """
-        Perform masked mean pooling over sequence dimension.
-
-        Args:
-            hidden_states: (batch_size, seq_len, hidden_dim)
-            attention_mask: (batch_size, seq_len)
-
-        Returns:
-            pooled: (batch_size, hidden_dim)
-        """
-        # Expand mask to match hidden_states dimensions
-        mask = attention_mask.unsqueeze(-1)  # (B, L, 1)
-
-        # Compute masked sum
-        masked_sum = (hidden_states * mask).sum(dim=1)  # (B, H)
-
-        # Compute mask sum with numerical stability
-        mask_sum = mask.sum(dim=1).clamp(min=self.eps)  # (B, 1)
-
-        # Compute mean
-        return masked_sum / mask_sum
-
-
 def convert_gemma_decoder_to_encoder(
     model_name_or_path,
     config,
@@ -250,7 +80,7 @@ def convert_gemma_decoder_to_encoder(
     """
 
     if verbose:
-        print(f"Loading pretrained decoder model")
+        print("Loading pretrained decoder model")
 
     # 1. Load the pretrained decoder
     decoder = Gemma3TextModel.from_pretrained(

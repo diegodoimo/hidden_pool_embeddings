@@ -23,40 +23,17 @@ from transformers.masking_utils import (
     create_sliding_window_causal_mask,
 )
 
+from models.modules import mean_pool
+
 
 logger = logging.get_logger(__name__)
-################
-
-#### THE BELOW INPLEMENTATION IS FROM TRANSFORMER V4.57.3
-
-#############à##
 
 
-# ***************************************************************
+# ------------------------------------------------------------
 
+# THE BELOW INPLEMENTATION IS FROM TRANSFORMER V4.57.3
 
-def mean_pool(hidden_states, attention_mask):
-    """
-    Perform masked mean pooling over sequence dimension.
-
-    Args:
-        hidden_states: (batch_size, seq_len, hidden_dim)
-        attention_mask: (batch_size, seq_len)
-
-    Returns:
-        pooled: (batch_size, hidden_dim)
-    """
-    # Expand mask to match hidden_states dimensions
-    mask = attention_mask.unsqueeze(-1)  # (B, L, 1)
-
-    # Compute masked sum
-    masked_sum = (hidden_states * mask).sum(dim=1)  # (B, H)
-
-    # Compute mask sum with numerical stability
-    mask_sum = mask.sum(dim=1).clamp(min=1e-9)  # (B, 1)
-
-    # Compute mean
-    return masked_sum / mask_sum
+# ------------------------------------------------------------
 
 
 # @auto_docstring

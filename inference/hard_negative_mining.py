@@ -32,7 +32,7 @@ def estimate_chunk_sizes(query_embeddings, max_corpus_chunk=5 * 10**4):
     """Estimate corpus and query chunk sizes to stay within GPU memory.
 
     When the full query set fits comfortably, *query_chunk_size* equals
-    *N_queries* (i.e. no query chunking).  For very large query sets the
+    *n_queries* (i.e. no query chunking).  For very large query sets the
     function picks a smaller *query_chunk_size* so that the similarity
     matrix ``[query_chunk, corpus_chunk]`` stays within the memory budget.
 
@@ -42,7 +42,7 @@ def estimate_chunk_sizes(query_embeddings, max_corpus_chunk=5 * 10**4):
         (corpus_chunk_size, query_chunk_size)
     """
     free_mem, _ = torch.cuda.mem_get_info()
-    N_queries = query_embeddings.shape[0]
+    n_queries = query_embeddings.shape[0]
     elem_size = query_embeddings.element_size()
     dim = query_embeddings.shape[1]
 
@@ -59,25 +59,25 @@ def estimate_chunk_sizes(query_embeddings, max_corpus_chunk=5 * 10**4):
         # Each query row costs: dim * elem_size (embedding slice) + corpus_chunk * elem_size (score row)
         bytes_per_query_row = (dim + corpus_chunk) * elem_size
         query_chunk = remaining // max(1, bytes_per_query_row)
-        query_chunk = max(10**4, min(int(query_chunk), N_queries))
+        query_chunk = max(10**4, min(int(query_chunk), n_queries))
         return corpus_chunk, query_chunk
 
     # --- queries on GPU ---------------------------------------------------
-    bytes_per_sim_col = N_queries * elem_size  # one column of the full sim matrix
+    bytes_per_sim_col = n_queries * elem_size  # one column of the full sim matrix
 
     # try without query chunking first
     corpus_chunk = budget // max(1, bytes_per_doc + bytes_per_sim_col)
     corpus_chunk = max(1000, min(int(corpus_chunk), max_corpus_chunk))
 
-    total_needed = N_queries * corpus_chunk * elem_size + corpus_chunk * bytes_per_doc
+    total_needed = n_queries * corpus_chunk * elem_size + corpus_chunk * bytes_per_doc
     if total_needed <= budget:
-        return corpus_chunk, N_queries
+        return corpus_chunk, n_queries
 
     # need query chunking
     corpus_chunk = min(max_corpus_chunk, 10**4)
     remaining = budget - corpus_chunk * bytes_per_doc
     query_chunk = remaining // max(1, corpus_chunk * elem_size)
-    query_chunk = max(10**4, min(int(query_chunk), N_queries))
+    query_chunk = max(10**4, min(int(query_chunk), n_queries))
 
     return corpus_chunk, query_chunk
 
