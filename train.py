@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
 from argparse import ArgumentParser
-from transformers import AutoConfig, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer
 from peft import LoraConfig, get_peft_model
 from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -31,11 +31,18 @@ from utils.create_datasets import (
     instruction_template_qwen3,
     instruction_template_embeddinggemma,
 )
-from inference.helpers import last_token_pool, mean_pool
+from models.modules import last_token_pool, add_pooling_layers
 
 
 class Trainer:
-    def __init__(self, args, len_dataloader):
+    def __init__(
+        self,
+        len_dataloader,
+        model,
+        args,
+        task_type=None,
+        lora_modules=None,
+    ):
 
         self.rank = dist.get_rank()
         self.local_rank = int(os.environ.get("LOCAL_RANK", 0))
@@ -43,19 +50,12 @@ class Trainer:
         self.rng = np.random.default_rng(args.seed)
         self.device = torch.device(self.local_rank)
 
+        self.model = model
         assert self.rank == RANK
         assert self.world_size == WORLD_SIZE
 
         if self.rank == 0:
             os.makedirs(args.output_dir, exist_ok=True)
-
-        self.model, task_type, lora_modules = get_model_t5gemma2_model(
-            model_name_or_path=args.model_name_or_path,
-            activation_checkpointing=args.activation_checkpointing,
-            attention_pooling=args.attention_pooling,
-            cls_query_pooling=args.cls_query_pooling,
-            attention_dim=256,
-        )
 
         if args.activation_checkpointing:
             # Disable cache first
@@ -295,19 +295,41 @@ def main():
         print("loading train set ")
         start = time.time()
 
-
-
-    if "qwen3" in args.model_name_or_path.lower():
-        instruction_template = instruction_template_qwen3
-        pool_fn = last_token_pool
-        add_special_tokens = False
-        eot_id = tokenizer.pad_token_id
-    elif "embeddinggemma" in args.model_name_or_path.lower():
-        model_name = "embeddinggemma"
+    if "t5gemma-2" in args.model_name_or_path.lower():
         instruction_template = instruction_template_embeddinggemma
-        pool_fn = mean_pool
         add_special_tokens = True
         eot_id = None
+
+        model, task_type, lora_modules = get_model_t5gemma2_model(
+            model_name_or_path=args.model_name_or_path,
+            activation_checkpointing=args.activation_checkpointing,
+            attention_pooling=args.attention_pooling,
+            cls_query_pooling=args.cls_query_pooling,
+            attention_dim=256,
+        )
+
+        model_name = "t5gemma2"
+        if args.attention_pooling:
+            model_name += "_attn_pooling"
+        if args.cls_query_pooling:
+            model_name += "_cls_query"
+
+    elif "qwen3" in args.model_name_or_path.lower():
+        model_name = "qwen3"
+        instruction_template = instruction_template_qwen3
+        add_special_tokens = False
+        eot_id = tokenizer.pad_token_id
+        model = AutoModel.from_pretrained(
+            args.model_name_or_path,
+            dtype=torch.bfloat16,
+        ).to("cuda")
+        model = add_pooling_layers(model, pool_fn=last_token_pool)
+
+        args.use_lora = False
+        args.eval_only = True
+        if RANK == 0:
+            print("qwen3 model: setting up eval only mode")
+
     else:
         raise ValueError(
             f"Unrecognized model '{args.model_name_or_path}'. "
@@ -364,8 +386,6 @@ def main():
         tokenizer=tokenizer,
         instruction_template=instruction_template,
         padding_side="right",
-        new_inference_mode=True,
-        pool_fn=pool_fn,
         add_special_tokens=add_special_tokens,
         eot_id=eot_id,
     )
@@ -377,22 +397,20 @@ def main():
     if WORLD_SIZE > 1 and args.distributed_loss:
         loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
 
-    if RANK == 0:
-        print("model setup")
-
-    model_config = AutoConfig.from_pretrained(args.model_name_or_path)
-
-    # dist.barrier()
     trainer = Trainer(
         len_dataloader=len(train_loader),
-        model_config=model_config,
+        model=model,
+        task_type=task_type,
+        lora_modules=lora_modules,
         args=args,
     )
 
     if args.eval_only:
         results, summary = evaluator.evaluate(trainer.model, batch_size=32)
         print(results)
-        print(summary)
+        label = arg.eval_set
+        with open(f"{model_name}_{label}_summary.json", "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=4)
     else:
         dist.barrier()
         trainer.train(

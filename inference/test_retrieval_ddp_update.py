@@ -48,7 +48,6 @@ class evaluate_retrieval:
         tasks,
         instruction_template,
         padding_side="right",
-        new_inference_mode=True,
         add_special_tokens=False,
         eot_id=None,
     ):
@@ -56,10 +55,8 @@ class evaluate_retrieval:
         self.world_size = dist.get_world_size()
         self.rank = dist.get_rank()
         self.tokenizer = tokenizer
-        # self.task_names = [task.metadata.name for task in tasks]
         self.tasks = tasks
         self.padding_side = padding_side
-        self.new_inference_mode = new_inference_mode
         self.add_special_tokens = add_special_tokens
         self.eot_id = eot_id
 
@@ -158,48 +155,93 @@ class evaluate_retrieval:
             task.load_data()
             if task_type == "Retrieval":
                 _prepare_retrieval_fn(
-                    task, task_name, eval_split, instruction_template, datasets,
-                    self.tokenizer, self.rank,
+                    task,
+                    task_name,
+                    eval_split,
+                    instruction_template,
+                    datasets,
+                    self.tokenizer,
+                    self.rank,
                 )
             elif task_type == "PairClassification":
                 _prepare_pair_classification_fn(
-                    task, task_name, eval_split, instruction_template, datasets,
-                    self.tokenizer, self.rank,
+                    task,
+                    task_name,
+                    eval_split,
+                    instruction_template,
+                    datasets,
+                    self.tokenizer,
+                    self.rank,
                 )
             elif task_type == "MultilabelClassification":
                 _prepare_multilabel_classification_fn(
-                    task, task_name, eval_split, instruction_template, datasets,
-                    self.tokenizer, self.rank,
+                    task,
+                    task_name,
+                    eval_split,
+                    instruction_template,
+                    datasets,
+                    self.tokenizer,
+                    self.rank,
                 )
             elif task_type == "Clustering":
                 _prepare_clustering_fn(
-                    task, task_name, eval_split, instruction_template, datasets,
-                    self.tokenizer, self.rank,
+                    task,
+                    task_name,
+                    eval_split,
+                    instruction_template,
+                    datasets,
+                    self.tokenizer,
+                    self.rank,
                 )
             elif task_type == "Classification":
                 _prepare_classification_fn(
-                    task, task_name, eval_split, instruction_template, datasets,
-                    self.tokenizer, self.rank,
+                    task,
+                    task_name,
+                    eval_split,
+                    instruction_template,
+                    datasets,
+                    self.tokenizer,
+                    self.rank,
                 )
             elif task_type == "STS":
                 _prepare_sts_fn(
-                    task, task_name, eval_split, instruction_template, datasets,
-                    self.tokenizer, self.rank,
+                    task,
+                    task_name,
+                    eval_split,
+                    instruction_template,
+                    datasets,
+                    self.tokenizer,
+                    self.rank,
                 )
             elif task_type == "Summarization":
                 _prepare_summarization_fn(
-                    task, task_name, eval_split, instruction_template, datasets,
-                    self.tokenizer, self.rank,
+                    task,
+                    task_name,
+                    eval_split,
+                    instruction_template,
+                    datasets,
+                    self.tokenizer,
+                    self.rank,
                 )
             elif task_type == "BitextMining":
                 _prepare_bitext_mining_fn(
-                    task, task_name, eval_split, instruction_template, datasets,
-                    self.tokenizer, self.rank,
+                    task,
+                    task_name,
+                    eval_split,
+                    instruction_template,
+                    datasets,
+                    self.tokenizer,
+                    self.rank,
                 )
             elif task_type == "Reranking":
                 _prepare_retrieval_fn(
-                    task, task_name, eval_split, instruction_template, datasets,
-                    self.tokenizer, self.rank,
+                    task,
+                    task_name,
+                    eval_split,
+                    instruction_template,
+                    datasets,
+                    self.tokenizer,
+                    self.rank,
                 )
             else:
                 if self.rank == 0:
@@ -253,7 +295,6 @@ class evaluate_retrieval:
             add_special_tokens=self.add_special_tokens,
             world_size=self.world_size,
             rank=self.rank,
-            new_inference_mode=self.new_inference_mode,
         )
 
         n_tasks = len(self.datasets)
@@ -266,9 +307,7 @@ class evaluate_retrieval:
                 print(f"\nevaluating {name} task {i}/{n_tasks}")
 
             if task_type == "Retrieval":
-                output_res = evaluate_one_fn(
-                    task_data, model, batch_size, eval_context
-                )
+                output_res = evaluate_one_fn(task_data, model, batch_size, eval_context)
             elif task_type == "PairClassification":
                 output_res = evaluate_one_pair_classification_fn(
                     task_data, model, batch_size, eval_context
@@ -298,9 +337,7 @@ class evaluate_retrieval:
                     task_data, model, batch_size, eval_context
                 )
             elif task_type == "Reranking":
-                output_res = evaluate_one_fn(
-                    task_data, model, batch_size, eval_context
-                )
+                output_res = evaluate_one_fn(task_data, model, batch_size, eval_context)
             else:
                 if self.rank == 0:
                     print(f"  skipping unsupported task type: {task_type}")

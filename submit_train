@@ -6,7 +6,7 @@
 #SBATCH --time=24:00:00            
 #SBATCH --ntasks-per-node=1       
 #SBATCH --cpus-per-task=16  #32          
-#SBATCH --mem=200G          #it is intended per node          
+#SBATCH --mem=100G          #it is intended per node          
 #SBATCH --job-name=test
 #SBATCH --gres=gpu:H100:2   #it is intended per node
 
@@ -39,7 +39,7 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train.py \
-    --model_name_or_path google/t5gemma-2-270m-270m  \
+    --model_name_or_path Qwen/Qwen3-Embedding-0.6B \
     --attention_dim 256 \
     --num_workers 16 \
     --per_device_train_batch_size 128 \
@@ -54,9 +54,11 @@ torchrun \
     --eval_steps 7 \
     --output_dir "./results/train" \
     --measure_baselines \
+    --eval_only \
     #--distributed_loss \
     # --use_lora \
     # --lora_rank 128 \
     # --lora_alpha 256 \
     # --lora_dropout 0.1 \
     #--activation_checkpointing \
+    #--model_name_or_path google/t5gemma-2-270m-270m  \
