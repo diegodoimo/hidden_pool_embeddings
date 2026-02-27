@@ -12,6 +12,7 @@ from inference.create_datasets import (
     instruction_template_embeddinggemma,
 )
 from inference.helpers import last_token_pool, mean_pool
+from models.modules import add_pooling_layers
 import mteb
 from datetime import timedelta
 
@@ -90,7 +91,8 @@ def main():
 
     model = DDP(model, device_ids=[LOCAL_RANK])
     model = torch.compile(model)
-
+    model = add_pooling_layers(model, pool_fn)
+    
     results, summary = retrieval_evaluator.evaluate(model, batch_size=64)
 
     if rank == 0:

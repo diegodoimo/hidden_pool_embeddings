@@ -80,7 +80,6 @@ def search(
     query_chunk_size=None,
     print_every=2 * 10**5,
     verbose=False,
-    pool_fn=last_token_pool,
 ):
     """
     Search for top-k documents and compute query-positive scores.
@@ -231,7 +230,6 @@ def search(
             prompt_type=PromptType.document,
             world_size=world_size,
             divided_by_chunks=True,
-            pool_fn=pool_fn,
         )
 
         # torch.cuda.synchronize()
@@ -450,7 +448,6 @@ def encode(
     prompt_type,
     divided_by_chunks=False,
     stream_to_cpu=False,
-    pool_fn=last_token_pool,
 ):
 
     # distributed sampler will duplicate examples at the end
@@ -469,15 +466,11 @@ def encode(
         batch = {key: val.to(model.device) for key, val in batch.items()}
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 
-            out_embeddings = model(
+            batch_embeddings = model(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
             )
-            out_embeddings = pool_fn(
-                out_embeddings.last_hidden_state,
-                batch["attention_mask"],
-            )
-            batch_embeddings = F.normalize(out_embeddings, p=2, dim=1)
+
         if stream_to_cpu:
             embeddings.append(batch_embeddings.float().cpu())
         else:

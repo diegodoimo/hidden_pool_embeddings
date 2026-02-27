@@ -225,6 +225,7 @@ def main():
     # ddp is only needed for training here we are adding gradient buffers and the memory occupied with doubl
     # model = DDP(model, device_ids=[dist.get_rank()])
     model = torch.compile(model)
+    model = add_pooling_layers(model, pool_fn)
 
     if RANK == 0:
         print("model wrapped in DDP and compile")

@@ -1,3 +1,8 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch import Tensor
+
 
 def mean_pool(hidden_states, attention_mask):
     """
@@ -22,6 +27,31 @@ def mean_pool(hidden_states, attention_mask):
     # Compute mean
     return masked_sum / mask_sum
 
+
+class EncoderWithPooling(nn.Module):
+    """
+    Wraps an encoder model to perform pooling and L2 normalization in the forward pass.
+    The wrapped model's forward should return an object with `last_hidden_state` (e.g. BaseModelOutput).
+    """
+
+    def __init__(self, model, pool_fn):
+        super().__init__()
+        self.model = model
+        self.pool_fn = pool_fn
+
+    @property
+    def device(self):
+        return next(self.model.parameters()).device
+
+    def forward(self, input_ids, attention_mask, **kwargs):
+        output = self.model(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+        pooled = self.pool_fn(output.last_hidden_state, attention_mask)
+        return F.normalize(pooled, p=2, dim=1)
+
+
+def add_pooling_layers(model, pool_fn):
+    """Wrap a model so its forward pass includes pooling and L2 normalization."""
+    return EncoderWithPooling(model, pool_fn)
 
 
 class Normalize(nn.Module):

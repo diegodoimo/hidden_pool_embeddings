@@ -51,7 +51,6 @@ class evaluate_retrieval:
         instruction_template,
         padding_side="right",
         new_inference_mode=True,
-        pool_fn=last_token_pool,
         add_special_tokens=False,
         eot_id=None,
     ):
@@ -63,7 +62,6 @@ class evaluate_retrieval:
         self.tasks = tasks
         self.padding_side = padding_side
         self.new_inference_mode = new_inference_mode
-        self.pool_fn = pool_fn
         self.add_special_tokens = add_special_tokens
         self.eot_id = eot_id
 
@@ -117,7 +115,7 @@ class evaluate_retrieval:
         return max_rows, total_rows, len(configs), max_info
 
     def prepare_datasets(
-        self, instruction_template, max_passage_len=4096, max_samples=500_000
+        self, instruction_template, max_passage_len=4096, max_samples=500_000,
     ):
 
         datasets = {}
@@ -927,7 +925,6 @@ class evaluate_retrieval:
             loader,
             prompt_type=PromptType.query,
             world_size=self.world_size,
-            pool_fn=self.pool_fn,
         )
         dist.barrier()
         # if self.rank == 0:
@@ -998,7 +995,6 @@ class evaluate_retrieval:
             queries_loader,
             prompt_type=PromptType.query,
             world_size=self.world_size,
-            pool_fn=self.pool_fn,
         )
         dist.barrier()
 
@@ -1022,7 +1018,6 @@ class evaluate_retrieval:
             batch_size=batch_size,
             estract_positives=False,
             chunk_size=chunk_size,
-            pool_fn=self.pool_fn,
         )
 
         dist.barrier()

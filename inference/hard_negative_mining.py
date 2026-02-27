@@ -302,7 +302,6 @@ class HardNegativesMiner:
         instruction_template,
         padding_side="right",
         max_length=512,
-        pool_fn=None,
         add_special_tokens=False,
         eot_id=None,
     ):
@@ -315,7 +314,6 @@ class HardNegativesMiner:
         self.task_names = task_names
         self.padding_side = padding_side
         self.max_length = max_length
-        self.pool_fn = pool_fn if pool_fn is not None else _default_pool
         self.add_special_tokens = add_special_tokens
         self.eot_id = eot_id
 
@@ -533,7 +531,6 @@ class HardNegativesMiner:
             prompt_type=PromptType.query,
             world_size=self.world_size,
             stream_to_cpu=stream_to_cpu,
-            pool_fn=self.pool_fn,
         )
 
         dist.barrier()
@@ -586,7 +583,6 @@ class HardNegativesMiner:
             batch_size=batch_size,
             chunk_size=chunk_size,
             query_chunk_size=query_chunk_size,
-            pool_fn=self.pool_fn,
         )
 
         del query_embeddings
