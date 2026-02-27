@@ -1,29 +1,9 @@
 import os
-import mteb
-import torch
-from torch.utils.data import DataLoader
-from mteb.abstasks.retrieval import _filter_queries_without_positives
-from mteb.types import PromptType
-
-from functools import partial
 import torch.distributed as dist
-from mteb._evaluators.retrieval_metrics import calculate_retrieval_scores
-import torch.nn.functional as F
-from mteb._evaluators.retrieval_metrics import make_score_dict
-from utils.dataloader_helpers import LenghtSortedSampler
-from inference.helpers import (
-    search,
-    encode,
-    abs_task_preprocessing,
-)
-
-from utils.dataloader_helpers import collate_fn_with_padding
-from inference.hard_negative_mining import estimate_chunk_sizes
-from utils.create_datasets import create_dataset
-from utils.helpers import _print_ram
 from collections import defaultdict
 import time
-from datasets import Dataset as HFDataset
+
+from utils.helpers import _print_ram
 
 from inference.evaluate.eval_clustering import (
     _prepare_clustering as _prepare_clustering_fn,
@@ -57,6 +37,7 @@ from inference.evaluate.eval_bitext_mining import (
     _prepare_bitext_mining as _prepare_bitext_mining_fn,
     evaluate_one_bitext_mining as evaluate_one_bitext_mining_fn,
 )
+from inference.evaluate.shared import EvalContext
 
 
 class evaluate_retrieval:
@@ -177,39 +158,48 @@ class evaluate_retrieval:
             task.load_data()
             if task_type == "Retrieval":
                 _prepare_retrieval_fn(
-                    self, task, task_name, eval_split, instruction_template, datasets
+                    task, task_name, eval_split, instruction_template, datasets,
+                    self.tokenizer, self.rank,
                 )
             elif task_type == "PairClassification":
                 _prepare_pair_classification_fn(
-                    self, task, task_name, eval_split, instruction_template, datasets
+                    task, task_name, eval_split, instruction_template, datasets,
+                    self.tokenizer, self.rank,
                 )
             elif task_type == "MultilabelClassification":
                 _prepare_multilabel_classification_fn(
-                    self, task, task_name, eval_split, instruction_template, datasets
+                    task, task_name, eval_split, instruction_template, datasets,
+                    self.tokenizer, self.rank,
                 )
             elif task_type == "Clustering":
                 _prepare_clustering_fn(
-                    self, task, task_name, eval_split, instruction_template, datasets
+                    task, task_name, eval_split, instruction_template, datasets,
+                    self.tokenizer, self.rank,
                 )
             elif task_type == "Classification":
                 _prepare_classification_fn(
-                    self, task, task_name, eval_split, instruction_template, datasets
+                    task, task_name, eval_split, instruction_template, datasets,
+                    self.tokenizer, self.rank,
                 )
             elif task_type == "STS":
                 _prepare_sts_fn(
-                    self, task, task_name, eval_split, instruction_template, datasets
+                    task, task_name, eval_split, instruction_template, datasets,
+                    self.tokenizer, self.rank,
                 )
             elif task_type == "Summarization":
                 _prepare_summarization_fn(
-                    self, task, task_name, eval_split, instruction_template, datasets
+                    task, task_name, eval_split, instruction_template, datasets,
+                    self.tokenizer, self.rank,
                 )
             elif task_type == "BitextMining":
                 _prepare_bitext_mining_fn(
-                    self, task, task_name, eval_split, instruction_template, datasets
+                    task, task_name, eval_split, instruction_template, datasets,
+                    self.tokenizer, self.rank,
                 )
             elif task_type == "Reranking":
                 _prepare_retrieval_fn(
-                    self, task, task_name, eval_split, instruction_template, datasets
+                    task, task_name, eval_split, instruction_template, datasets,
+                    self.tokenizer, self.rank,
                 )
             else:
                 if self.rank == 0:
@@ -217,84 +207,6 @@ class evaluate_retrieval:
             _print_ram(label="dataset loaded", rank=self.rank)
 
         return datasets
-
-    def _prepare_text_dataset(
-        self, texts, task_metadata, instruction_template, max_length=8192
-    ):
-        """Create a prompt-augmented HF dataset from raw texts for encoding.
-
-        Returns:
-            (ds, removed_indices): the filtered dataset and the set of original
-            integer positions that were removed (too long or empty).
-        """
-        dataset = HFDataset.from_dict(
-            {"id": [str(i) for i in range(len(texts))], "text": texts}
-        )
-        ds = create_dataset(
-            dataset=dataset,
-            task_metadata=task_metadata,
-            instruction_template=instruction_template,
-            tokenizer=self.tokenizer,
-            prompt_type=PromptType.query,
-            max_length=max_length,
-        )
-        removed_indices = (
-            set(int(x) for x in ds.removed_ids) if ds.removed_ids else set()
-        )
-        if removed_indices and self.rank == 0:
-            print(
-                f"  WARNING: {len(removed_indices)}/{len(texts)} texts filtered "
-                f"(>{max_length} tokens or empty)"
-            )
-        return ds, removed_indices
-
-    @staticmethod
-    def _build_index_remap(n_original, removed_set):
-        """Build old-index -> new-index mapping after removing items."""
-        old_to_new = {}
-        new_idx = 0
-        for old_idx in range(n_original):
-            if old_idx not in removed_set:
-                old_to_new[old_idx] = new_idx
-                new_idx += 1
-        return old_to_new
-
-    # -------------------------------------------------------------------------
-    # Encoding helpers
-    # -------------------------------------------------------------------------
-
-    def _encode_dataset(self, model, dataset, batch_size):
-        """Encode a prepared dataset using the DDP-aware pipeline."""
-        collate_fn = partial(
-            collate_fn_with_padding,
-            pad_token_id=self.tokenizer.pad_token_id,
-            padding_side=self.padding_side,
-            tokenizer=self.tokenizer,
-            eot_id=self.eot_id,
-            add_special_tokens=self.add_special_tokens,
-        )
-        sampler = LenghtSortedSampler(dataset)
-        loader = DataLoader(
-            dataset,
-            sampler=sampler,
-            batch_size=batch_size,
-            num_workers=max(1, len(os.sched_getaffinity(0)) // 2 - 2),
-            pin_memory=True,
-            collate_fn=collate_fn,
-        )
-        dist.barrier()
-        embeddings = encode(
-            model,
-            loader,
-            prompt_type=PromptType.query,
-            world_size=self.world_size,
-        )
-        dist.barrier()
-        return embeddings
-
-    # -------------------------------------------------------------------------
-    # Main evaluation loop
-    # -------------------------------------------------------------------------
 
     @staticmethod
     def compute_averages(results):
@@ -334,6 +246,15 @@ class evaluate_retrieval:
 
     def evaluate(self, model, batch_size=64):
         results = defaultdict(list)
+        eval_context = EvalContext(
+            tokenizer=self.tokenizer,
+            padding_side=self.padding_side,
+            eot_id=self.eot_id,
+            add_special_tokens=self.add_special_tokens,
+            world_size=self.world_size,
+            rank=self.rank,
+            new_inference_mode=self.new_inference_mode,
+        )
 
         n_tasks = len(self.datasets)
         for i, (name, task_data) in enumerate(self.datasets.items()):
@@ -346,53 +267,39 @@ class evaluate_retrieval:
 
             if task_type == "Retrieval":
                 output_res = evaluate_one_fn(
-                    self,
-                    dataset=task_data["dataset"],
-                    task_specific_scores=task_data["task_specific_scores"],
-                    ignore_identical_ids=task_data["ignore_identical_ids"],
-                    hf_split=task_data["hf_split"],
-                    hf_subset=task_data["hf_subset"],
-                    main_score=task_data["main_score"],
-                    model=model,
-                    batch_size=batch_size,
+                    task_data, model, batch_size, eval_context
                 )
             elif task_type == "PairClassification":
                 output_res = evaluate_one_pair_classification_fn(
-                    self, task_data, model, batch_size
+                    task_data, model, batch_size, eval_context
                 )
             elif task_type == "MultilabelClassification":
                 output_res = evaluate_one_multilabel_classification_fn(
-                    self, task_data, model, batch_size
+                    task_data, model, batch_size, eval_context
                 )
             elif task_type == "Clustering":
                 output_res = evaluate_one_clustering_fn(
-                    self, task_data, model, batch_size
+                    task_data, model, batch_size, eval_context
                 )
             elif task_type == "Classification":
                 output_res = evaluate_one_classification_fn(
-                    self, task_data, model, batch_size
+                    task_data, model, batch_size, eval_context
                 )
             elif task_type == "STS":
-                output_res = evaluate_one_sts_fn(self, task_data, model, batch_size)
+                output_res = evaluate_one_sts_fn(
+                    task_data, model, batch_size, eval_context
+                )
             elif task_type == "Summarization":
                 output_res = evaluate_one_summarization_fn(
-                    self, task_data, model, batch_size
+                    task_data, model, batch_size, eval_context
                 )
             elif task_type == "BitextMining":
                 output_res = evaluate_one_bitext_mining_fn(
-                    self, task_data, model, batch_size
+                    task_data, model, batch_size, eval_context
                 )
             elif task_type == "Reranking":
                 output_res = evaluate_one_fn(
-                    self,
-                    dataset=task_data["dataset"],
-                    task_specific_scores=task_data["task_specific_scores"],
-                    ignore_identical_ids=task_data["ignore_identical_ids"],
-                    hf_split=task_data["hf_split"],
-                    hf_subset=task_data["hf_subset"],
-                    main_score=task_data["main_score"],
-                    model=model,
-                    batch_size=batch_size,
+                    task_data, model, batch_size, eval_context
                 )
             else:
                 if self.rank == 0:

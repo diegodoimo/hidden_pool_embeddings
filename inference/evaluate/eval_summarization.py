@@ -3,10 +3,17 @@ import numpy as np
 from scipy.stats import pearsonr, spearmanr
 
 from inference.helpers import abs_task_preprocessing
+from inference.evaluate.shared import (
+    encode_dataset,
+    make_collate_fn,
+    prepare_text_dataset,
+    build_index_remap,
+    EvalContext,
+)
 
 
 def _prepare_summarization(
-    self, task, task_name, eval_split, instruction_template, datasets
+    task, task_name, eval_split, instruction_template, datasets, tokenizer, rank
 ):
     subset_list = abs_task_preprocessing(task, eval_split)
 
@@ -44,7 +51,7 @@ def _prepare_summarization(
         human_indices = [text_to_idx[hash(s)] for s in all_human]
         machine_indices = [text_to_idx[hash(s)] for s in all_machine]
 
-        if self.rank == 0:
+        if rank == 0:
             n_dedup = len(all_texts) - len(unique_texts)
             print(
                 f"  [{hf_subset}] {n_dedup}/{len(all_texts)} duplicate summaries deduplicated"
@@ -55,12 +62,12 @@ def _prepare_summarization(
                 f"{sum(machine_lens)} machine summaries"
             )
 
-        texts_ds, removed = self._prepare_text_dataset(
-            unique_texts, task.metadata, instruction_template
+        texts_ds, removed = prepare_text_dataset(
+            unique_texts, task.metadata, instruction_template, tokenizer, rank
         )
 
         if removed:
-            old_to_new = self._build_index_remap(len(unique_texts), removed)
+            old_to_new = build_index_remap(len(unique_texts), removed)
             new_human_indices = []
             new_machine_indices = []
             new_human_lens = []
@@ -120,12 +127,18 @@ def _prepare_summarization(
 
 
 @torch.inference_mode()
-def evaluate_one_summarization(self, task_data, model, batch_size):
+def evaluate_one_summarization(task_data, model, batch_size, eval_context: EvalContext):
     model = model.eval()
     dataset = task_data["dataset"]
     main_score = task_data["main_score"]
 
-    embeddings = self._encode_dataset(model, dataset["texts"], batch_size)
+    collate_fn = make_collate_fn(
+        eval_context.tokenizer,
+        eval_context.padding_side,
+        eval_context.eot_id,
+        eval_context.add_special_tokens,
+    )
+    embeddings = encode_dataset(model, dataset["texts"], batch_size, collate_fn)
     embeddings_np = embeddings.cpu().numpy()
 
     human_indices = dataset["human_indices"]

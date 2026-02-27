@@ -5,6 +5,9 @@ every ``eval_*.py`` module can import them without depending on a class
 instance.
 """
 
+from dataclasses import dataclass
+from typing import Any, Optional
+
 import os
 import torch
 import torch.distributed as dist
@@ -16,6 +19,28 @@ from datasets import Dataset as HFDataset
 from inference.helpers import encode
 from utils.create_datasets import create_dataset
 from utils.dataloader_helpers import collate_fn_with_padding, LenghtSortedSampler
+
+
+# ---------------------------------------------------------------------------
+# Eval context
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class EvalContext:
+    """Context passed to evaluate_one_* functions instead of self.
+
+    Carries tokenizer, encoding params, and distributed info needed by
+    encode_dataset and collate_fn construction.
+    """
+
+    tokenizer: Any
+    padding_side: str = "right"
+    eot_id: Optional[int] = None
+    add_special_tokens: bool = False
+    world_size: int = 1
+    rank: int = 0
+    new_inference_mode: bool = True
 
 
 # ---------------------------------------------------------------------------

@@ -3,10 +3,16 @@ import torch
 import numpy as np
 import itertools
 from inference.helpers import abs_task_preprocessing
+from inference.evaluate.shared import (
+    encode_dataset,
+    make_collate_fn,
+    prepare_text_dataset,
+    EvalContext,
+)
 
 
 def _prepare_clustering(
-    self, task, task_name, eval_split, instruction_template, datasets
+    task, task_name, eval_split, instruction_template, datasets, tokenizer, rank
 ):
     subset_list = abs_task_preprocessing(task, eval_split)
 
@@ -39,11 +45,11 @@ def _prepare_clustering(
             sentences = [sentences[i] for i in indices]
             labels = [labels[i] for i in indices]
 
-        if self.rank == 0:
+        if rank == 0:
             print(f"  [{hf_subset}] {len(sentences)} samples for clustering")
 
-        texts_ds, removed = self._prepare_text_dataset(
-            sentences, task.metadata, instruction_template
+        texts_ds, removed = prepare_text_dataset(
+            sentences, task.metadata, instruction_template, tokenizer, rank
         )
 
         if removed:
@@ -64,13 +70,19 @@ def _prepare_clustering(
 
 
 @torch.inference_mode()
-def evaluate_one_clustering(self, task_data, model, batch_size):
+def evaluate_one_clustering(task_data, model, batch_size, eval_context: EvalContext):
     model = model.eval()
     dataset = task_data["dataset"]
     task_obj = task_data["task_obj"]
     main_score = task_data["main_score"]
 
-    embeddings = self._encode_dataset(model, dataset["texts"], batch_size)
+    collate_fn = make_collate_fn(
+        eval_context.tokenizer,
+        eval_context.padding_side,
+        eval_context.eot_id,
+        eval_context.add_special_tokens,
+    )
+    embeddings = encode_dataset(model, dataset["texts"], batch_size, collate_fn)
     embeddings_np = embeddings.cpu().numpy()
 
     labels = dataset["labels"]

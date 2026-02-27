@@ -7,9 +7,16 @@ from datasets import DatasetDict
 from sklearn.preprocessing import MultiLabelBinarizer
 from mteb.abstasks.multilabel_classification import _evaluate_classifier
 
+from inference.evaluate.shared import (
+    encode_dataset,
+    make_collate_fn,
+    prepare_text_dataset,
+    EvalContext,
+)
+
 
 def _prepare_multilabel_classification(
-    self, task, task_name, eval_split, instruction_template, datasets
+    task, task_name, eval_split, instruction_template, datasets, tokenizer, rank
 ):
     task.dataset = cast(dict[HFSubset, DatasetDict], task.dataset)
     hf_subsets = copy(task.hf_subsets) if task.hf_subsets else list(task.dataset.keys())
@@ -36,7 +43,7 @@ def _prepare_multilabel_classification(
                 )
                 test_data = split_ds["test"]
         except ValueError:
-            if self.rank == 0:
+            if rank == 0:
                 print(
                     f"  [{hf_subset}] Could not stratify test subsample, using full test set"
                 )
@@ -46,16 +53,16 @@ def _prepare_multilabel_classification(
         train_labels = list(train_data[label_col])
         test_labels = list(test_data[label_col])
 
-        if self.rank == 0:
+        if rank == 0:
             print(
                 f"  [{hf_subset}] train: {len(train_texts)}, test: {len(test_texts)} samples"
             )
 
-        train_ds, train_removed = self._prepare_text_dataset(
-            train_texts, task.metadata, instruction_template
+        train_ds, train_removed = prepare_text_dataset(
+            train_texts, task.metadata, instruction_template, tokenizer, rank
         )
-        test_ds, test_removed = self._prepare_text_dataset(
-            test_texts, task.metadata, instruction_template
+        test_ds, test_removed = prepare_text_dataset(
+            test_texts, task.metadata, instruction_template, tokenizer, rank
         )
 
         if train_removed:
@@ -84,14 +91,26 @@ def _prepare_multilabel_classification(
 
 
 @torch.inference_mode()
-def evaluate_one_multilabel_classification(self, task_data, model, batch_size):
+def evaluate_one_multilabel_classification(
+    task_data, model, batch_size, eval_context: EvalContext
+):
     model = model.eval()
     dataset = task_data["dataset"]
     task_obj = task_data["task_obj"]
     main_score = task_data["main_score"]
 
-    train_embeddings = self._encode_dataset(model, dataset["train_texts"], batch_size)
-    test_embeddings = self._encode_dataset(model, dataset["test_texts"], batch_size)
+    collate_fn = make_collate_fn(
+        eval_context.tokenizer,
+        eval_context.padding_side,
+        eval_context.eot_id,
+        eval_context.add_special_tokens,
+    )
+    train_embeddings = encode_dataset(
+        model, dataset["train_texts"], batch_size, collate_fn
+    )
+    test_embeddings = encode_dataset(
+        model, dataset["test_texts"], batch_size, collate_fn
+    )
 
     X_train_all = train_embeddings.cpu().numpy()
     X_test = test_embeddings.cpu().numpy()

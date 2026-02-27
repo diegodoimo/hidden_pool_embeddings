@@ -7,9 +7,18 @@ from sklearn.metrics.pairwise import (
 )
 
 from inference.helpers import abs_task_preprocessing
+from inference.evaluate.shared import (
+    encode_dataset,
+    make_collate_fn,
+    prepare_text_dataset,
+    build_index_remap,
+    EvalContext,
+)
 
 
-def _prepare_sts(self, task, task_name, eval_split, instruction_template, datasets):
+def _prepare_sts(
+    task, task_name, eval_split, instruction_template, datasets, tokenizer, rank
+):
     subset_list = abs_task_preprocessing(task, eval_split)
 
     for data_split, hf_subset in subset_list:
@@ -31,18 +40,18 @@ def _prepare_sts(self, task, task_name, eval_split, instruction_template, datase
         indices1 = [text_to_idx[hash(s)] for s in sentence1]
         indices2 = [text_to_idx[hash(s)] for s in sentence2]
 
-        if self.rank == 0:
+        if rank == 0:
             n_dedup = len(all_sentences) - len(unique_texts)
             print(
                 f"  [{hf_subset}] {n_dedup}/{len(all_sentences)} duplicate texts deduplicated"
             )
 
-        texts_ds, removed = self._prepare_text_dataset(
-            unique_texts, task.metadata, instruction_template
+        texts_ds, removed = prepare_text_dataset(
+            unique_texts, task.metadata, instruction_template, tokenizer, rank
         )
 
         if removed:
-            old_to_new = self._build_index_remap(len(unique_texts), removed)
+            old_to_new = build_index_remap(len(unique_texts), removed)
             valid_mask = [
                 indices1[i] not in removed and indices2[i] not in removed
                 for i in range(len(indices1))
@@ -58,7 +67,7 @@ def _prepare_sts(self, task, task_name, eval_split, instruction_template, datase
                 for i in range(len(normalized_scores))
                 if valid_mask[i]
             ]
-            if self.rank == 0:
+            if rank == 0:
                 n_removed = sum(1 for v in valid_mask if not v)
                 print(
                     f"  [{hf_subset}] {n_removed} STS pairs removed due to filtered texts"
@@ -81,13 +90,19 @@ def _prepare_sts(self, task, task_name, eval_split, instruction_template, datase
 
 
 @torch.inference_mode()
-def evaluate_one_sts(self, task_data, model, batch_size):
+def evaluate_one_sts(task_data, model, batch_size, eval_context: EvalContext):
     model = model.eval()
     dataset = task_data["dataset"]
     task_obj = task_data["task_obj"]
     main_score = task_data["main_score"]
 
-    embeddings = self._encode_dataset(model, dataset["texts"], batch_size)
+    collate_fn = make_collate_fn(
+        eval_context.tokenizer,
+        eval_context.padding_side,
+        eval_context.eot_id,
+        eval_context.add_special_tokens,
+    )
+    embeddings = encode_dataset(model, dataset["texts"], batch_size, collate_fn)
     embeddings_np = embeddings.cpu().numpy()
 
     emb1 = embeddings_np[dataset["indices1"]]

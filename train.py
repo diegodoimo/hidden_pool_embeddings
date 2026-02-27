@@ -295,9 +295,24 @@ def main():
         print("loading train set ")
         start = time.time()
 
-    instruction_template = instruction_template_qwen3
-    if args.instruction_template == "embeddinggemma":
+
+
+    if "qwen3" in args.model_name_or_path.lower():
+        instruction_template = instruction_template_qwen3
+        pool_fn = last_token_pool
+        add_special_tokens = False
+        eot_id = tokenizer.pad_token_id
+    elif "embeddinggemma" in args.model_name_or_path.lower():
+        model_name = "embeddinggemma"
         instruction_template = instruction_template_embeddinggemma
+        pool_fn = mean_pool
+        add_special_tokens = True
+        eot_id = None
+    else:
+        raise ValueError(
+            f"Unrecognized model '{args.model_name_or_path}'. "
+            "Expected a path containing 'qwen3' or 'embeddinggemma'."
+        )
 
     train_dataset = create_hard_negatives_datasets(
         base_dir=args.negatives_dir,
@@ -322,23 +337,6 @@ def main():
         seed=42,
     )
 
-    if "qwen3" in args.model_name_or_path.lower():
-        instruction_template = instruction_template_qwen3
-        pool_fn = last_token_pool
-        add_special_tokens = False
-        eot_id = tokenizer.pad_token_id
-    elif "embeddinggemma" in args.model_name_or_path.lower():
-        model_name = "embeddinggemma"
-        instruction_template = instruction_template_embeddinggemma
-        pool_fn = mean_pool
-        add_special_tokens = True
-        eot_id = None
-    else:
-        raise ValueError(
-            f"Unrecognized model '{args.model_name_or_path}'. "
-            "Expected a path containing 'qwen3' or 'embeddinggemma'."
-        )
-
     collate_fn = partial(
         collate_fn_with_hard_negatives,
         pad_token_id=tokenizer.pad_token_id,
@@ -361,7 +359,6 @@ def main():
     # **************************************
 
     eval_tasks = get_eval_tasks(args.eval_set)
-
     evaluator = evaluate_retrieval(
         tasks=eval_tasks,
         tokenizer=tokenizer,
