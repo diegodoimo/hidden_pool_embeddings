@@ -1,30 +1,25 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-import torch
 
 
-def mean_pool(hidden_states, attention_mask):
-    """
-    Perform masked mean pooling over sequence dimension.
+def last_token_pool(last_hidden_states, attention_mask):
+    left_padding = attention_mask[:, -1].sum() == attention_mask.shape[0]
+    if left_padding:
+        return last_hidden_states[:, -1]
+    else:
+        sequence_lengths = attention_mask.sum(dim=1) - 1
+        batch_size = last_hidden_states.shape[0]
+        return last_hidden_states[
+            torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths
+        ]
 
-    Args:
-        hidden_states: (batch_size, seq_len, hidden_dim)
-        attention_mask: (batch_size, seq_len)
 
-    Returns:
-        pooled: (batch_size, hidden_dim)
-    """
-    # Expand mask to match hidden_states dimensions
+def mean_pool(last_hidden_states, attention_mask):
     mask = attention_mask.unsqueeze(-1)  # (B, L, 1)
-
-    # Compute masked sum
-    masked_sum = (hidden_states * mask).sum(dim=1)  # (B, H)
-
-    # Compute mask sum with numerical stability
+    masked_sum = (last_hidden_states * mask).sum(dim=1)  # (B, H)
     mask_sum = mask.sum(dim=1).clamp(min=1e-9)  # (B, 1)
-
-    # Compute mean
     return masked_sum / mask_sum
 
 
@@ -145,6 +140,34 @@ class GatedAttention(nn.Module):
         # Project back to hidden_size
         attn_output = self.o_proj(attn_output)  # (B, D)
         return attn_output, attn_weights
+
+
+class EncoderWithPooling(nn.Module):
+    """
+    Wraps an encoder model to perform pooling and L2 normalization in the forward pass.
+    The wrapped model's forward should return an object with `last_hidden_state` (e.g. BaseModelOutput).
+    """
+
+    def __init__(self, model, pool_fn):
+        super().__init__()
+        self.model = model
+        self.pool_fn = pool_fn
+
+    @property
+    def device(self):
+        return next(self.model.parameters()).device
+
+    def forward(self, input_ids, attention_mask, **kwargs):
+        output = self.model(
+            input_ids=input_ids, attention_mask=attention_mask, **kwargs
+        )
+        pooled = self.pool_fn(output.last_hidden_state, attention_mask)
+        return F.normalize(pooled, p=2, dim=1)
+
+
+def add_pooling_layers(model, pool_fn):
+    """Wrap a model so its forward pass includes pooling and L2 normalization."""
+    return EncoderWithPooling(model, pool_fn)
 
 
 class Normalize(nn.Module):

@@ -9,7 +9,7 @@ import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
 from argparse import ArgumentParser
 from transformers import AutoConfig, AutoTokenizer
-from peft import LoraConfig, TaskType, get_peft_model
+from peft import LoraConfig, get_peft_model
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from utils.arguments import parse_args
@@ -84,7 +84,6 @@ class Trainer:
 
         # 3. Move your model to the device
         self.model = self.model.to(self.device)
-
         self.model = DDP(self.model, device_ids=[self.local_rank])
         self.model = torch.compile(self.model)
         # self.model.compile(mode="reduce-overhead")
@@ -314,6 +313,7 @@ def main():
         print(f"datasets prepared in {time.time()-start:.1f}s")
         print("dataloader preparation")
 
+    # dataset collection is already sorted by length dataset / specific
     sampler = DistributedSampler(
         train_dataset,
         num_replicas=WORLD_SIZE,
@@ -323,7 +323,6 @@ def main():
     )
 
     if "qwen3" in args.model_name_or_path.lower():
-        model_name = "qwen3_embedding"
         instruction_template = instruction_template_qwen3
         pool_fn = last_token_pool
         add_special_tokens = False

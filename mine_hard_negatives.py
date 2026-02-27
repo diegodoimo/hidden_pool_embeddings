@@ -1,11 +1,10 @@
 from inference.hard_negative_mining import HardNegativesMiner
 import os
 import torch
-from torch.nn.parallel import DistributedDataParallel as DDP
 import argparse
 from transformers import AutoModel, AutoTokenizer
 import torch.distributed as dist
-from inference.create_datasets import instruction_template_qwen3
+from utils.create_datasets import instruction_template_qwen3
 from datetime import timedelta
 from tasks import (
     NAME_TO_TASK,
@@ -15,7 +14,6 @@ from tasks import (
     STS_TASKS,
     CLUSTERING_TASKS,
     DATASETS_BY_SIZE,
-    get_task,
 )
 from tasks.task_categories import (
     OPEN_DOMAIN_QA,
@@ -28,6 +26,7 @@ from tasks.task_categories import (
 )
 
 from utils.helpers import print_memory_consumed
+from models.modules import add_pooling_layers, last_token_pool
 
 
 def parse_args():
@@ -177,9 +176,7 @@ def main():
     dist.init_process_group(
         "nccl",
         device_id=LOCAL_RANK,
-        timeout=timedelta(
-            seconds=60
-        ),  
+        timeout=timedelta(seconds=60),
     )
     torch.cuda.set_device(dist.get_rank())
 
@@ -197,7 +194,9 @@ def main():
         print(f"Tasks to process: {selected_tasks}")
 
     tokenizer = AutoTokenizer.from_pretrained(
-        args.model_name_or_path, use_fast=False, trust_remote_code=True
+        args.model_name_or_path,
+        use_fast=False,
+        trust_remote_code=True,
     )
 
     model = AutoModel.from_pretrained(
@@ -215,6 +214,7 @@ def main():
         instruction_template=instruction_template_qwen3,
         padding_side="right",
         max_length=max_length,
+        add_special_tokens=False,
         eot_id=tokenizer.pad_token_id,
     )
 
@@ -225,6 +225,7 @@ def main():
     # ddp is only needed for training here we are adding gradient buffers and the memory occupied with doubl
     # model = DDP(model, device_ids=[dist.get_rank()])
     model = torch.compile(model)
+    model = add_pooling_layers(model, pool_fn=last_token_pool)
 
     if RANK == 0:
         print("model wrapped in DDP and compile")

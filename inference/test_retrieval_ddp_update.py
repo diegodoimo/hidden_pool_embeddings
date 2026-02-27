@@ -15,8 +15,6 @@ from inference.helpers import (
     search,
     encode,
     abs_task_preprocessing,
-    last_token_pool,
-    mean_pool,
 )
 
 from utils.dataloader_helpers import collate_fn_with_padding
@@ -25,21 +23,40 @@ from utils.create_datasets import create_dataset
 from utils.helpers import _print_ram
 from collections import defaultdict
 import time
-import itertools
-import numpy as np
 from datasets import Dataset as HFDataset
 
-from sklearn.metrics.pairwise import (
-    paired_cosine_distances,
-    paired_euclidean_distances,
-    paired_manhattan_distances,
+from inference.evaluate.eval_clustering import (
+    _prepare_clustering as _prepare_clustering_fn,
+    evaluate_one_clustering as evaluate_one_clustering_fn,
 )
-from sklearn.preprocessing import MultiLabelBinarizer
-from sklearn.base import clone
-from mteb.abstasks.multilabel_classification import _evaluate_classifier
-from mteb.abstasks.clustering import _evaluate_clustering_bootstrapped
-from mteb._evaluators.pair_classification_evaluator import PairClassificationDistances
-from scipy.stats import pearsonr, spearmanr
+from inference.evaluate.eval_retrieval import (
+    _prepare_retrieval as _prepare_retrieval_fn,
+    evaluate_one as evaluate_one_fn,
+)
+from inference.evaluate.eval_pair_classification import (
+    _prepare_pair_classification as _prepare_pair_classification_fn,
+    evaluate_one_pair_classification as evaluate_one_pair_classification_fn,
+)
+from inference.evaluate.eval_multilabel_classification import (
+    _prepare_multilabel_classification as _prepare_multilabel_classification_fn,
+    evaluate_one_multilabel_classification as evaluate_one_multilabel_classification_fn,
+)
+from inference.evaluate.eval_classification import (
+    _prepare_classification as _prepare_classification_fn,
+    evaluate_one_classification as evaluate_one_classification_fn,
+)
+from inference.evaluate.eval_sts import (
+    _prepare_sts as _prepare_sts_fn,
+    evaluate_one_sts as evaluate_one_sts_fn,
+)
+from inference.evaluate.eval_summarization import (
+    _prepare_summarization as _prepare_summarization_fn,
+    evaluate_one_summarization as evaluate_one_summarization_fn,
+)
+from inference.evaluate.eval_bitext_mining import (
+    _prepare_bitext_mining as _prepare_bitext_mining_fn,
+    evaluate_one_bitext_mining as evaluate_one_bitext_mining_fn,
+)
 
 
 class evaluate_retrieval:
@@ -51,7 +68,6 @@ class evaluate_retrieval:
         instruction_template,
         padding_side="right",
         new_inference_mode=True,
-        pool_fn=last_token_pool,
         add_special_tokens=False,
         eot_id=None,
     ):
@@ -63,7 +79,6 @@ class evaluate_retrieval:
         self.tasks = tasks
         self.padding_side = padding_side
         self.new_inference_mode = new_inference_mode
-        self.pool_fn = pool_fn
         self.add_special_tokens = add_special_tokens
         self.eot_id = eot_id
 
@@ -117,7 +132,9 @@ class evaluate_retrieval:
         return max_rows, total_rows, len(configs), max_info
 
     def prepare_datasets(
-        self, instruction_template, max_passage_len=4096, max_samples=500_000
+        self,
+        instruction_template,
+        max_samples=500_000,
     ):
 
         datasets = {}
@@ -159,40 +176,40 @@ class evaluate_retrieval:
 
             task.load_data()
             if task_type == "Retrieval":
-                self._prepare_retrieval(
-                    task, task_name, eval_split, instruction_template, datasets
+                _prepare_retrieval_fn(
+                    self, task, task_name, eval_split, instruction_template, datasets
                 )
             elif task_type == "PairClassification":
-                self._prepare_pair_classification(
-                    task, task_name, eval_split, instruction_template, datasets
+                _prepare_pair_classification_fn(
+                    self, task, task_name, eval_split, instruction_template, datasets
                 )
             elif task_type == "MultilabelClassification":
-                self._prepare_multilabel_classification(
-                    task, task_name, eval_split, instruction_template, datasets
+                _prepare_multilabel_classification_fn(
+                    self, task, task_name, eval_split, instruction_template, datasets
                 )
             elif task_type == "Clustering":
-                self._prepare_clustering(
-                    task, task_name, eval_split, instruction_template, datasets
+                _prepare_clustering_fn(
+                    self, task, task_name, eval_split, instruction_template, datasets
                 )
             elif task_type == "Classification":
-                self._prepare_classification(
-                    task, task_name, eval_split, instruction_template, datasets
+                _prepare_classification_fn(
+                    self, task, task_name, eval_split, instruction_template, datasets
                 )
             elif task_type == "STS":
-                self._prepare_sts(
-                    task, task_name, eval_split, instruction_template, datasets
+                _prepare_sts_fn(
+                    self, task, task_name, eval_split, instruction_template, datasets
                 )
             elif task_type == "Summarization":
-                self._prepare_summarization(
-                    task, task_name, eval_split, instruction_template, datasets
+                _prepare_summarization_fn(
+                    self, task, task_name, eval_split, instruction_template, datasets
                 )
             elif task_type == "BitextMining":
-                self._prepare_bitext_mining(
-                    task, task_name, eval_split, instruction_template, datasets
+                _prepare_bitext_mining_fn(
+                    self, task, task_name, eval_split, instruction_template, datasets
                 )
             elif task_type == "Reranking":
-                self._prepare_retrieval(
-                    task, task_name, eval_split, instruction_template, datasets
+                _prepare_retrieval_fn(
+                    self, task, task_name, eval_split, instruction_template, datasets
                 )
             else:
                 if self.rank == 0:
@@ -200,101 +217,6 @@ class evaluate_retrieval:
             _print_ram(label="dataset loaded", rank=self.rank)
 
         return datasets
-
-    # -------------------------------------------------------------------------
-    # Dataset preparation per task type
-    # -------------------------------------------------------------------------
-
-    def _prepare_retrieval(
-        self, task, task_name, eval_split, instruction_template, datasets
-    ):
-        task.convert_v1_dataset_format_to_v2()
-        subset_list = abs_task_preprocessing(task, eval_split)
-
-        for data_split, hf_subset in subset_list:
-            data_split["relevant_docs"], data_split["queries"] = (
-                _filter_queries_without_positives(
-                    data_split["relevant_docs"], data_split["queries"]
-                )
-            )
-
-            queries_dataset = create_dataset(
-                dataset=data_split["queries"],
-                task_metadata=task.metadata,
-                instruction_template=instruction_template,
-                tokenizer=self.tokenizer,
-                prompt_type=PromptType.query,
-                max_length=4096,
-            )
-
-            corpus_dataset = create_dataset(
-                dataset=data_split["corpus"],
-                task_metadata=task.metadata,
-                instruction_template=instruction_template,
-                tokenizer=self.tokenizer,
-                prompt_type=PromptType.document,
-                max_length=4096,
-            )
-
-            relevant_docs = data_split["relevant_docs"]
-            removed_query_ids = (
-                set(queries_dataset.removed_ids)
-                if queries_dataset.removed_ids
-                else set()
-            )
-            removed_corpus_ids = (
-                set(corpus_dataset.removed_ids) if corpus_dataset.removed_ids else set()
-            )
-            if removed_query_ids or removed_corpus_ids:
-                if self.rank == 0:
-                    print(
-                        f"  [{hf_subset}] filtered {len(removed_query_ids)} queries, "
-                        f"{len(removed_corpus_ids)} corpus docs (>4096 tokens or empty)"
-                    )
-                relevant_docs = {
-                    qid: {
-                        did: s
-                        for did, s in docs.items()
-                        if did not in removed_corpus_ids
-                    }
-                    for qid, docs in relevant_docs.items()
-                    if qid not in removed_query_ids
-                }
-                relevant_docs = {
-                    qid: docs for qid, docs in relevant_docs.items() if docs
-                }
-
-            valid_qids = set(relevant_docs.keys())
-            num_queries_lost = len(queries_dataset) - sum(
-                1 for qid in queries_dataset["id"] if qid in valid_qids
-            )
-            if num_queries_lost > 0:
-                if self.rank == 0:
-                    print(
-                        f"  [{hf_subset}] Note: {num_queries_lost} valid queries were excluded "
-                        f"because all their paired positives were removed"
-                    )
-                queries_dataset = queries_dataset.filter(
-                    lambda batch: [qid in valid_qids for qid in batch["id"]],
-                    batched=True,
-                )
-
-            entry_name = (
-                f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
-            )
-            datasets[entry_name] = {
-                "dataset": {
-                    "queries": queries_dataset,
-                    "corpus": corpus_dataset,
-                    "relevant_docs": relevant_docs,
-                },
-                "task_specific_scores": task.task_specific_scores,
-                "ignore_identical_ids": task.ignore_identical_ids,
-                "hf_split": eval_split,
-                "main_score": task.metadata.main_score,
-                "hf_subset": hf_subset,
-                "task_type": task.metadata.type,
-            }
 
     def _prepare_text_dataset(
         self, texts, task_metadata, instruction_template, max_length=8192
@@ -337,566 +259,6 @@ class evaluate_retrieval:
                 new_idx += 1
         return old_to_new
 
-    def _prepare_pair_classification(
-        self, task, task_name, eval_split, instruction_template, datasets
-    ):
-        subset_list = abs_task_preprocessing(task, eval_split)
-
-        for data_split, hf_subset in subset_list:
-            if task.metadata.modalities == ["text"]:
-                if isinstance(data_split, HFDataset) and len(data_split) == 1:
-                    data_split = data_split[0]
-
-            input1_col = task.input1_column_name
-            input2_col = task.input2_column_name
-            label_col = task.label_column_name
-
-            sentence1 = list(data_split[input1_col])
-            sentence2 = list(data_split[input2_col])
-            labels = list(data_split[label_col])
-
-            all_sentences = sentence1 + sentence2
-            unique_texts, text_to_idx = [], {}
-            for text in all_sentences:
-                h = hash(text)
-                if h not in text_to_idx:
-                    text_to_idx[h] = len(unique_texts)
-                    unique_texts.append(text)
-
-            indices1 = [text_to_idx[hash(s)] for s in sentence1]
-            indices2 = [text_to_idx[hash(s)] for s in sentence2]
-
-            if self.rank == 0:
-                n_dedup = len(all_sentences) - len(unique_texts)
-                print(
-                    f"  [{hf_subset}] {n_dedup}/{len(all_sentences)} duplicate texts deduplicated"
-                )
-
-            texts_ds, removed = self._prepare_text_dataset(
-                unique_texts, task.metadata, instruction_template
-            )
-
-            if removed:
-                old_to_new = self._build_index_remap(len(unique_texts), removed)
-                valid_mask = [
-                    indices1[i] not in removed and indices2[i] not in removed
-                    for i in range(len(indices1))
-                ]
-                indices1 = [
-                    old_to_new[indices1[i]]
-                    for i in range(len(indices1))
-                    if valid_mask[i]
-                ]
-                indices2 = [
-                    old_to_new[indices2[i]]
-                    for i in range(len(indices2))
-                    if valid_mask[i]
-                ]
-                labels = [labels[i] for i in range(len(labels)) if valid_mask[i]]
-                if self.rank == 0:
-                    n_removed = sum(1 for v in valid_mask if not v)
-                    print(
-                        f"  [{hf_subset}] {n_removed} pairs removed due to filtered texts"
-                    )
-
-            entry_name = (
-                f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
-            )
-            datasets[entry_name] = {
-                "dataset": {
-                    "texts": texts_ds,
-                    "indices1": indices1,
-                    "indices2": indices2,
-                    "labels": labels,
-                },
-                "hf_split": eval_split,
-                "main_score": task.metadata.main_score,
-                "hf_subset": hf_subset,
-                "task_type": task.metadata.type,
-                "task_obj": task,
-            }
-
-    def _prepare_multilabel_classification(
-        self, task, task_name, eval_split, instruction_template, datasets
-    ):
-        from typing import cast
-        from copy import copy
-        from mteb.types import HFSubset
-        from datasets import DatasetDict
-
-        task.dataset = cast(dict[HFSubset, DatasetDict], task.dataset)
-        hf_subsets = (
-            copy(task.hf_subsets) if task.hf_subsets else list(task.dataset.keys())
-        )
-
-        for hf_subset in hf_subsets:
-            if hf_subset not in task.dataset and hf_subset == "default":
-                ds = task.dataset
-            else:
-                ds = task.dataset[hf_subset]
-
-            input_col = task.input_column_name
-            label_col = task.label_column_name
-
-            if isinstance(ds, DatasetDict):
-                ds = ds.select_columns([input_col, label_col])
-
-            train_data = ds[task.train_split]
-            test_data = ds[eval_split]
-
-            try:
-                if len(test_data) > 2000:
-                    split_ds = test_data.train_test_split(
-                        test_size=2000, seed=42, stratify_by_column=label_col
-                    )
-                    test_data = split_ds["test"]
-            except ValueError:
-                if self.rank == 0:
-                    print(
-                        f"  [{hf_subset}] Could not stratify test subsample, using full test set"
-                    )
-
-            train_texts = list(train_data[input_col])
-            test_texts = list(test_data[input_col])
-            train_labels = list(train_data[label_col])
-            test_labels = list(test_data[label_col])
-
-            if self.rank == 0:
-                print(
-                    f"  [{hf_subset}] train: {len(train_texts)}, test: {len(test_texts)} samples"
-                )
-
-            train_ds, train_removed = self._prepare_text_dataset(
-                train_texts, task.metadata, instruction_template
-            )
-            test_ds, test_removed = self._prepare_text_dataset(
-                test_texts, task.metadata, instruction_template
-            )
-
-            if train_removed:
-                train_labels = [
-                    l for i, l in enumerate(train_labels) if i not in train_removed
-                ]
-            if test_removed:
-                test_labels = [
-                    l for i, l in enumerate(test_labels) if i not in test_removed
-                ]
-
-            entry_name = (
-                f"{task_name}/{hf_subset}" if len(hf_subsets) > 1 else task_name
-            )
-            datasets[entry_name] = {
-                "dataset": {
-                    "train_texts": train_ds,
-                    "test_texts": test_ds,
-                    "train_labels": train_labels,
-                    "test_labels": test_labels,
-                },
-                "hf_split": eval_split,
-                "main_score": task.metadata.main_score,
-                "hf_subset": hf_subset,
-                "task_type": task.metadata.type,
-                "task_obj": task,
-            }
-
-    def _prepare_clustering(
-        self, task, task_name, eval_split, instruction_template, datasets
-    ):
-        subset_list = abs_task_preprocessing(task, eval_split)
-
-        for data_split, hf_subset in subset_list:
-            input_col = task.input_column_name
-            label_col = task.label_column_name
-
-            sentences = list(data_split[input_col])
-            labels = list(data_split[label_col])
-
-            max_doc = getattr(task, "max_document_to_embed", None)
-            max_frac = getattr(task, "max_fraction_of_documents_to_embed", None)
-
-            if max_doc is not None and max_frac is not None:
-                raise ValueError(
-                    "Both max_document_to_embed and max_fraction_of_documents_to_embed are set"
-                )
-
-            if max_frac is not None:
-                max_docs = min(
-                    len(sentences),
-                    int(max_frac * len(sentences)),
-                )
-                indices = task.rng_state.sample(range(len(sentences)), k=max_docs)
-                sentences = [sentences[i] for i in indices]
-                labels = [labels[i] for i in indices]
-            elif max_doc is not None:
-                max_docs = min(len(sentences), max_doc)
-                indices = task.rng_state.sample(range(len(sentences)), k=max_docs)
-                sentences = [sentences[i] for i in indices]
-                labels = [labels[i] for i in indices]
-
-            if self.rank == 0:
-                print(f"  [{hf_subset}] {len(sentences)} samples for clustering")
-
-            texts_ds, removed = self._prepare_text_dataset(
-                sentences, task.metadata, instruction_template
-            )
-
-            if removed:
-                labels = [l for i, l in enumerate(labels) if i not in removed]
-
-            entry_name = (
-                f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
-            )
-            datasets[entry_name] = {
-                "dataset": {
-                    "texts": texts_ds,
-                    "labels": labels,
-                },
-                "hf_split": eval_split,
-                "main_score": task.metadata.main_score,
-                "hf_subset": hf_subset,
-                "task_type": task.metadata.type,
-                "task_obj": task,
-            }
-
-    def _prepare_classification(
-        self, task, task_name, eval_split, instruction_template, datasets
-    ):
-        from typing import cast
-        from copy import copy
-        from mteb.types import HFSubset
-        from datasets import DatasetDict
-
-        task.dataset = cast(dict[HFSubset, DatasetDict], task.dataset)
-        hf_subsets = (
-            copy(task.hf_subsets) if task.hf_subsets else list(task.dataset.keys())
-        )
-
-        for hf_subset in hf_subsets:
-            if hf_subset not in task.dataset and hf_subset == "default":
-                ds = task.dataset
-            else:
-                ds = task.dataset[hf_subset]
-
-            input_col = task.input_column_name
-            label_col = task.label_column_name
-
-            if isinstance(ds, DatasetDict):
-                ds = ds.select_columns([input_col, label_col])
-
-            train_data = ds[task.train_split]
-            test_data = ds[eval_split]
-
-            train_texts = list(train_data[input_col])
-            test_texts = list(test_data[input_col])
-            train_labels = list(train_data[label_col])
-            test_labels = list(test_data[label_col])
-
-            if self.rank == 0:
-                print(
-                    f"  [{hf_subset}] train: {len(train_texts)}, test: {len(test_texts)} samples"
-                )
-
-            train_ds, train_removed = self._prepare_text_dataset(
-                train_texts, task.metadata, instruction_template
-            )
-            test_ds, test_removed = self._prepare_text_dataset(
-                test_texts, task.metadata, instruction_template
-            )
-
-            if train_removed:
-                train_labels = [
-                    l for i, l in enumerate(train_labels) if i not in train_removed
-                ]
-            if test_removed:
-                test_labels = [
-                    l for i, l in enumerate(test_labels) if i not in test_removed
-                ]
-
-            entry_name = (
-                f"{task_name}/{hf_subset}" if len(hf_subsets) > 1 else task_name
-            )
-            datasets[entry_name] = {
-                "dataset": {
-                    "train_texts": train_ds,
-                    "test_texts": test_ds,
-                    "train_labels": train_labels,
-                    "test_labels": test_labels,
-                },
-                "hf_split": eval_split,
-                "main_score": task.metadata.main_score,
-                "hf_subset": hf_subset,
-                "task_type": task.metadata.type,
-                "task_obj": task,
-            }
-
-    def _prepare_sts(self, task, task_name, eval_split, instruction_template, datasets):
-        subset_list = abs_task_preprocessing(task, eval_split)
-
-        for data_split, hf_subset in subset_list:
-            col1, col2 = task.column_names
-
-            sentence1 = list(data_split[col1])
-            sentence2 = list(data_split[col2])
-            raw_scores = list(data_split["score"])
-            normalized_scores = [task._normalize(s) for s in raw_scores]
-
-            all_sentences = sentence1 + sentence2
-            unique_texts, text_to_idx = [], {}
-            for text in all_sentences:
-                h = hash(text)
-                if h not in text_to_idx:
-                    text_to_idx[h] = len(unique_texts)
-                    unique_texts.append(text)
-
-            indices1 = [text_to_idx[hash(s)] for s in sentence1]
-            indices2 = [text_to_idx[hash(s)] for s in sentence2]
-
-            if self.rank == 0:
-                n_dedup = len(all_sentences) - len(unique_texts)
-                print(
-                    f"  [{hf_subset}] {n_dedup}/{len(all_sentences)} duplicate texts deduplicated"
-                )
-
-            texts_ds, removed = self._prepare_text_dataset(
-                unique_texts, task.metadata, instruction_template
-            )
-
-            if removed:
-                old_to_new = self._build_index_remap(len(unique_texts), removed)
-                valid_mask = [
-                    indices1[i] not in removed and indices2[i] not in removed
-                    for i in range(len(indices1))
-                ]
-                indices1 = [
-                    old_to_new[indices1[i]]
-                    for i in range(len(indices1))
-                    if valid_mask[i]
-                ]
-                indices2 = [
-                    old_to_new[indices2[i]]
-                    for i in range(len(indices2))
-                    if valid_mask[i]
-                ]
-                normalized_scores = [
-                    normalized_scores[i]
-                    for i in range(len(normalized_scores))
-                    if valid_mask[i]
-                ]
-                if self.rank == 0:
-                    n_removed = sum(1 for v in valid_mask if not v)
-                    print(
-                        f"  [{hf_subset}] {n_removed} STS pairs removed due to filtered texts"
-                    )
-
-            entry_name = (
-                f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
-            )
-            datasets[entry_name] = {
-                "dataset": {
-                    "texts": texts_ds,
-                    "indices1": indices1,
-                    "indices2": indices2,
-                    "labels": normalized_scores,
-                },
-                "hf_split": eval_split,
-                "main_score": task.metadata.main_score,
-                "hf_subset": hf_subset,
-                "task_type": task.metadata.type,
-                "task_obj": task,
-            }
-
-    def _prepare_summarization(
-        self, task, task_name, eval_split, instruction_template, datasets
-    ):
-        subset_list = abs_task_preprocessing(task, eval_split)
-
-        for data_split, hf_subset in subset_list:
-            text_col = task.text_column_name
-            human_col = task.human_summaries_column_name
-            machine_col = task.machine_summaries_column_name
-            relevance_col = task.relevancy_column_name
-
-            human_summaries = list(data_split[human_col])
-            machine_summaries = list(data_split[machine_col])
-            relevance = list(data_split[relevance_col])
-
-            normalized_scores = [
-                (
-                    (np.array(x) - task.min_score) / (task.max_score - task.min_score)
-                ).tolist()
-                for x in relevance
-            ]
-
-            human_lens = [len(hs) for hs in human_summaries]
-            machine_lens = [len(ms) for ms in machine_summaries]
-
-            all_human = [s for hs in human_summaries for s in hs]
-            all_machine = [s for ms in machine_summaries for s in ms]
-
-            all_texts = all_human + all_machine
-            unique_texts, text_to_idx = [], {}
-            for text in all_texts:
-                h = hash(text)
-                if h not in text_to_idx:
-                    text_to_idx[h] = len(unique_texts)
-                    unique_texts.append(text)
-
-            human_indices = [text_to_idx[hash(s)] for s in all_human]
-            machine_indices = [text_to_idx[hash(s)] for s in all_machine]
-
-            if self.rank == 0:
-                n_dedup = len(all_texts) - len(unique_texts)
-                print(
-                    f"  [{hf_subset}] {n_dedup}/{len(all_texts)} duplicate summaries deduplicated"
-                )
-                print(
-                    f"  [{hf_subset}] {len(human_summaries)} samples, "
-                    f"{sum(human_lens)} human summaries, "
-                    f"{sum(machine_lens)} machine summaries"
-                )
-
-            texts_ds, removed = self._prepare_text_dataset(
-                unique_texts, task.metadata, instruction_template
-            )
-
-            if removed:
-                old_to_new = self._build_index_remap(len(unique_texts), removed)
-                new_human_indices = []
-                new_machine_indices = []
-                new_human_lens = []
-                new_machine_lens = []
-                new_gold_scores = []
-                h_off, m_off = 0, 0
-                n_samples_orig = len(human_lens)
-                for i in range(n_samples_orig):
-                    h_len = human_lens[i]
-                    m_len = machine_lens[i]
-                    s_h = human_indices[h_off : h_off + h_len]
-                    s_m = machine_indices[m_off : m_off + m_len]
-                    s_scores = normalized_scores[i]
-                    kept_h = [idx for idx in s_h if idx not in removed]
-                    kept_m_scores = [
-                        (idx, s_scores[j])
-                        for j, idx in enumerate(s_m)
-                        if idx not in removed
-                    ]
-                    if kept_h and kept_m_scores:
-                        new_human_indices.extend(old_to_new[idx] for idx in kept_h)
-                        new_machine_indices.extend(
-                            old_to_new[idx] for idx, _ in kept_m_scores
-                        )
-                        new_human_lens.append(len(kept_h))
-                        new_machine_lens.append(len(kept_m_scores))
-                        new_gold_scores.append([s for _, s in kept_m_scores])
-                    h_off += h_len
-                    m_off += m_len
-                human_indices = new_human_indices
-                machine_indices = new_machine_indices
-                human_lens = new_human_lens
-                machine_lens = new_machine_lens
-                normalized_scores = new_gold_scores
-                if self.rank == 0 and len(human_lens) < n_samples_orig:
-                    print(
-                        f"  [{hf_subset}] {n_samples_orig - len(human_lens)} summarization samples "
-                        f"removed due to filtered texts"
-                    )
-
-            entry_name = (
-                f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
-            )
-            datasets[entry_name] = {
-                "dataset": {
-                    "texts": texts_ds,
-                    "human_indices": human_indices,
-                    "machine_indices": machine_indices,
-                    "human_lens": human_lens,
-                    "machine_lens": machine_lens,
-                    "gold_scores": normalized_scores,
-                },
-                "hf_split": eval_split,
-                "main_score": task.metadata.main_score,
-                "hf_subset": hf_subset,
-                "task_type": task.metadata.type,
-                "task_obj": task,
-            }
-
-    def _prepare_bitext_mining(
-        self, task, task_name, eval_split, instruction_template, datasets
-    ):
-        pairs = task._get_pairs(task.parallel_subsets)
-
-        if task.parallel_subsets:
-            subset_list = [(task.dataset[eval_split], "parallel")]
-        else:
-            subset_list = abs_task_preprocessing(task, eval_split)
-
-        for data_split, hf_subset in subset_list:
-            col1, col2 = pairs[0]
-            sentence1 = list(data_split[col1])
-            sentence2 = list(data_split[col2])
-
-            all_sentences = sentence1 + sentence2
-            unique_texts, text_to_idx = [], {}
-            for text in all_sentences:
-                h = hash(text)
-                if h not in text_to_idx:
-                    text_to_idx[h] = len(unique_texts)
-                    unique_texts.append(text)
-
-            indices1 = [text_to_idx[hash(s)] for s in sentence1]
-            indices2 = [text_to_idx[hash(s)] for s in sentence2]
-
-            if self.rank == 0:
-                n_dedup = len(all_sentences) - len(unique_texts)
-                print(
-                    f"  [{hf_subset}] {n_dedup}/{len(all_sentences)} duplicate texts deduplicated"
-                )
-                print(
-                    f"  [{hf_subset}] {len(sentence1)} sentence pairs for bitext mining"
-                )
-
-            texts_ds, removed = self._prepare_text_dataset(
-                unique_texts, task.metadata, instruction_template
-            )
-
-            if removed:
-                old_to_new = self._build_index_remap(len(unique_texts), removed)
-                valid_mask = [
-                    indices1[i] not in removed and indices2[i] not in removed
-                    for i in range(len(indices1))
-                ]
-                indices1 = [
-                    old_to_new[indices1[i]]
-                    for i in range(len(indices1))
-                    if valid_mask[i]
-                ]
-                indices2 = [
-                    old_to_new[indices2[i]]
-                    for i in range(len(indices2))
-                    if valid_mask[i]
-                ]
-                if self.rank == 0:
-                    n_removed = sum(1 for v in valid_mask if not v)
-                    print(
-                        f"  [{hf_subset}] {n_removed} pairs removed due to filtered texts"
-                    )
-
-            entry_name = (
-                f"{task_name}/{hf_subset}" if len(subset_list) > 1 else task_name
-            )
-            datasets[entry_name] = {
-                "dataset": {
-                    "texts": texts_ds,
-                    "indices1": indices1,
-                    "indices2": indices2,
-                },
-                "hf_split": eval_split,
-                "main_score": task.metadata.main_score,
-                "hf_subset": hf_subset,
-                "task_type": task.metadata.type,
-                "task_obj": task,
-            }
-
     # -------------------------------------------------------------------------
     # Encoding helpers
     # -------------------------------------------------------------------------
@@ -921,502 +283,14 @@ class evaluate_retrieval:
             collate_fn=collate_fn,
         )
         dist.barrier()
-        start = time.time()
         embeddings = encode(
             model,
             loader,
             prompt_type=PromptType.query,
             world_size=self.world_size,
-            pool_fn=self.pool_fn,
         )
         dist.barrier()
-        # if self.rank == 0:
-        #     print(f"  encoded {len(dataset)} samples in {time.time()-start:.2f}s")
         return embeddings
-
-    # -------------------------------------------------------------------------
-    # Per-task-type evaluation
-    # -------------------------------------------------------------------------
-
-    def evaluate_one(
-        self,
-        dataset,
-        task_specific_scores,
-        ignore_identical_ids,
-        hf_split,
-        hf_subset,
-        main_score,
-        model,
-        batch_size=8,
-        top_k=None,
-        k_values=[1, 3, 5, 10, 20, 100, 1000],
-        skip_first_result: bool = False,
-    ):
-
-        if top_k is None:
-            top_k = max(k_values)
-        model = model.eval()
-
-        query_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["queries"]["id"])}
-        doc_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["corpus"]["id"])}
-
-        collate_fn = partial(
-            collate_fn_with_padding,
-            pad_token_id=self.tokenizer.pad_token_id,
-            padding_side=self.padding_side,
-            tokenizer=self.tokenizer,
-            eot_id=self.eot_id,
-            add_special_tokens=self.add_special_tokens,
-        )
-
-        sampler_queries = None
-        if self.world_size > 1:
-            sampler_queries = torch.utils.data.distributed.DistributedSampler(
-                dataset["queries"], shuffle=False, drop_last=False
-            )
-
-        if self.new_inference_mode:
-            sampler_queries = LenghtSortedSampler(dataset["queries"])
-
-        # if self.rank == 0:
-        #     print("num queries", len(dataset["queries"]))
-        #     print("num documents", len(dataset["corpus"]))
-
-        queries_loader = DataLoader(
-            dataset["queries"],
-            sampler=sampler_queries,
-            batch_size=batch_size,
-            num_workers=max(1, len(os.sched_getaffinity(0)) // 2 - 2),
-            pin_memory=True,
-            collate_fn=collate_fn,
-        )
-
-        dist.barrier()
-        start = time.time()
-        query_embeddings = encode(
-            model,
-            queries_loader,
-            prompt_type=PromptType.query,
-            world_size=self.world_size,
-            pool_fn=self.pool_fn,
-        )
-        dist.barrier()
-
-        chunk_size, query_chunk_size = estimate_chunk_sizes(query_embeddings)
-
-        # Broadcast chunk sizes from rank 0 so the search loop has the
-        # same number of iterations on every GPU (free_mem can differ).
-        _cs = torch.tensor(
-            [chunk_size, query_chunk_size], dtype=torch.long, device=f"cuda:{self.rank}"
-        )
-        dist.broadcast(_cs, src=0)
-        chunk_size, query_chunk_size = int(_cs[0].item()), int(_cs[1].item())
-        del _cs
-
-        top_scores, top_indices = search(
-            model=model,
-            query_embeddings=query_embeddings,
-            corpus_dataset=dataset["corpus"],
-            collate_fn=collate_fn,
-            top_k=top_k,
-            batch_size=batch_size,
-            estract_positives=False,
-            chunk_size=chunk_size,
-            pool_fn=self.pool_fn,
-        )
-
-        dist.barrier()
-
-        top_scores = top_scores.cpu()
-        top_indices = top_indices.tolist()
-
-        results = {}
-        for i in range(len(top_scores)):
-            results[query_idx_to_id[i]] = {
-                doc_idx_to_id[index]: top_scores[i, j].item()
-                for j, index in enumerate(top_indices[i])
-            }
-
-        qrels = dataset["relevant_docs"]
-        if ignore_identical_ids:
-            # Remove identical ids from results dict in some datasets the queries are also in the documents so they must be removed.
-            for qid, rels in results.items():
-                for pid in list(rels):
-                    if qid == pid:
-                        results[qid].pop(pid)
-
-        (
-            all_scores,
-            ndcg,
-            _map,
-            recall,
-            precision,
-            naucs,
-            mrr,
-            naucs_mrr,
-            cv_recall,
-        ) = calculate_retrieval_scores(
-            results,
-            qrels,
-            list(k_values),
-            skip_first_result,
-        )
-
-        task_specific_scores_ = task_specific_scores(
-            all_scores,
-            dataset["relevant_docs"],
-            results,
-            hf_split=hf_split,
-            hf_subset=hf_subset,
-        )
-        _previous_results_model_meta = None
-        scores = make_score_dict(
-            ndcg,
-            _map,
-            recall,
-            precision,
-            mrr,
-            naucs,
-            naucs_mrr,
-            cv_recall,
-            task_specific_scores_,
-            _previous_results_model_meta,
-        )
-        return {main_score: scores[main_score]}
-
-    @torch.inference_mode()
-    def evaluate_one_pair_classification(self, task_data, model, batch_size):
-        model = model.eval()
-        dataset = task_data["dataset"]
-        task_obj = task_data["task_obj"]
-        main_score = task_data["main_score"]
-
-        embeddings = self._encode_dataset(model, dataset["texts"], batch_size)
-        embeddings_np = embeddings.cpu().numpy()
-
-        emb1 = embeddings_np[dataset["indices1"]]
-        emb2 = embeddings_np[dataset["indices2"]]
-
-        cosine_scores = 1 - paired_cosine_distances(emb1, emb2)
-        manhattan_distances_ = paired_manhattan_distances(emb1, emb2)
-        euclidean_distances_ = paired_euclidean_distances(emb1, emb2)
-        dot_scores = np.sum(emb1 * emb2, axis=1)
-
-        distances = PairClassificationDistances(
-            cosine_scores=cosine_scores.tolist(),
-            euclidean_distances=euclidean_distances_.tolist(),
-            manhattan_distances=manhattan_distances_.tolist(),
-            similarity_scores=cosine_scores.tolist(),
-            dot_scores=dot_scores.tolist(),
-        )
-
-        scores = task_obj._compute_metrics(distances, dataset["labels"])
-
-        # if self.rank == 0:
-        #     for k, v in scores.items():
-        #         if k.startswith("max_"):
-        #             print(f"  {k}: {v:.4f}")
-
-        return {main_score: scores[main_score]}
-
-    @torch.inference_mode()
-    def evaluate_one_multilabel_classification(self, task_data, model, batch_size):
-        model = model.eval()
-        dataset = task_data["dataset"]
-        task_obj = task_data["task_obj"]
-        main_score = task_data["main_score"]
-
-        # if self.rank == 0:
-        #     print("  encoding train set...")
-        train_embeddings = self._encode_dataset(
-            model, dataset["train_texts"], batch_size
-        )
-        # if self.rank == 0:
-        #     print("  encoding test set...")
-        test_embeddings = self._encode_dataset(model, dataset["test_texts"], batch_size)
-
-        X_train_all = train_embeddings.cpu().numpy()
-        X_test = test_embeddings.cpu().numpy()
-
-        train_labels = dataset["train_labels"]
-        test_labels = dataset["test_labels"]
-
-        binarizer = MultiLabelBinarizer()
-        y_test = binarizer.fit_transform(test_labels)
-
-        scores = []
-        for i_exp in range(task_obj.n_experiments):
-            sample_indices, _ = task_obj._undersample_data_indices(
-                train_labels, task_obj.samples_per_label, None
-            )
-            X_train = X_train_all[sample_indices]
-            y_train = binarizer.transform([train_labels[idx] for idx in sample_indices])
-
-            y_pred, classifier = _evaluate_classifier(
-                X_train, y_train, X_test, task_obj.evaluator
-            )
-            scores_exp = task_obj._calculate_scores(y_test, y_pred, X_test, classifier)
-            scores.append(scores_exp)
-
-            # if self.rank == 0:
-            #     print(
-            #         f"  experiment {i_exp + 1}/{task_obj.n_experiments}: "
-            #         f"f1={scores_exp['f1']:.4f}, lrap={scores_exp['lrap']:.4f}"
-            #     )
-
-        avg_scores = {k: float(np.mean([s[k] for s in scores])) for k in scores[0]}
-        # if self.rank == 0:
-        #     print(f"  avg {main_score}: {avg_scores.get(main_score, 'N/A')}")
-
-        return {main_score: avg_scores[main_score]}
-
-    @torch.inference_mode()
-    def evaluate_one_clustering(self, task_data, model, batch_size):
-        model = model.eval()
-        dataset = task_data["dataset"]
-        task_obj = task_data["task_obj"]
-        main_score = task_data["main_score"]
-
-        embeddings = self._encode_dataset(model, dataset["texts"], batch_size)
-        embeddings_np = embeddings.cpu().numpy()
-
-        labels = dataset["labels"]
-        labels = [l if isinstance(l, list) else [l] for l in labels]
-
-        v_measures, _ = _evaluate_clustering_bootstrapped(
-            embeddings_np,
-            labels,
-            n_clusters=task_obj.n_clusters,
-            cluster_size=task_obj.max_documents_per_cluster,
-            kmean_batch_size=task_obj.k_mean_batch_size,
-            max_depth=task_obj.max_depth,
-            rng_state=task_obj.rng_state,
-            seed=task_obj.seed,
-        )
-
-        all_v = list(itertools.chain.from_iterable(v_measures.values()))
-        mean_v = float(np.mean(all_v))
-        std_v = float(np.std(all_v))
-        # if self.rank == 0:
-        #     print(f"  v_measure={mean_v:.4f} (std={std_v:.4f})")
-
-        return {main_score: mean_v}
-
-    @torch.inference_mode()
-    def evaluate_one_classification(self, task_data, model, batch_size):
-        model = model.eval()
-        dataset = task_data["dataset"]
-        task_obj = task_data["task_obj"]
-        main_score = task_data["main_score"]
-
-        # if self.rank == 0:
-        #     print("  encoding train set...")
-        train_embeddings = self._encode_dataset(
-            model, dataset["train_texts"], batch_size
-        )
-        # if self.rank == 0:
-        #     print("  encoding test set...")
-        test_embeddings = self._encode_dataset(model, dataset["test_texts"], batch_size)
-
-        X_train_all = train_embeddings.cpu().numpy()
-        X_test = test_embeddings.cpu().numpy()
-
-        train_labels = dataset["train_labels"]
-        test_labels = dataset["test_labels"]
-
-        evaluator_model = task_obj.evaluator_model
-        if "random_state" in evaluator_model.get_params():
-            evaluator_model = evaluator_model.set_params(random_state=task_obj.seed)
-
-        scores = []
-        idxs = None
-        for i_exp in range(task_obj.n_experiments):
-            if idxs is None:
-                idxs = list(range(len(train_labels)))
-            rng_state = np.random.RandomState(task_obj.seed + i_exp)
-            rng_state.shuffle(idxs)
-
-            label_counter = defaultdict(int)
-            sampled_idxs = []
-            for i in idxs:
-                label = train_labels[i]
-                if label_counter[label] < task_obj.samples_per_label:
-                    sampled_idxs.append(i)
-                    label_counter[label] += 1
-
-            X_train = X_train_all[sampled_idxs]
-            y_train = [train_labels[i] for i in sampled_idxs]
-
-            clf = clone(evaluator_model)
-            clf.fit(X_train, y_train)
-            y_pred = clf.predict(X_test)
-
-            scores_exp = task_obj._calculate_scores(test_labels, y_pred)
-            scores.append(scores_exp)
-
-            # if self.rank == 0:
-            #     print(
-            #         f"  experiment {i_exp + 1}/{task_obj.n_experiments}: "
-            #         f"accuracy={scores_exp['accuracy']:.4f}, f1={scores_exp['f1']:.4f}"
-            #     )
-
-        avg_scores = {
-            k: (
-                float(np.mean(values))
-                if (values := [s[k] for s in scores if s[k] is not None])
-                else np.nan
-            )
-            for k in scores[0].keys()
-        }
-        # if self.rank == 0:
-        #     print(f"  avg {main_score}: {avg_scores.get(main_score, 'N/A')}")
-
-        return {main_score: avg_scores[main_score]}
-
-    @torch.inference_mode()
-    def evaluate_one_sts(self, task_data, model, batch_size):
-        model = model.eval()
-        dataset = task_data["dataset"]
-        task_obj = task_data["task_obj"]
-        main_score = task_data["main_score"]
-
-        embeddings = self._encode_dataset(model, dataset["texts"], batch_size)
-        embeddings_np = embeddings.cpu().numpy()
-
-        emb1 = embeddings_np[dataset["indices1"]]
-        emb2 = embeddings_np[dataset["indices2"]]
-
-        cosine_scores = 1 - paired_cosine_distances(emb1, emb2)
-        manhattan_distances_ = -paired_manhattan_distances(emb1, emb2)
-        euclidean_distances_ = -paired_euclidean_distances(emb1, emb2)
-
-        scores_dict = {
-            "cosine_scores": cosine_scores.tolist(),
-            "manhattan_distances": manhattan_distances_.tolist(),
-            "euclidean_distances": euclidean_distances_.tolist(),
-            "similarity_scores": None,
-        }
-
-        scores = task_obj._calculate_scores(scores_dict, dataset["labels"])
-
-        # if self.rank == 0:
-        #     for k, v in scores.items():
-        #         print(f"  {k}: {v:.4f}")
-
-        return {main_score: scores[main_score]}
-
-    @torch.inference_mode()
-    def evaluate_one_summarization(self, task_data, model, batch_size):
-        model = model.eval()
-        dataset = task_data["dataset"]
-        main_score = task_data["main_score"]
-
-        embeddings = self._encode_dataset(model, dataset["texts"], batch_size)
-        embeddings_np = embeddings.cpu().numpy()
-
-        human_indices = dataset["human_indices"]
-        machine_indices = dataset["machine_indices"]
-        human_lens = dataset["human_lens"]
-        machine_lens = dataset["machine_lens"]
-        gold_scores = dataset["gold_scores"]
-
-        embs_human = embeddings_np[human_indices]
-        embs_machine = embeddings_np[machine_indices]
-
-        embs_human_per_sample = np.split(embs_human, np.cumsum(human_lens)[:-1])
-        embs_machine_per_sample = np.split(embs_machine, np.cumsum(machine_lens)[:-1])
-
-        cosine_spearman_scores = []
-        cosine_pearson_scores = []
-        dot_spearman_scores = []
-        dot_pearson_scores = []
-
-        n_skipped = 0
-        for i, (embs_human_i, embs_machine_i) in enumerate(
-            zip(embs_human_per_sample, embs_machine_per_sample)
-        ):
-            cosine_pred = []
-            dot_pred = []
-            human_scores = []
-
-            embs_human_i_norm = embs_human_i / np.linalg.norm(
-                embs_human_i, axis=1, keepdims=True
-            )
-
-            for emb_machine, gold_score in zip(embs_machine_i, gold_scores[i]):
-                emb_machine_norm = emb_machine / np.linalg.norm(emb_machine)
-                cos_scores = emb_machine_norm @ embs_human_i_norm.T
-                dot_scores = emb_machine @ embs_human_i.T
-
-                cosine_pred.append(float(np.max(cos_scores)))
-                dot_pred.append(float(np.max(dot_scores)))
-                human_scores.append(gold_score)
-
-            if (
-                len(set(human_scores)) == 1
-                or len(set(dot_pred)) == 1
-                or len(set(cosine_pred)) == 1
-            ):
-                n_skipped += 1
-                continue
-
-            cosine_spearman_scores.append(
-                spearmanr(human_scores, cosine_pred).statistic
-            )
-            cosine_pearson_scores.append(pearsonr(human_scores, cosine_pred).statistic)
-            dot_spearman_scores.append(spearmanr(human_scores, dot_pred).statistic)
-            dot_pearson_scores.append(pearsonr(human_scores, dot_pred).statistic)
-
-        scores = {
-            "cosine_spearman": float(np.mean(cosine_spearman_scores)),
-            "cosine_pearson": float(np.mean(cosine_pearson_scores)),
-            "dot_spearman": float(np.mean(dot_spearman_scores)),
-            "dot_pearson": float(np.mean(dot_pearson_scores)),
-            "pearson": float(np.mean(cosine_pearson_scores)),
-            "spearman": float(np.mean(cosine_spearman_scores)),
-        }
-
-        # if self.rank == 0:
-        #     print(f"  {n_skipped} samples skipped (constant scores)")
-        #     for k, v in scores.items():
-        #         print(f"  {k}: {v:.4f}")
-
-        return {main_score: scores[main_score]}
-
-    @torch.inference_mode()
-    def evaluate_one_bitext_mining(self, task_data, model, batch_size):
-        model = model.eval()
-        dataset = task_data["dataset"]
-        task_obj = task_data["task_obj"]
-        main_score = task_data["main_score"]
-
-        embeddings = self._encode_dataset(model, dataset["texts"], batch_size)
-        embeddings_np = embeddings.cpu().numpy()
-
-        emb1 = embeddings_np[dataset["indices1"]]
-        emb2 = embeddings_np[dataset["indices2"]]
-
-        norms1 = np.linalg.norm(emb1, axis=1, keepdims=True)
-        norms2 = np.linalg.norm(emb2, axis=1, keepdims=True)
-        norms1[norms1 == 0] = 1
-        norms2[norms2 == 0] = 1
-        emb1_norm = emb1 / norms1
-        emb2_norm = emb2 / norms2
-
-        nearest_neighbors = []
-        chunk_size = 1000
-        for start in range(0, len(emb1_norm), chunk_size):
-            end = min(start + chunk_size, len(emb1_norm))
-            sim = emb1_norm[start:end] @ emb2_norm.T
-            top_idx = np.argmax(sim, axis=1)
-            top_scores = sim[np.arange(len(top_idx)), top_idx]
-            for idx, score in zip(top_idx, top_scores):
-                nearest_neighbors.append({"corpus_id": int(idx), "score": float(score)})
-
-        gold = list(zip(range(len(emb1)), range(len(emb1))))
-        scores = task_obj._compute_metrics(nearest_neighbors, gold)
-
-        return {main_score: scores[main_score]}
 
     # -------------------------------------------------------------------------
     # Main evaluation loop
@@ -1471,7 +345,8 @@ class evaluate_retrieval:
                 print(f"\nevaluating {name} task {i}/{n_tasks}")
 
             if task_type == "Retrieval":
-                output_res = self.evaluate_one(
+                output_res = evaluate_one_fn(
+                    self,
                     dataset=task_data["dataset"],
                     task_specific_scores=task_data["task_specific_scores"],
                     ignore_identical_ids=task_data["ignore_identical_ids"],
@@ -1482,31 +357,34 @@ class evaluate_retrieval:
                     batch_size=batch_size,
                 )
             elif task_type == "PairClassification":
-                output_res = self.evaluate_one_pair_classification(
-                    task_data, model, batch_size
+                output_res = evaluate_one_pair_classification_fn(
+                    self, task_data, model, batch_size
                 )
             elif task_type == "MultilabelClassification":
-                output_res = self.evaluate_one_multilabel_classification(
-                    task_data, model, batch_size
+                output_res = evaluate_one_multilabel_classification_fn(
+                    self, task_data, model, batch_size
                 )
             elif task_type == "Clustering":
-                output_res = self.evaluate_one_clustering(task_data, model, batch_size)
+                output_res = evaluate_one_clustering_fn(
+                    self, task_data, model, batch_size
+                )
             elif task_type == "Classification":
-                output_res = self.evaluate_one_classification(
-                    task_data, model, batch_size
+                output_res = evaluate_one_classification_fn(
+                    self, task_data, model, batch_size
                 )
             elif task_type == "STS":
-                output_res = self.evaluate_one_sts(task_data, model, batch_size)
+                output_res = evaluate_one_sts_fn(self, task_data, model, batch_size)
             elif task_type == "Summarization":
-                output_res = self.evaluate_one_summarization(
-                    task_data, model, batch_size
+                output_res = evaluate_one_summarization_fn(
+                    self, task_data, model, batch_size
                 )
             elif task_type == "BitextMining":
-                output_res = self.evaluate_one_bitext_mining(
-                    task_data, model, batch_size
+                output_res = evaluate_one_bitext_mining_fn(
+                    self, task_data, model, batch_size
                 )
             elif task_type == "Reranking":
-                output_res = self.evaluate_one(
+                output_res = evaluate_one_fn(
+                    self,
                     dataset=task_data["dataset"],
                     task_specific_scores=task_data["task_specific_scores"],
                     ignore_identical_ids=task_data["ignore_identical_ids"],

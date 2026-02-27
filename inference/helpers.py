@@ -18,24 +18,6 @@ from utils.helpers import print_memory_consumed, return_formatted
 
 # ***********************************************************************************************
 
-def last_token_pool(last_hidden_states, attention_mask):
-    left_padding = attention_mask[:, -1].sum() == attention_mask.shape[0]
-    if left_padding:
-        return last_hidden_states[:, -1]
-    else:
-        sequence_lengths = attention_mask.sum(dim=1) - 1
-        batch_size = last_hidden_states.shape[0]
-        return last_hidden_states[
-            torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths
-        ]
-
-
-def mean_pool(last_hidden_states, attention_mask):
-    mask = attention_mask.unsqueeze(-1)  # (B, L, 1)
-    masked_sum = (last_hidden_states * mask).sum(dim=1)  # (B, H)
-    mask_sum = mask.sum(dim=1).clamp(min=1e-9)  # (B, 1)
-    return masked_sum / mask_sum
-
 
 def abs_task_preprocessing(task, eval_split):
     """Return a list of (data_split, hf_subset) tuples – one per subset."""
@@ -80,7 +62,6 @@ def search(
     query_chunk_size=None,
     print_every=2 * 10**5,
     verbose=False,
-    pool_fn=last_token_pool,
 ):
     """
     Search for top-k documents and compute query-positive scores.
@@ -231,7 +212,6 @@ def search(
             prompt_type=PromptType.document,
             world_size=world_size,
             divided_by_chunks=True,
-            pool_fn=pool_fn,
         )
 
         # torch.cuda.synchronize()
@@ -450,7 +430,6 @@ def encode(
     prompt_type,
     divided_by_chunks=False,
     stream_to_cpu=False,
-    pool_fn=last_token_pool,
 ):
 
     # distributed sampler will duplicate examples at the end
@@ -469,15 +448,11 @@ def encode(
         batch = {key: val.to(model.device) for key, val in batch.items()}
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 
-            out_embeddings = model(
+            batch_embeddings = model(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
             )
-            out_embeddings = pool_fn(
-                out_embeddings.last_hidden_state,
-                batch["attention_mask"],
-            )
-            batch_embeddings = F.normalize(out_embeddings, p=2, dim=1)
+
         if stream_to_cpu:
             embeddings.append(batch_embeddings.float().cpu())
         else:

@@ -6,14 +6,15 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import argparse
 from transformers import AutoModel, AutoTokenizer
 import torch.distributed as dist
-from sentence_transformers import SentenceTransformer
-from inference.create_datasets import (
+from utils.create_datasets import (
     instruction_template_qwen3,
     instruction_template_embeddinggemma,
 )
-from inference.helpers import last_token_pool, mean_pool
+
+from models.modules import add_pooling_layers, last_token_pool, mean_pool
 import mteb
 from datetime import timedelta
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -30,9 +31,7 @@ def main():
     dist.init_process_group(
         "nccl",
         device_id=torch.device("cuda", LOCAL_RANK),
-        timeout=timedelta(
-            seconds=60
-        ),  
+        timeout=timedelta(seconds=60),
     )
     rank = dist.get_rank()
     torch.cuda.set_device(LOCAL_RANK)
@@ -90,6 +89,7 @@ def main():
 
     model = DDP(model, device_ids=[LOCAL_RANK])
     model = torch.compile(model)
+    model = add_pooling_layers(model, pool_fn)
 
     results, summary = retrieval_evaluator.evaluate(model, batch_size=64)
 
@@ -97,9 +97,9 @@ def main():
         print(results)
         print(summary)
         label = args.benchmark if args.benchmark else args.task_name
-        with open(f'{model_name}_{label}_results.json', 'w', encoding='utf-8') as f:
+        with open(f"{model_name}_{label}_results.json", "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=4)
-        with open(f'{model_name}_{label}_summary.json', 'w', encoding='utf-8') as f:
+        with open(f"{model_name}_{label}_summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=4)
 
     dist.destroy_process_group()

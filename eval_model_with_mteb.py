@@ -1,9 +1,6 @@
 import argparse
-from sentence_transformers import SentenceTransformer
 import mteb
 import time
-from dataclasses import field
-import json
 import numpy as np
 
 
