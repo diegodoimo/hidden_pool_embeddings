@@ -28,8 +28,8 @@ from huggingface_hub import snapshot_download
 from safetensors.torch import load_file
 from peft import TaskType
 
-from utils.t5gemma2 import T5Gemma2Encoder
-from utils.gemma3model import (
+from models.t5gemma2 import T5Gemma2Encoder
+from models.gemma3model import (
     MeanPooling,
     Projection,
     Normalize,

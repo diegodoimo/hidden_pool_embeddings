@@ -6,9 +6,9 @@ import json
 from collections import defaultdict
 from torch.utils.data import DataLoader
 import torch.distributed as dist
+from torch.utils.data.distributed import DistributedSampler
 from argparse import ArgumentParser
 
-from datasets import load_dataset, load_from_disk, Dataset
 from transformers import GemmaTokenizerFast
 from transformers import AutoConfig
 from peft import LoraConfig, TaskType, get_peft_model
@@ -22,10 +22,7 @@ from utils.create_datasets import (
     load_hard_negatives_datasets,
     QWEN3_600M_10DATASET_SUBSET,
 )
-from utils.dataloader_helpers import (
-    collate_fn_with_padding,
-    collate_fn_with_hard_negatives,
-)
+from utils.dataloader_helpers import collate_fn_with_hard_negatives
 from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLossHardNegatives
 from typing import Callable
 from functools import partial
@@ -216,15 +213,16 @@ class Trainer:
 
             for index, batch in enumerate(train_loader):
 
-                batch = {key: val.to(self.model.device) for key, val in batch.items()}
+                batch = {key: val.to(self.device) for key, val in batch.items()}
 
                 query_inputs = batch["query_token_ids"]
                 query_mask = batch["query_attention_mask"]
                 all_doc_inputs = batch["all_doc_token_ids"]
                 all_doc_mask = batch["all_doc_attention_mask"]
                 doc_ids = batch["pos_ids"]
-                B = batch["batch_size"]
                 num_neg = batch["num_hard_negatives"]
+
+                B = query_inputs.shape[0]
 
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 
@@ -304,7 +302,7 @@ class Trainer:
                     if RANK == 0:
                         print("saving checkpoint")
 
-                    output_dir = f"{len(checkpointing_steps)}ckpts{filename}/step_{completed_steps}"
+                    output_dir = f"ckpts{filename}/step_{completed_steps}"
                     if args.output_dir is not None:
                         output_dir = os.path.join(args.output_dir, output_dir)
                     save_model(
@@ -354,7 +352,7 @@ def main():
         max_query_len=args.max_query_len,
         max_passage_len=args.max_passage_len,
         rank=RANK,
-        datasets_subset=args.datasets_subset,
+        datasets_subset=QWEN3_600M_10DATASET_SUBSET,
     )
 
     dist.barrier()
@@ -363,7 +361,7 @@ def main():
         start = time.time()
         print("dataloader preparation")
 
-    sampler = LengthBalancedDistributedSampler(
+    sampler = DistributedSampler(
         train_dataset,
         num_replicas=WORLD_SIZE,
         rank=RANK,
