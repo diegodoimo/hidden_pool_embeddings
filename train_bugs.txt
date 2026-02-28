@@ -1,0 +1,285 @@
+================================================================================
+            TRAINING CODE REVIEW — BUG FIXES & IMPROVEMENT SUGGESTIONS
+================================================================================
+
+Date: 2026-02-28
+Files reviewed: train.py, utils/losses.py, utils/helpers.py,
+                utils/dataloader_helpers.py, models/modules.py,
+                models/t5gemma2model.py
+
+================================================================================
+PART 1: BUGS FOUND AND FIXED
+================================================================================
+
+------------------------------------------------------------------------------
+Bug 1 — CRASH: .to(device) called on a plain Python int
+  File: train.py, line 177 (original)
+  Severity: Critical (prevents training from starting)
+------------------------------------------------------------------------------
+
+The collate function `collate_fn_with_hard_negatives` returns the field
+`num_hard_negatives` as a plain Python int. The training loop moves every
+value in the batch dict to the GPU with:
+
+    batch = {key: val.to(self.device) for key, val in batch.items()}
+
+Calling `.to()` on a Python int raises:
+    AttributeError: 'int' object has no attribute 'to'
+
+FIX APPLIED:
+
+    batch = {
+        key: val.to(self.device) if isinstance(val, torch.Tensor) else val
+        for key, val in batch.items()
+    }
+
+
+------------------------------------------------------------------------------
+Bug 2 — LOGIC: Doc-ID mask incorrectly covers hard negatives
+  File: utils/losses.py, EmbeddingGemmaLossHardNegatives, lines 178-193
+  Severity: Medium (causes over-masking, weakens training signal)
+------------------------------------------------------------------------------
+
+WHAT THE CODE DID:
+  The positive document's doc_id was broadcast to all 8 positions in each
+  query's group (1 positive + 7 hard negatives):
+
+      doc_ids_expanded = doc_ids.unsqueeze(1).expand(-1, 1+num_hard_negatives)
+      doc_ids_flat = doc_ids_expanded.reshape(-1)   # (B*8,)
+
+  This means doc_ids_flat[j*8+k] = doc_ids[j] for ALL k (0..7). When two
+  queries i and j share the same positive document, the resulting mask
+  marks ALL 8 entries from j's group as duplicates for query i — including
+  j's 7 hard negatives, which are entirely different documents.
+
+WHY IT MATTERS:
+  Hard negatives from other queries are valid negatives that carry useful
+  gradient signal. Masking them throws away training signal unnecessarily.
+  The effect scales with the fraction of duplicate positives in a batch.
+
+FIX APPLIED:
+  Replaced with a (B, B, 8) 3D mask that only sets the positive position
+  (index 0) for matching doc_ids:
+
+      doc_id_matches_qq = doc_ids.unsqueeze(1) == doc_ids.unsqueeze(0)
+      doc_id_matches_qq.fill_diagonal_(False)
+
+      doc_id_mask_3d = torch.zeros(B, B, num_docs_per_query, dtype=bool)
+      doc_id_mask_3d[:, :, 0] = doc_id_matches_qq
+      doc_id_matches = doc_id_mask_3d.view(B, -1)
+
+  This correctly masks only the positive position of other queries with
+  matching doc_ids, leaving their hard negatives unmasked.
+
+
+------------------------------------------------------------------------------
+Bug 3 — WASTE: Hard negative embeddings computed but discarded
+  File: train.py, forward pass (lines ~191-215)
+  Severity: Low (correctness is fine, but wastes GPU memory and FLOPS)
+------------------------------------------------------------------------------
+
+When `distributed_loss=True`, the loss switches to
+EmbeddingGemmaLossDistributed, which only accepts (queries, docs, doc_ids)
+and ignores hard negatives. But the forward pass still runs the full
+all_doc_inputs tensor (B + B*num_neg sequences) through the encoder and
+computes neg_embeddings — all of which are then discarded.
+
+For batch_size=32 and num_neg=7, this means 224 extra encoder forward
+passes per batch (7x the necessary doc computation).
+
+FIX APPLIED:
+  Branched the forward pass: when hard negatives are not used by the loss,
+  only the first B document sequences (the positives) are forwarded.
+
+
+------------------------------------------------------------------------------
+Bug 4 — MINOR: Log/eval/checkpoint steps array starts at 0
+  File: utils/helpers.py, get_cpt_steps(), line 78
+  Severity: Low (step 0 is never triggered, wastes an array slot)
+------------------------------------------------------------------------------
+
+    steps = np.arange(0, max_train_steps, step)   # starts at 0
+
+In the training loop, completed_steps is incremented BEFORE the check:
+
+    completed_steps += 1
+    if completed_steps in log_steps: ...
+
+So step 0 is unreachable. The first effective log/eval/checkpoint point
+is at index 1 of the array.
+
+FIX APPLIED:
+  Changed to start at `step` instead of 0:
+
+    steps = np.arange(step, max_train_steps + 1, step)
+
+
+================================================================================
+PART 2: OBSERVATIONS & SUGGESTIONS FOR IMPROVEMENT
+================================================================================
+
+------------------------------------------------------------------------------
+1. Spherical regularization loss has no weighting coefficient
+  Files: utils/losses.py (both loss classes, return statements)
+------------------------------------------------------------------------------
+
+Both losses return `Ls + loss_q`, adding the spherical regularization
+directly to the contrastive loss without any weight.
+
+  - Ls (pairwise_dot_squared): average squared cosine similarity between
+    all embedding pairs. For unit-norm vectors this is in [0, 1], and
+    typically << 1 in practice (e.g. ~0.01 for well-spread embeddings).
+
+  - loss_q (cross-entropy): ranges from 0 to log(B * num_docs_per_query).
+    For B=32 and 8 docs per query, the upper bound is ~5.5. Early in
+    training it will be close to this.
+
+The spherical loss contributes negligible gradient compared to the
+contrastive loss. Consider adding a tunable coefficient:
+
+    return lambda_spherical * Ls + loss_q
+
+A reasonable starting range might be lambda_spherical in [0.1, 10.0],
+calibrated by monitoring both loss components during early training.
+
+
+------------------------------------------------------------------------------
+2. Loss is asymmetric (query-to-doc only)
+  Files: utils/losses.py (both loss classes)
+------------------------------------------------------------------------------
+
+Both EmbeddingGemmaLossHardNegatives and EmbeddingGemmaLossDistributed
+only compute the query-to-doc cross-entropy direction. The InfoNCELoss
+class in the same file uses a symmetric loss:
+
+    loss = (loss_q + loss_k) / 2
+
+Symmetric contrastive losses are standard practice (used in CLIP, SimCLR,
+etc.) and generally improve training stability and embedding quality. The
+doc-to-query direction ensures that documents also learn to discriminate
+between queries, not just the other way around.
+
+Note: for EmbeddingGemmaLossHardNegatives, the logits matrix is (B, B*8),
+which is not square. A symmetric variant would require constructing the
+transposed view carefully (each doc attending to all queries). This is
+more complex but doable.
+
+For EmbeddingGemmaLossDistributed, the logits matrix is (B, B) and the
+transpose is straightforward — the commented-out code suggests this was
+explored:
+
+    # loss_k = F.cross_entropy(logits_T_masked, labels)
+
+However, the similarity mask is query-centric (thresholds are based on
+each query's positive similarity), so the mask is NOT symmetric. A proper
+symmetric version needs a separate mask computation for the doc-to-query
+direction.
+
+
+------------------------------------------------------------------------------
+3. Similarity mask threshold is hard-coded and very tight
+  Files: utils/losses.py, lines 192 and 89
+------------------------------------------------------------------------------
+
+Both loss classes use:
+
+    similarity_mask = logits >= (positive_logits + 0.1)
+
+The +0.1 is in logit space, where logit = cosine_sim / temperature.
+With temperature=0.07:
+
+    0.1 in logit space = 0.1 * 0.07 = 0.007 in cosine similarity space
+
+This is an extremely tight margin. Any document with cosine similarity
+just 0.007 above the positive's cosine similarity gets masked. In
+practice, this means:
+
+  - Early training (low positive similarity): few entries masked
+  - Late training (high positive similarity): potentially many entries
+    masked, including useful hard negatives
+
+SUGGESTION: make the margin a constructor parameter, and consider
+defining it in cosine similarity space rather than logit space:
+
+    margin_in_logit_space = self.cosine_margin / self.temperature
+    similarity_mask = logits >= (positive_logits + margin_in_logit_space)
+
+
+------------------------------------------------------------------------------
+4. Spherical loss on docs includes all hard negatives
+  File: utils/losses.py, EmbeddingGemmaLossHardNegatives
+------------------------------------------------------------------------------
+
+The pairwise_dot_squared for docs is computed over all_docs_flat, which
+has B * (1 + num_neg) = B * 8 vectors. This includes:
+  - Positives from different queries (should be spread apart — good)
+  - Hard negatives from the same query (semantically related to each
+    other — pushing them apart may fight the retrieval objective)
+  - Positive + negatives of the same query (the positive and hard
+    negatives are different documents by construction, but they were
+    retrieved for the same query, so they tend to cluster)
+
+A more targeted approach could compute the spherical loss only over
+the B positive documents (excluding hard negatives), or over a random
+subsample, to avoid the O((B*8)^2) cost and the semantic tension.
+
+
+------------------------------------------------------------------------------
+5. EmbeddingGemmaLossDistributed doesn't support hard negatives
+  File: utils/losses.py, train.py
+------------------------------------------------------------------------------
+
+When scaling to multiple GPUs with distributed_loss=True, the code falls
+back to in-batch negatives only. This loses the benefit of mined hard
+negatives. A combined approach would:
+
+  1. Gather all query and positive-doc embeddings across ranks
+  2. Keep hard negatives local (no gather needed, already per-query)
+  3. Compute logits against both gathered in-batch docs AND local
+     hard negatives
+  4. Apply masking and compute cross-entropy over the combined set
+
+This would combine the large effective batch size from distribution
+with the quality hard negatives from mining.
+
+
+------------------------------------------------------------------------------
+6. No gradient accumulation support
+  File: train.py
+------------------------------------------------------------------------------
+
+The code sets gradient_accumulation_steps = 1 and the training loop has
+no accumulation logic. For large models where per-GPU batch size must be
+small (e.g. 2-4), gradient accumulation would allow a larger effective
+batch, which is important for contrastive learning where batch size
+directly impacts the number of negatives.
+
+If gradient accumulation is added, the loss should be divided by the
+number of accumulation steps, and optimizer.step() / zero_grad() should
+only execute every N steps.
+
+
+------------------------------------------------------------------------------
+7. DataLoader shuffle is disabled
+  File: train.py, line 389
+------------------------------------------------------------------------------
+
+The DistributedSampler is created with shuffle=False:
+
+    sampler = DistributedSampler(..., shuffle=False, ...)
+
+The comment says "dataset collection is already sorted by length", which
+suggests length-based batching for padding efficiency. This is a
+reasonable choice, but has a downside: the model sees the same pairs of
+queries in the same batch every epoch, which can cause overfitting to
+specific negative pairings.
+
+Consider: shuffle=True with a per-epoch seed (sampler.set_epoch(epoch))
+is the standard DDP practice. If length-sorted batching is critical for
+memory, a compromise is bucket-based sampling with shuffling within
+length buckets.
+
+
+================================================================================
+END OF REPORT
+================================================================================

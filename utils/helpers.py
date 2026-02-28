@@ -75,7 +75,7 @@ def get_cpt_steps(nsteps, max_train_steps, logspace=True):
     else:
         step = max(1, int(np.around(max_train_steps / nsteps)))
 
-        steps = np.arange(0, max_train_steps, step).astype(int)
+        steps = np.arange(step, max_train_steps + 1, step).astype(int)
 
     return steps, step
 

@@ -9,7 +9,7 @@ tokenizers
 transformers==5.2.0
 protobuf
 evaluate
-sentence-transformers
-mteb=2.10.1
+sentence-transformers==5.2.3
+mteb==2.10.1
 
 

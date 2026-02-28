@@ -70,11 +70,11 @@ QWEN3_600M_DATASET_SUBSET = [
 
 # MTEB 20-task subset (mteb_20task_subset_selection.md) - minimizes eval time while preserving category averages
 TASK_DICT = {
-    "mteb_eng_v2_20": [
+    "mteb_eng_v2_reduced": [
         "SCIDOCS",
         "CQADupstackGamingRetrieval",
         "CQADupstackUnixRetrieval",
-        # "HotpotQAHardNegatives",
+        "HotpotQAHardNegatives",
         # "TRECCOVID",
         # "TwentyNewsgroupsClustering.v2",
         # "BiorxivClusteringP2P.v2",
@@ -82,8 +82,8 @@ TASK_DICT = {
         # "StackExchangeClustering.v2",
         # "AskUbuntuDupQuestions",
         # "BIOSSES",
-        # "STS17",
-        # "STS12",
+        "STS17",
+        "STS12",
         # "AmazonCounterfactualClassification",
         # "MassiveScenarioClassification",
         # "TweetSentimentExtractionClassification",
@@ -101,7 +101,7 @@ def get_eval_tasks(eval_set):
     if eval_set == "mteb_multilingual_v2":
         benchmark = mteb.get_benchmark("MTEB(Multilingual, v2)")
         tasks = list(benchmark.tasks)
-    elif eval_set == "":
+    elif eval_set == "mteb_eng_v2":
         benchmark = mteb.get_benchmark("MTEB(eng, v2)")
         tasks = list(benchmark.tasks)
     elif eval_set == "mteb_eng_v2_20":
@@ -519,6 +519,7 @@ def create_dataset(
     tokenizer,
     prompt_type,
     max_length,
+    verbose=False
 ):
     """Create dataset.
 
@@ -558,7 +559,7 @@ def create_dataset(
     )
     new_ds = dataset.map(input_to_dict, batched=True, batch_size=10000)
 
-    if rank == 0:
+    if rank == 0 and verbose:
         print(f"prompt constructed in {(time.time()-start)/60:.2f}min")
         start = time.time()
 
@@ -575,7 +576,7 @@ def create_dataset(
 
     new_ds = new_ds.filter(filter_wrapper, batched=True, batch_size=10000)
 
-    if rank == 0:
+    if rank == 0 and verbose:
         print(f"dataset filtered in {(time.time()-start)/60:.2f}min")
     # Store removed IDs as an attribute on the dataset
     new_ds.removed_long = all_removed_long_ids
@@ -663,9 +664,7 @@ def create_hard_negatives_datasets(
             task_metadata=task_metadata,
             num_hard_negatives=num_hard_negatives,
         )
-        ds = ds.map(build_fn, batched=True, batch_size=10000)
-        if rank == 0:
-            print(f"    prompt constructed in {(time.time()-start)/60:.2f}min")
+        ds = ds.map(build_fn, batched=True, batch_size=10000,)
 
         # Step 3: Add lengths and dataset_name for sorting (tokenization done in collate)
         # len_fn = partial(
@@ -678,6 +677,10 @@ def create_hard_negatives_datasets(
         # )
         # ds = ds.map(len_fn, batched=True, batch_size=1000)
 
+        # Ensure dataset_name column exists (parquet files may or may not have it)
+        if "dataset_name" not in ds.column_names:
+            ds = ds.add_column("dataset_name", [ds_name] * len(ds))
+
         # Keep only columns needed for collate
         ds = ds.sort("total_length", reverse=True)
         cols_to_keep = {
@@ -685,6 +688,7 @@ def create_hard_negatives_datasets(
             "positive_prompt",
             "negative_prompts",
             "positive_id",
+            "query_id",
             "dataset_name",
             "total_length"
         }

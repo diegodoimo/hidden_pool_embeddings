@@ -119,87 +119,83 @@ class EmbeddingGemmaLossHardNegatives(nn.Module):
         self.num_hard_negatives = num_hard_negatives
 
     @staticmethod
-    def pairwise_dot_squared(x, B):
+    def pairwise_dot_squared(x, B, ids=None):
         dots = x @ x.t()
         dots_sq = dots**2
-        # Zero out diagonal in-place
         dots_sq.fill_diagonal_(0)
-        return dots_sq.sum() / (B * (B - 1))
+        #if ids is not None:
+        same_id = ids.unsqueeze(1) == ids.unsqueeze(0)
+        same_id.fill_diagonal_(False)
+        dots_sq.masked_fill_(same_id, 0)
+        num_pairs = (B * (B - 1) - same_id.float().sum()).clamp(min=1)
+        return dots_sq.sum() / num_pairs
+        #return dots_sq.sum() / (B * (B - 1))
 
     def forward(
         self,
-        query_embeddings: torch.Tensor,  # (B,)
-        doc_embeddings: torch.Tensor,  # (B,) positives
-        hard_neg_embeddings: torch.Tensor,  # (B, 7, D) hard negatives
-        doc_ids: torch.Tensor,  # (B,) document IDs
+        query_embeddings: torch.Tensor,  # (B, D)
+        doc_embeddings: torch.Tensor,  # (B, D) positives
+        hard_neg_embeddings: torch.Tensor,  # (B, num_hard_negatives, D)
+        doc_ids: torch.Tensor,  # (B,)
+        query_ids: torch.Tensor,  # (B,)
     ):
         batch_size = query_embeddings.size(0)
 
-        # --- 1. Combine positives and hard negatives ---
-        # Shape: (B, 1+7, D) = (B, 8, D)
-        all_docs = torch.cat(
-            [doc_embeddings.unsqueeze(1), hard_neg_embeddings], dim=1  # (B, 1, D)  # (B, 7, D)
-        )
-
-        # Flatten for pairwise operations: (B*8, D)
-        all_docs_flat = all_docs.view(batch_size * (1 + self.num_hard_negatives), -1)
-
-        # --- 2. Spherical Loss ---
-        # Only compute on unique embeddings (queries and all docs)
-        Ls_queries = self.pairwise_dot_squared(query_embeddings, B=batch_size)
-        Ls_docs = self.pairwise_dot_squared(all_docs_flat, B=all_docs_flat.size(0))
+        # --- 1. Spherical Loss ---
+        Ls_queries = self.pairwise_dot_squared(query_embeddings, B=batch_size, ids=query_ids)
+        Ls_docs = self.pairwise_dot_squared(doc_embeddings, B=batch_size, ids=doc_ids)
         Ls = Ls_queries + Ls_docs
 
+        # --- 2. Combine positives and hard negatives ---
+        # (B, 1+num_hard_negatives, D)
+        all_docs = torch.cat(
+            [doc_embeddings.unsqueeze(1), hard_neg_embeddings], dim=1
+        )
+
+        # (B*(1+num_hard_negatives), D)
+        num_docs_per_query = 1 + self.num_hard_negatives
+        all_docs_flat = all_docs.view(batch_size * num_docs_per_query, -1)
+
         # --- 3. Compute Logits ---
-        # queries: (B, D), all_docs_flat: (B*8, D)
-        # logits: (B, B*8)
+        # (B, B*num_docs_per_query)
         logits = torch.matmul(query_embeddings, all_docs_flat.T) / self.temperature
 
-        # Reshape to separate in-batch and hard negatives
-        # (B, B*8) -> (B, B, 8)
-        logits = logits.view(batch_size, batch_size, 1 + self.num_hard_negatives)
+        # (B, B, num_docs_per_query)
+        logits = logits.view(batch_size, batch_size, num_docs_per_query)
 
-        # --- 4. Prepare labels and masks ---
-        # The positive for query i is at position [i, 0] after reshaping
-        # We need to flatten back but track which position is positive
-
-        # Extract positives (diagonal of first slice): (B,)
+        # --- 4. Prepare labels ---
         positive_logits = logits[torch.arange(batch_size), torch.arange(batch_size), 0]
-
-        # Flatten logits back to (B, B*8) for cross-entropy
         logits_flat = logits.view(batch_size, -1)
+        labels = torch.arange(batch_size, device=logits.device) * num_docs_per_query
 
-        # Labels: positive is at index i * 8 for query i
-        labels = torch.arange(batch_size, device=logits.device) * (1 + self.num_hard_negatives)
+        # --- 5. Masking for repeated queries / repeated positives ---
+        # Duplicate positives: doc_ids[i] == doc_ids[j] means doc_j is
+        # the same document as doc_i, so it's a positive for query_i.
+        dup_doc = doc_ids.unsqueeze(1) == doc_ids.unsqueeze(0)  # (B, B)
+        dup_doc.fill_diagonal_(False)
 
-        # --- 5. Masking ---
-        # Mask 1: Duplicate positives (same doc_id)
-        # Expand doc_ids to match all_docs structure
-        doc_ids_expanded = doc_ids.unsqueeze(1).expand(-1, 1 + self.num_hard_negatives)
-        doc_ids_flat = doc_ids_expanded.reshape(-1)  # (B*8,)
+        # Duplicate queries: query_ids[i] == query_ids[j] means query_j is
+        # the same query, so doc_j (its positive) is also a positive for query_i.
+        dup_query = query_ids.unsqueeze(1) == query_ids.unsqueeze(0)  # (B, B)
+        dup_query.fill_diagonal_(False)
 
-        # Create mask: doc_ids_flat[j] == doc_ids[i] for each query i
-        doc_id_matches = doc_ids.unsqueeze(1) == doc_ids_flat.unsqueeze(0)  # (B, B*8)
+        # Either condition means the positive at position [i, j, 0] must not
+        # act as a negative for query_i.  Hard negatives (positions 1..K) are
+        # genuinely different documents and remain as negatives.
+        positive_dup_mask = dup_doc | dup_query  # (B, B)
 
-        # Don't mask the actual positive for each query
-        positive_positions = labels.unsqueeze(1)  # (B, 1)
-
-        positive_mask = (
-            torch.arange(
-                batch_size * (1 + self.num_hard_negatives), device=logits.device
-            ).unsqueeze(0)
-            == positive_positions
+        dup_mask_3d = torch.zeros(
+            batch_size, batch_size, num_docs_per_query,
+            dtype=torch.bool, device=logits.device,
         )
-        doc_id_matches = doc_id_matches & ~positive_mask
+        dup_mask_3d[:, :, 0] = positive_dup_mask
+        dup_mask_flat = dup_mask_3d.view(batch_size, -1)  # (B, B*num_docs_per_query)
 
-        # Mask 2: Documents with similarity >= positive similarity
-        similarity_mask = logits_flat >= (positive_logits.unsqueeze(1) + 0.1)  # (B, B*8)
-        similarity_mask.scatter_(1, labels.unsqueeze(1), False)  # Don't mask positives
+        # Similarity-based mask: mask negatives harder than the positive
+        # similarity_mask = logits_flat >= (positive_logits.unsqueeze(1) + 0.1)
+        # similarity_mask.scatter_(1, labels.unsqueeze(1), False)
 
-        # Combine masks
-        combined_mask = doc_id_matches | similarity_mask
-
-        # Apply mask
+        combined_mask = dup_mask_flat # | similarity_mask
         logits_masked = logits_flat.masked_fill(combined_mask, float("-inf"))
 
         # --- 6. Compute Loss ---

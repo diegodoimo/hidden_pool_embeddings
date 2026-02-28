@@ -147,3 +147,6 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# Hugging Face token (add your HF token to .hf_token)
+.hf_token
+

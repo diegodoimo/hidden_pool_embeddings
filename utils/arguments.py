@@ -101,6 +101,15 @@ def parse_args():
         help="Optional list of dataset names to restrict loading (e.g. retrieval/general_retrieval/msmarco). "
         "Use with contrastive_datasets.QWEN3_600M_10DATASET_SUBSET for a 10-dataset example.",
     )
+    parser.add_argument(
+        "--batch_strategy",
+        type=str,
+        default="sequential",
+        choices=["mixed", "sequential", "grouped"],
+        help="Batching strategy: 'mixed' (default, standard DistributedSampler), "
+        "'sequential' (process one dataset at a time), "
+        "'grouped' (interleave datasets round-robin, each batch from one dataset).",
+    )
     parser.add_argument("--num_hard_negatives", type=int, default=8)
     parser.add_argument("--max_query_len", type=int, default=256)
     parser.add_argument("--max_passage_len", type=int, default=512)

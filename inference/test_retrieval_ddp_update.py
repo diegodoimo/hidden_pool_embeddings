@@ -113,7 +113,7 @@ class evaluate_retrieval:
     def prepare_datasets(
         self,
         instruction_template,
-        max_samples=500_000,
+        max_samples=1_000_000,
     ):
 
         datasets = {}
@@ -147,11 +147,11 @@ class evaluate_retrieval:
                     )
                 continue
 
-            if self.rank == 0 and total_rows > 0:
-                print(
-                    f"  {num_configs} configs, {total_rows} total rows "
-                    f"(largest: {max_rows} in {size_info})"
-                )
+            # if self.rank == 0 and total_rows > 0:
+            #     print(
+            #         f"  {num_configs} configs, {total_rows} total rows "
+            #         f"(largest: {max_rows} in {size_info})"
+            #     )
 
             task.load_data()
             if task_type == "Retrieval":
@@ -247,7 +247,7 @@ class evaluate_retrieval:
             else:
                 if self.rank == 0:
                     print(f"  WARNING: unsupported task type '{task_type}', skipping")
-            _print_ram(label="dataset loaded", rank=self.rank)
+            #_print_ram(label="dataset loaded", rank=self.rank)
 
         return datasets
 

@@ -92,6 +92,144 @@ class LenghtSortedSampler(Sampler[_T_co]):
         return self.num_samples
 
 
+class DatasetAwareSampler(Sampler[_T_co]):
+    """DDP-aware sampler ensuring each batch contains items from a single dataset.
+
+    Two strategies:
+    - "sequential": All batches from dataset A first, then B, then C, etc.
+      The model fully processes one dataset before moving on.
+    - "grouped": Batches from different datasets interleaved (round-robin),
+      but each individual batch contains items from only one dataset.
+      The model alternates between datasets throughout the epoch.
+
+    Both strategies guarantee every datapoint is processed exactly once per epoch
+    (modulo minimal DDP padding).  Requires the dataset to have a "dataset_name"
+    column.
+
+    Args:
+        dataset: HF Dataset with a "dataset_name" column.
+        batch_size: Per-device batch size (must match DataLoader's batch_size).
+        strategy: "sequential" or "grouped".
+        num_replicas: Number of DDP processes (defaults to world_size).
+        rank: Current DDP rank (defaults to dist.get_rank()).
+        shuffle: If True, shuffle dataset/chunk order per epoch via set_epoch.
+        seed: Base random seed (same across all ranks for determinism).
+    """
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        batch_size: int,
+        strategy: str = "sequential",
+        num_replicas: int | None = None,
+        rank: int | None = None,
+        shuffle: bool = True,
+        seed: int = 0,
+    ) -> None:
+        if num_replicas is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            num_replicas = dist.get_world_size()
+        if rank is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            rank = dist.get_rank()
+        if rank >= num_replicas or rank < 0:
+            raise ValueError(
+                f"Invalid rank {rank}, rank should be in the interval "
+                f"[0, {num_replicas - 1}]"
+            )
+        if strategy not in ("sequential", "grouped"):
+            raise ValueError(
+                f"strategy must be 'sequential' or 'grouped', got '{strategy}'"
+            )
+
+        self.batch_size = batch_size
+        self.strategy = strategy
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.shuffle = shuffle
+        self.seed = seed
+        self.epoch = 0
+
+        names = dataset["dataset_name"]
+        groups: dict[str, list[int]] = {}
+        for idx, name in enumerate(names):
+            groups.setdefault(name, []).append(idx)
+
+        self.dataset_order = sorted(groups.keys())
+
+        # Pad each dataset so its size is divisible by (batch_size * num_replicas).
+        # This guarantees every batch is fully homogeneous after DDP sharding.
+        effective = batch_size * num_replicas
+        self._per_rank: dict[str, list[int]] = {}
+        self.num_samples = 0
+        for name in self.dataset_order:
+            indices = groups[name]
+            remainder = len(indices) % effective
+            if remainder:
+                pad_n = effective - remainder
+                full_repeats = pad_n // len(indices)
+                leftover = pad_n % len(indices)
+                indices = indices + indices * full_repeats + indices[:leftover]
+
+            # Interleave across ranks (preserves relative length ordering
+            # when the dataset is pre-sorted by length)
+            rank_indices = indices[rank::num_replicas]
+            self._per_rank[name] = rank_indices
+            self.num_samples += len(rank_indices)
+
+    def __iter__(self) -> Iterator[_T_co]:
+        g = torch.Generator()
+        g.manual_seed(self.seed + self.epoch)
+
+        if self.strategy == "sequential":
+            order = list(self.dataset_order)
+            if self.shuffle:
+                perm = torch.randperm(len(order), generator=g).tolist()
+                order = [order[i] for i in perm]
+
+            indices: list[int] = []
+            for name in order:
+                indices.extend(self._per_rank[name])
+            return iter(indices)
+
+        # --- grouped: round-robin interleaving of batch-sized chunks ---
+        per_dataset_chunks: dict[str, list[list[int]]] = {}
+        for name in self.dataset_order:
+            rank_indices = self._per_rank[name]
+            per_dataset_chunks[name] = [
+                rank_indices[i : i + self.batch_size]
+                for i in range(0, len(rank_indices), self.batch_size)
+            ]
+
+        order = list(self.dataset_order)
+        if self.shuffle:
+            perm = torch.randperm(len(order), generator=g).tolist()
+            order = [order[i] for i in perm]
+
+        indices = []
+        iterators = {name: iter(per_dataset_chunks[name]) for name in order}
+        active = list(order)
+        while active:
+            next_active = []
+            for name in active:
+                chunk = next(iterators[name], None)
+                if chunk is not None:
+                    indices.extend(chunk)
+                    next_active.append(name)
+            active = next_active
+
+        # pyrefly: ignore [bad-return]
+        return iter(indices)
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+
 def collate_fn_with_padding(
     batch,
     pad_token_id=0,
@@ -212,6 +350,15 @@ def collate_fn_with_hard_negatives(
         dtype=torch.long,
     )
 
+    # query_ids from dataset_name and query_id
+    q_ids = torch.tensor(
+        [
+            _str_to_int_id(f"{item['dataset_name']}/{item['query_id']}")
+            for item in batch
+        ],
+        dtype=torch.long,
+    )
+
     # Query attention mask: ones for content, then pad (like collate_fn_with_padding)
     query_attention_mask = [torch.ones_like(ids) for ids in query_token_ids]
     query_padded = pad_sequence(
@@ -250,5 +397,6 @@ def collate_fn_with_hard_negatives(
         "all_doc_token_ids": all_doc_padded,
         "all_doc_attention_mask": all_doc_mask,
         "pos_ids": pos_ids,
+        "query_ids": q_ids,
         "num_hard_negatives": num_hard_negatives,
     }

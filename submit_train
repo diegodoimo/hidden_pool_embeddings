@@ -40,13 +40,15 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train.py \
+    --use_hard_negatives \
+    --num_hard_negatives 7 \
     --negatives_dir results/datasets_negatives/qwen3_600m \
-    --model_name_or_path google/embeddinggemma-300m \
-    --eval_set mteb_eng_v2 \
+    --model_name_or_path google/t5gemma-2-270m-270m  \
+    --eval_set mteb_eng_v2_reduced \
     --attention_dim 256 \
     --num_workers 16 \
-    --per_device_train_batch_size 8 \
-    --per_device_eval_batch_size 8 \
+    --per_device_train_batch_size 64 \
+    --per_device_eval_batch_size 128 \
     --learning_rate 2e-5 \
     --lr_min_fact 0.1 \
     --warmup_ratio 0.03 \
@@ -57,7 +59,7 @@ torchrun \
     --eval_steps 7 \
     --output_dir "./results/train" \
     --measure_baselines \
-    --eval_only \
+    # --eval_only \
     #--distributed_loss \
     # --use_lora \
     # --lora_rank 128 \

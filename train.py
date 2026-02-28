@@ -1,5 +1,9 @@
 import torch
 import os
+
+# Disable Rust-level tokenizer parallelism to avoid deadlocks when the process
+# is forked by DataLoader workers or DDP (the tokenizer is used inside collate_fn).
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import numpy as np
 import time
 import json
@@ -21,10 +25,15 @@ from utils.create_datasets import (
     QWEN3_600M_DATASET_SUBSET,
     get_eval_tasks,
 )
-from utils.dataloader_helpers import collate_fn_with_hard_negatives
+from utils.dataloader_helpers import (
+    collate_fn_with_hard_negatives,
+    DatasetAwareSampler,
+)
 from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLossHardNegatives
 from typing import Callable
 from functools import partial
+
+from huggingface_hub import login as hf_login
 
 from inference.test_retrieval_ddp_update import evaluate_retrieval
 from utils.create_datasets import (
@@ -169,42 +178,53 @@ class Trainer:
             # gradient accumulation step may not finish with a proper update at the end of the epoch so we call zero grad here
             self.optimizer.zero_grad()
 
-            # if WORLD_SIZE > 1:
-            #     sampler.set_epoch(epoch)
+            if hasattr(train_loader.sampler, "set_epoch"):
+                train_loader.sampler.set_epoch(epoch)
 
             for index, batch in enumerate(train_loader):
 
-                batch = {key: val.to(self.device) for key, val in batch.items()}
+                batch = {
+                    key: val.to(self.device) if isinstance(val, torch.Tensor) else val
+                    for key, val in batch.items()
+                }
 
                 query_inputs = batch["query_token_ids"]
                 query_mask = batch["query_attention_mask"]
                 all_doc_inputs = batch["all_doc_token_ids"]
                 all_doc_mask = batch["all_doc_attention_mask"]
                 doc_ids = batch["pos_ids"]
+                query_ids = batch["query_ids"]
                 num_neg = batch["num_hard_negatives"]
 
                 B = query_inputs.shape[0]
+
+                use_hard_negatives = isinstance(loss_fn, EmbeddingGemmaLossHardNegatives)
 
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 
                     query_embeddings = self.model(
                         input_ids=query_inputs, attention_mask=query_mask
                     )
-                    # Single forward for all docs (positives + negatives)
-                    all_doc_embeddings = self.model(
-                        input_ids=all_doc_inputs, attention_mask=all_doc_mask
-                    )
-                    doc_embeddings = all_doc_embeddings[:B]
-                    neg_embeddings = all_doc_embeddings[B:].view(B, num_neg, -1)
 
-                    if isinstance(loss_fn, EmbeddingGemmaLossHardNegatives):
+                    if use_hard_negatives:
+                        all_doc_embeddings = self.model(
+                            input_ids=all_doc_inputs, attention_mask=all_doc_mask
+                        )
+                        doc_embeddings = all_doc_embeddings[:B]
+                        neg_embeddings = all_doc_embeddings[B:].view(B, num_neg, -1)
+
                         loss = loss_fn(
                             query_embeddings=query_embeddings,
                             doc_embeddings=doc_embeddings,
                             hard_neg_embeddings=neg_embeddings,
                             doc_ids=doc_ids,
+                            query_ids=query_ids,
                         )
                     else:
+                        doc_embeddings = self.model(
+                            input_ids=all_doc_inputs[:B],
+                            attention_mask=all_doc_mask[:B],
+                        )
                         loss = loss_fn(
                             query_embeddings=query_embeddings,
                             doc_embeddings=doc_embeddings,
@@ -249,7 +269,7 @@ class Trainer:
                             json.dump(stats, f, indent=4)
 
                 if completed_steps in eval_steps:
-                    _, summary = evaluator.evaluate(self.model, batch_size=64)
+                    _, summary = evaluator.evaluate(self.model, batch_size=args.per_device_eval_batch_size)
 
                     if RANK == 0:
                         print(f"iter {completed_steps}.")
@@ -282,6 +302,14 @@ class Trainer:
 
 def main():
     args = parse_args()
+
+    # Login to Hugging Face for gated models (read token from .hf_token, gitignored)
+    _hf_token_path = os.path.join(os.path.dirname(__file__), ".hf_token")
+    if os.path.isfile(_hf_token_path):
+        with open(_hf_token_path, "r") as f:
+            token = f.read().strip()
+        if token:
+            hf_login(token=token)
 
     dist.init_process_group(
         "nccl",
@@ -349,6 +377,12 @@ def main():
         add_special_tokens = True
         eot_id = None
 
+        model = AutoModel.from_pretrained(
+            args.model_name_or_path,
+            dtype=torch.bfloat16,
+        ).to("cuda")
+        model = add_pooling_layers(model, pool_fn=mean_pool)
+
         args.use_lora = False
         args.eval_only = True
         task_type = None
@@ -375,13 +409,24 @@ def main():
         print("dataloader preparation")
 
     # dataset collection is already sorted by length dataset / specific
-    sampler = DistributedSampler(
-        train_dataset,
-        num_replicas=WORLD_SIZE,
-        rank=RANK,
-        shuffle=False,
-        seed=42,
-    )
+    if args.batch_strategy in ("sequential", "grouped"):
+        sampler = DatasetAwareSampler(
+            train_dataset,
+            batch_size=args.per_device_train_batch_size,
+            strategy=args.batch_strategy,
+            num_replicas=WORLD_SIZE,
+            rank=RANK,
+            shuffle=True,
+            seed=42,
+        )
+    else:
+        sampler = DistributedSampler(
+            train_dataset,
+            num_replicas=WORLD_SIZE,
+            rank=RANK,
+            shuffle=False,
+            seed=42,
+        )
 
     collate_fn = partial(
         collate_fn_with_hard_negatives,
@@ -433,7 +478,7 @@ def main():
     )
 
     if args.eval_only:
-        results, summary = evaluator.evaluate(trainer.model, batch_size=32)
+        results, summary = evaluator.evaluate(trainer.model, batch_size=args.per_device_eval_batch_size)
 
         if RANK ==0:
             print(results)
