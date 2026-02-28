@@ -2,14 +2,14 @@ scikit-learn
 numpy
 scipy
 sentencepiece
-datasets==3.6.0
+datasets==4.6.0
 accelerate
 peft
 tokenizers
-transformers
+transformers==5.2.0
 protobuf
 evaluate
 sentence-transformers
-mteb
+mteb=2.10.1
 
 

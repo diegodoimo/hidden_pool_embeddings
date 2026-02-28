@@ -1,5 +1,6 @@
 #!/bin/bash
 #SBATCH --partition=H100
+##SBATCH --partition=DGX
 #SBATCH --account=lade
 ##SBATCH --nodelist=dgx003
 #SBATCH --nodes=1
@@ -12,8 +13,8 @@
 
 
 
-#source /u/area/ddoimo/anaconda3/bin/activate ./env_amd 
-module load cuda/12.6 
+#source /u/area/ddoimo/anaconda3/bin/activate ./env_a100
+module load cuda/12.8 
 export CUDA_HOME=$CUDA_PATH
 
 source /u/area/ddoimo/anaconda3/bin/activate ./env_h100 
@@ -39,11 +40,13 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train.py \
-    --model_name_or_path Qwen/Qwen3-Embedding-0.6B \
+    --negatives_dir results/datasets_negatives/qwen3_600m \
+    --model_name_or_path google/embeddinggemma-300m \
+    --eval_set mteb_eng_v2 \
     --attention_dim 256 \
     --num_workers 16 \
-    --per_device_train_batch_size 128 \
-    --per_device_eval_batch_size 128 \
+    --per_device_train_batch_size 8 \
+    --per_device_eval_batch_size 8 \
     --learning_rate 2e-5 \
     --lr_min_fact 0.1 \
     --warmup_ratio 0.03 \
@@ -62,3 +65,5 @@ torchrun \
     # --lora_dropout 0.1 \
     #--activation_checkpointing \
     #--model_name_or_path google/t5gemma-2-270m-270m  \
+    #--model_name_or_path google/embeddinggemma-300m \
+    #--model_name_or_path Qwen/Qwen3-Embedding-0.6B \

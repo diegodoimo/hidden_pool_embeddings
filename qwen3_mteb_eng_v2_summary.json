@@ -1,0 +1,11 @@
+{
+    "Retrieval": 0.6057400000000001,
+    "Clustering": 0.5221775146672667,
+    "Reranking": 0.37508,
+    "STS": 0.816372907939048,
+    "Classification": 0.8692877827985045,
+    "PairClassification": 0.8530969659893719,
+    "Summarization": 0.29806119806092907,
+    "micro_average": 0.6850088179370958,
+    "macro_average": 0.6199737670650173
+}

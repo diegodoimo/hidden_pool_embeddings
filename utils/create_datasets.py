@@ -74,33 +74,34 @@ TASK_DICT = {
         "SCIDOCS",
         "CQADupstackGamingRetrieval",
         "CQADupstackUnixRetrieval",
-        "HotpotQAHardNegatives",
-        "TRECCOVID",
-        "TwentyNewsgroupsClustering.v2",
-        "BiorxivClusteringP2P.v2",
-        "MedrxivClusteringS2S.v2",
-        "StackExchangeClustering.v2",
-        "AskUbuntuDupQuestions",
-        "BIOSSES",
-        "STS17",
-        "STS12",
-        "AmazonCounterfactualClassification",
-        "MassiveScenarioClassification",
-        "TweetSentimentExtractionClassification",
-        "MTOPDomainClassification",
-        "TwitterSemEval2015",
-        "SprintDuplicateQuestions",
-        "SummEvalSummarization.v2",
+        # "HotpotQAHardNegatives",
+        # "TRECCOVID",
+        # "TwentyNewsgroupsClustering.v2",
+        # "BiorxivClusteringP2P.v2",
+        # "MedrxivClusteringS2S.v2",
+        # "StackExchangeClustering.v2",
+        # "AskUbuntuDupQuestions",
+        # "BIOSSES",
+        # "STS17",
+        # "STS12",
+        # "AmazonCounterfactualClassification",
+        # "MassiveScenarioClassification",
+        # "TweetSentimentExtractionClassification",
+        # "MTOPDomainClassification",
+        # "TwitterSemEval2015",
+        # "SprintDuplicateQuestions",
+        # "SummEvalSummarization.v2",
     ],
 }
 
 
 def get_eval_tasks(eval_set):
     """Return list of MTEB task objects for evaluation."""
+
     if eval_set == "mteb_multilingual_v2":
         benchmark = mteb.get_benchmark("MTEB(Multilingual, v2)")
         tasks = list(benchmark.tasks)
-    elif eval_set == "mteb_eng_v2":
+    elif eval_set == "":
         benchmark = mteb.get_benchmark("MTEB(eng, v2)")
         tasks = list(benchmark.tasks)
     elif eval_set == "mteb_eng_v2_20":
@@ -492,14 +493,14 @@ def _build_prompts_hard_negatives_batch(
     )
     neg_prompts_flat = neg_result["prompt"]
     # Unflatten
-    # idx = 0
+    idx = 0
     negative_prompts = []
     neg_length = []
     for i in range(batch_size):
         n = min(len(examples["negative_text"][i]), num_hard_negatives)
         negative_prompts.append(neg_prompts_flat[idx : idx + n])
         neg_length.append(sum(len(neg) for neg in neg_prompts_flat[idx : idx + n]))
-        idx += num_hard_negatives
+        idx += n
 
     total_length = [p + n for p, n in zip(neg_length, total_length)]
 
@@ -644,12 +645,12 @@ def create_hard_negatives_datasets(
         print(f"Found {len(parquet_files)} datasets under {base_dir}")
 
     all_datasets = []
-    for path in parquet_files:
+    for i, path in enumerate(parquet_files):
         task_metadata = _infer_task_metadata(path, base_dir)
         ds_name = os.path.relpath(os.path.dirname(path), base_dir)
 
         if rank == 0:
-            print(f"  Loading {ds_name} ...")
+            print(f"  Loading {ds_name} {i}/{len(parquet_files)}...")
 
         ds = _load_parquet_safe(path)
 
@@ -678,13 +679,14 @@ def create_hard_negatives_datasets(
         # ds = ds.map(len_fn, batched=True, batch_size=1000)
 
         # Keep only columns needed for collate
-        ds = ds.sort("total_len", reverse=True)
+        ds = ds.sort("total_length", reverse=True)
         cols_to_keep = {
             "query_prompt",
             "positive_prompt",
             "negative_prompts",
             "positive_id",
             "dataset_name",
+            "total_length"
         }
         cols_to_remove = [c for c in ds.column_names if c not in cols_to_keep]
         ds = ds.remove_columns(cols_to_remove)
@@ -693,10 +695,9 @@ def create_hard_negatives_datasets(
     combined = concatenate_datasets(all_datasets)
 
     if rank == 0:
-        total_tokens = np.sum(combined["total_len"])
-        print(f"Total training examples: {len(combined)/1e3:.1f}k")
-        print(f"Total tokens: {total_tokens/1e6:.1f}M")
-        print(f"Avg query len: {np.mean(combined['query_len']):.0f}")
-        print(f"Avg doc len: {np.mean(combined['pos_len']):.0f}")
+        total_tokens = np.sum(combined["total_length"])
+        print(f"Total training examples: {len(combined)/10**6:.2f}M")
+        print(f"Total tokens: {total_tokens/10**9:.2f}B")
+
 
     return combined

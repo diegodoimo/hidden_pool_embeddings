@@ -602,7 +602,12 @@ class T5Gemma2Encoder(T5Gemma2PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @auto_docstring
+    @auto_docstring(
+        custom_args="""
+        cls_position (`int`, *optional*, defaults to `None`):
+            If set and `output_hidden_states=True`, extract hidden states at this position index instead of mean pooling.
+            Useful when a CLS token is prepended (e.g. position 0)."""
+    )
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,

@@ -50,6 +50,7 @@ class evaluate_retrieval:
         padding_side="right",
         add_special_tokens=False,
         eot_id=None,
+        max_samples=1_000_000,
     ):
 
         self.world_size = dist.get_world_size()
@@ -62,7 +63,7 @@ class evaluate_retrieval:
 
         t1 = time.time()
         _print_ram(label="before loading datasets", rank=self.rank)
-        self.datasets = self.prepare_datasets(instruction_template)
+        self.datasets = self.prepare_datasets(instruction_template, max_samples=max_samples)
         dist.barrier()
         _print_ram(label="after loading datastes", rank=self.rank)
         if self.rank == 0:

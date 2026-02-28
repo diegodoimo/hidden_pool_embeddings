@@ -31,8 +31,8 @@ from utils.create_datasets import (
     instruction_template_qwen3,
     instruction_template_embeddinggemma,
 )
-from models.modules import last_token_pool, add_pooling_layers
-
+from models.modules import last_token_pool, add_pooling_layers, mean_pool
+from datetime import timedelta
 
 class Trainer:
     def __init__(
@@ -283,8 +283,16 @@ class Trainer:
 def main():
     args = parse_args()
 
-    dist.init_process_group("nccl")
-    torch.cuda.set_device(dist.get_rank())
+    dist.init_process_group(
+        "nccl",
+        device_id=torch.device("cuda", LOCAL_RANK),
+        timeout=timedelta(seconds=60),
+    )
+    rank = dist.get_rank()
+    torch.cuda.set_device(LOCAL_RANK)
+
+    torch.set_float32_matmul_precision("high")
+    #torch.cuda.set_device(dist.get_rank())
 
     args.batch_size = WORLD_SIZE * args.per_device_train_batch_size
     args.gradient_accumulation_steps = 1
@@ -319,6 +327,7 @@ def main():
         instruction_template = instruction_template_qwen3
         add_special_tokens = False
         eot_id = tokenizer.pad_token_id
+
         model = AutoModel.from_pretrained(
             args.model_name_or_path,
             dtype=torch.bfloat16,
@@ -327,8 +336,23 @@ def main():
 
         args.use_lora = False
         args.eval_only = True
+        task_type = None
+        lora_modules = None
+
         if RANK == 0:
             print("qwen3 model: setting up eval only mode")
+    elif "embeddinggemma" in args.model_name_or_path.lower():
+
+        model_name = "embeddinggemma"
+        instruction_template = instruction_template_embeddinggemma
+        pool_fn = mean_pool
+        add_special_tokens = True
+        eot_id = None
+
+        args.use_lora = False
+        args.eval_only = True
+        task_type = None
+        lora_modules = None
 
     else:
         raise ValueError(
@@ -388,6 +412,7 @@ def main():
         padding_side="right",
         add_special_tokens=add_special_tokens,
         eot_id=eot_id,
+        max_samples=1_000_000,
     )
 
     # Initialize loss and optimizer
@@ -396,6 +421,8 @@ def main():
     )
     if WORLD_SIZE > 1 and args.distributed_loss:
         loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
+    
+    dist.barrier()
 
     trainer = Trainer(
         len_dataloader=len(train_loader),
@@ -407,8 +434,11 @@ def main():
 
     if args.eval_only:
         results, summary = evaluator.evaluate(trainer.model, batch_size=32)
-        print(results)
-        label = arg.eval_set
+
+        if RANK ==0:
+            print(results)
+
+        label = args.eval_set
         with open(f"{model_name}_{label}_summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=4)
     else:

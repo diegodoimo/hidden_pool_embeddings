@@ -22,7 +22,7 @@ from inference.evaluate.shared import make_collate_fn, EvalContext
 def _prepare_retrieval(
     task, task_name, eval_split, instruction_template, datasets, tokenizer, rank
 ):
-    task.convert_v1_dataset_format_to_v2()
+    task.convert_v1_dataset_format_to_v2(num_proc=None)
     subset_list = abs_task_preprocessing(task, eval_split)
 
     for data_split, hf_subset in subset_list:
