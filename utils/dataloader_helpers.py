@@ -305,7 +305,11 @@ def collate_fn_with_hard_negatives(
     """
 
     # Reserve one slot for eot_id when it is appended after tokenisation.
-    _max_content = (max_seq_len - 1) if (max_seq_len is not None and eot_id is not None) else max_seq_len
+    _max_content = (
+        (max_seq_len - 1)
+        if (max_seq_len is not None and eot_id is not None)
+        else max_seq_len
+    )
     _trunc_kwargs = (
         {"truncation": True, "max_length": _max_content}
         if max_seq_len is not None
@@ -339,24 +343,42 @@ def collate_fn_with_hard_negatives(
     else:
         pos_token_ids = [torch.tensor(tok) for tok in pos_encs]
 
-    # Tokenize negatives per item
-    all_neg_token_ids = []
-    for i, item in enumerate(batch):
-        neg_prompts = item["negative_prompts"][:num_hard_negatives]
+    # --- OLD: Tokenize negatives per item (one tokenizer call per sample) ---
+    # all_neg_token_ids = []
+    # for i, item in enumerate(batch):
+    #     neg_prompts = item["negative_prompts"][:num_hard_negatives]
+    #
+    #     neg_encs = tokenizer(
+    #         neg_prompts,
+    #         add_special_tokens=add_special_tokens,
+    #         return_attention_mask=False,
+    #         **_trunc_kwargs,
+    #     )["input_ids"]
+    #
+    #     if eot_id is not None:
+    #         neg_ids = [tok + [eot_id] for tok in neg_encs]
+    #     else:
+    #         neg_ids = neg_encs
+    #
+    #     all_neg_token_ids.extend([torch.tensor(n) for n in neg_ids])
+    # --- END OLD ---
 
-        neg_encs = tokenizer(
-            neg_prompts,
-            add_special_tokens=add_special_tokens,
-            return_attention_mask=False,
-            **_trunc_kwargs,
-        )["input_ids"]
+    # Tokenize negatives – batched across the entire batch for one tokenizer call
+    flat_neg_prompts = []
+    for item in batch:
+        flat_neg_prompts.extend(item["negative_prompts"][:num_hard_negatives])
 
-        if eot_id is not None:
-            neg_ids = [tok + [eot_id] for tok in neg_encs]
-        else:
-            neg_ids = neg_encs
+    flat_neg_encs = tokenizer(
+        flat_neg_prompts,
+        add_special_tokens=add_special_tokens,
+        return_attention_mask=False,
+        **_trunc_kwargs,
+    )["input_ids"]
 
-        all_neg_token_ids.extend([torch.tensor(n) for n in neg_ids])
+    if eot_id is not None:
+        all_neg_token_ids = [torch.tensor(tok + [eot_id]) for tok in flat_neg_encs]
+    else:
+        all_neg_token_ids = [torch.tensor(tok) for tok in flat_neg_encs]
 
     # pos_ids from dataset_name and positive_id
     pos_ids = torch.tensor(
