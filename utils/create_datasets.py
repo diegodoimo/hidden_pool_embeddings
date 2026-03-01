@@ -16,6 +16,7 @@ from functools import partial
 import mteb
 from tasks import NAME_TO_TASK_TYPE
 
+import pandas as pd
 
 
 # taken from embeddinggemma
@@ -292,26 +293,51 @@ def filter_qrels_by_length(
     # materialisation alone took ~3.75 min for 14M rows.
     # The fix: operate directly on the underlying Arrow table so the data
     # never leaves C++ memory.
-    import pandas as pd
+    rank = dist.get_rank()
+    dist.barrier()
+    t1 = time.time()
 
     removed_query_set = set(removed_query_ids)
     removed_positive_set = set(removed_positive_ids)
+
+    dist.barrier()
+    t2 = time.time()
+
     query_valid = (
         ~pd.Series(qrels_dataset["query_id"]).isin(removed_query_set).to_numpy()
     )
     positive_valid = (
         ~pd.Series(qrels_dataset["positive_id"]).isin(removed_positive_set).to_numpy()
     )
+    dist.barrier()
+    t3 = time.time()
     keep_mask = query_valid & positive_valid
     valid_indices = np.where(keep_mask)[0].tolist()
-    return qrels_dataset.select(valid_indices)
+    dist.barrier()
+    t4 = time.time()
+    filtered_qrels = qrels_dataset.select(valid_indices)
+
+    dist.barrier()
+    t5 = time.time()
+    if rank == 0:
+        print("times filtering:")
+        print((t2-t1)/60)
+        print((t3-t2)/60)
+        print((t4-t3)/60)
+        print((t5-t4)/60)
+    # these are the times. Manageble
+    # 6.441275278727213e-06
+    # 3.7673192660013837
+    # 0.004844097296396891
+    # 0.22334847052892048
+    return filtered_qrels
     # -----------------------------------------------
 
     # Access the underlying Arrow table — no Python object creation for 14M rows.
     # pc.is_in runs entirely in C++ against an Arrow hash table, then
     # table.filter() applies the boolean mask without going through Python.
 
-    # SOME ERROR AFFTECT THE BELOW CODE
+    # SOME ERROR AFFECTS THE BELOW CODE
 
     # import pyarrow as pa
     # import pyarrow.compute as pc

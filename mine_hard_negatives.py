@@ -46,8 +46,9 @@ def parse_args():
         default=None,
         help="Select task types to mine hard negatives for. Can specify multiple types. Ignored if --task_names is provided.",
     )
-    parser.add_argument("--max_length", type=int, default=4096)
+    parser.add_argument("--max_length", type=int, default=1024)
     parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--iterative_encode_threshold", type=int, default=10**7)
     args = parser.parse_args()
     return args
 
@@ -176,7 +177,7 @@ def main():
     dist.init_process_group(
         "nccl",
         device_id=LOCAL_RANK,
-        timeout=timedelta(seconds=600),
+        timeout=timedelta(seconds=1800),
     )
     torch.cuda.set_device(dist.get_rank())
 
@@ -216,7 +217,7 @@ def main():
         max_length=max_length,
         add_special_tokens=False,
         eot_id=tokenizer.pad_token_id,
-        iterative_encode_threshold=10**7
+        iterative_encode_threshold=args.iterative_encode_threshold
     )
 
     if RANK == 0:

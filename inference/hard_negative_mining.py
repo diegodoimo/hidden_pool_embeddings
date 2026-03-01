@@ -333,7 +333,7 @@ class HardNegativesMiner:
         self.max_length = max_length
         self.add_special_tokens = add_special_tokens
         self.eot_id = eot_id
-        
+
         # Maximum number of queries to process in a single mine-one pass.
         # When the total number of unique queries exceeds this, the full
         # encode → search → get_hard_negatives → save pipeline is run
@@ -439,26 +439,35 @@ class HardNegativesMiner:
             if self.rank == 0:
                 start = time.time()
                 print("removing long sequences from full queries and corpus")
+
+            t1 = time.time()
             filtered_qrels = filter_qrels_by_length(
                 unique_queries_dataset.removed_ids,
                 corpus_dataset.removed_ids,  # All removed corpus IDs (including positives)
                 data_split["qrels"],
             )
-
+            dist.barrier()
+            t2 = time.time()
             corpus_ids_set = set(corpus_dataset["id"])
-
+            unique_queries_dataset_set = set(unique_queries_dataset["id"])
+            dist.barrier()
+            t3 = time.time()
             # Check that filtered pairs only contain valid IDs
-            assert set(filtered_qrels["query_id"]).issubset(
-                set(unique_queries_dataset["id"])
-            ), "filtered qrels contain query IDs not in unique queries"
+            assert set(filtered_qrels["query_id"]).issubset(unique_queries_dataset_set), "filtered qrels contain query IDs not in unique queries"
             assert set(filtered_qrels["positive_id"]).issubset(
                 corpus_ids_set
             ), "filtered qrels contain positive IDs not in corpus"
+            dist.barrier()
+            t4 = time.time()
 
             if self.rank == 0:
                 print(
                     f"full queries and corpus filtered in {(time.time()-start)/60:.2f}min"
                 )
+                print("filtering times:")
+                print((t2-t1)/60)
+                print((t3-t2)/60)
+                print((t4-t3)/60)
                 num_queries_lost = len(set(unique_queries_dataset["id"])) - len(
                     set(filtered_qrels["query_id"])
                 )
@@ -636,7 +645,7 @@ class HardNegativesMiner:
         if self.rank == 0:
             print(f"duration: {(time.time()-start)/60:.2f} min")
 
-        return hard_negatives, stats
+        return hard_negatives, stats, chunk_size
 
     def get_hard_negatives(
         self,
@@ -666,7 +675,7 @@ class HardNegativesMiner:
             len(query_positive_scores) == total_queries
         ), f"Positive score mismatch {len(query_positive_scores)} {total_queries}"
 
-        upper_thresholds_relevent_docs = min(100, int(0.1 * len(corpus_ids)))
+        upper_thresholds_relevant_docs = min(100, int(0.1 * len(corpus_ids)))
 
         stats = TripletStats()
         hard_negatives = {}
@@ -678,10 +687,10 @@ class HardNegativesMiner:
 
             # Get candidate documents for this query
             candidate_indices = top_indices[
-                unique_q_idx, 5:upper_thresholds_relevent_docs
+                unique_q_idx, 5:upper_thresholds_relevant_docs
             ]
             candidate_scores = top_scores[
-                unique_q_idx, 5:upper_thresholds_relevent_docs
+                unique_q_idx, 5:upper_thresholds_relevant_docs
             ]
 
             # Threshold based on this specific (query, positive) pair's score
@@ -762,6 +771,9 @@ class HardNegativesMiner:
         chunk_size = self.iterative_encode_threshold
         n_chunks = (n_queries + chunk_size - 1) // chunk_size
 
+        #-----------------------
+        max_nreps = max(1, int(10**6//self.iterative_encode_threshold))
+
         if self.rank == 0:
             print(
                 f"\nIterative mining: {return_formatted(n_queries)} queries "
@@ -775,7 +787,12 @@ class HardNegativesMiner:
         all_qrel_query_ids = list(dataset["qrels"]["query_id"])
         all_qrel_positive_ids = list(dataset["qrels"]["positive_id"])
 
-        for ci in range(n_chunks):
+        time_perf = {}
+        start = time.time()
+        for it, ci in enumerate(range(n_chunks)):
+            if it >= max_nreps:
+                break
+
             chunk_start = ci * chunk_size
             chunk_end = min(chunk_start + chunk_size, n_queries)
 
@@ -821,7 +838,7 @@ class HardNegativesMiner:
 
             # mine_one will see ≤ self.iterative_encode_threshold queries,
             # so it will use the normal GPU path (no stream_to_cpu).
-            hard_negatives, stats = self.mine_one(
+            hard_negatives, stats, chunk_size_doc = self.mine_one(
                 dataset=chunk_dataset,
                 model=model,
                 batch_size=batch_size,
@@ -870,9 +887,19 @@ class HardNegativesMiner:
             torch.cuda.empty_cache()
 
             dist.barrier()
+            torch.cuda.synchronize()
             if self.rank == 0:
+                elapsed_time = time.time()-start
+
+                time_perf[f"iter_{it}_time_min"] = elapsed_time/60
+                time_perf["chunk_size"] = chunk_size_doc
+
+                with open(f"time_to_1M_chunk-size{self.iterative_encode_threshold}.json", "w") as f:
+                    json.dump(time_perf, f, indent=2)
+
                 print(f"Chunk {ci + 1}/{n_chunks} done")
                 print_memory_consumed(rank=self.rank)
+
 
         return accumulated_stats
 
@@ -955,7 +982,7 @@ class HardNegativesMiner:
                     continue
 
                 # --------------- normal (non-iterative) path ---------------
-                hard_negatives, stats = self.mine_one(
+                hard_negatives, stats, _ = self.mine_one(
                     dataset=dataset,
                     model=model,
                     batch_size=batch_size,

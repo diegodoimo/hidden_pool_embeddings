@@ -239,8 +239,8 @@ DATASETS_BY_SIZE = [
     # "snli",  #    637,407
     # "eli5",  #    648,429
     # "mrtydi",  #  1,051,025
-    "yahooanswers",  #  2,369,859
-    "amazonqa",  #  3,264,575
+    # "yahooanswers",  #  2,369,859
+    # "amazonqa",  #  3,264,575
     "gooaq",  #  4,488,520
     "hotpotqa",  #  5,323,776
     "fever",  #  5,533,044
