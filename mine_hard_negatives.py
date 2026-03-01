@@ -176,7 +176,7 @@ def main():
     dist.init_process_group(
         "nccl",
         device_id=LOCAL_RANK,
-        timeout=timedelta(seconds=60),
+        timeout=timedelta(seconds=600),
     )
     torch.cuda.set_device(dist.get_rank())
 

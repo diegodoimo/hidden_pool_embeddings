@@ -472,12 +472,19 @@ class T5Gemma2TextScaledWordEmbedding(nn.Embedding):
         self.eoi_embedding = nn.Parameter(torch.zeros(self.embedding_dim))
 
     def forward(self, input_ids: torch.Tensor):
-        input_embeddings = super().forward(input_ids) * self.embed_scale.to(
-            self.weight.dtype
-        )
-        input_embeddings[input_ids == self.eoi_token_index] = self.eoi_embedding.to(
-            input_embeddings.dtype
-        )
+        # Use the plain Python float instead of the tensor buffer to avoid
+        # torch.compile version-tracking the scalar across multiple forward
+        # calls in the same backward graph.
+        input_embeddings = super().forward(input_ids) * self.scalar_embed_scale
+        # input_embeddings = super().forward(input_ids) * self.embed_scale.to(
+        #     self.weight.dtype
+        # )
+        # input_embeddings[input_ids == self.eoi_token_index] = self.eoi_embedding.to(
+        #     input_embeddings.dtype
+        # )
+        mask = (input_ids == self.eoi_token_index).unsqueeze(-1)
+        eoi = self.eoi_embedding.to(input_embeddings.dtype)
+        input_embeddings = torch.where(mask, eoi, input_embeddings)
         return input_embeddings
 
 

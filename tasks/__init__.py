@@ -85,8 +85,84 @@ NAME_TO_TASK = {
 }
 
 
-# Define task categorization based on their characteristics
-# NLI tasks are those with "nli" in the name
+
+NAME_TO_TASK_TYPE = {
+    # Retrieval tasks
+    "msmarco": "Retrieval",
+    "hotpotqa": "Retrieval",
+    "fever": "Retrieval",
+    "nfcorpus": "Retrieval",
+    "fiqa2018": "Retrieval",
+    "mrtydi": "Retrieval",
+    "scifact": "Retrieval",
+    "naturalquestions": "Retrieval",
+    "paq": "Retrieval",
+    "eli5": "Retrieval",
+    "triviaqa": "Retrieval",
+    "coliee": "Retrieval",
+    "s2orc_title_abstract": "Retrieval",
+    "s2orc_title_citation": "Retrieval",
+    "s2orc_abstract_citation": "Retrieval",
+    "specter": "Retrieval",
+    "sentence_compression": "Retrieval",
+    "stackexchange_dup_s2s": "Retrieval",
+    "stackexchange_dup_p2p": "Retrieval",
+    "qqp": "Retrieval",
+    "arguana": "Retrieval",
+    "squad": "Retrieval",
+    "stackexchange": "Retrieval",
+    "bioasq": "Retrieval",
+    "miracl": "Retrieval",
+    "pubmedqa": "Retrieval",
+    "amazonqa": "Retrieval",
+    "gooaq": "Retrieval",
+    "yahooanswers": "Retrieval",
+    # NLI tasks -> PairClassification
+    "snli": "PairClassification",
+    "mnli": "PairClassification",
+    "anli": "PairClassification",
+    "xnli": "PairClassification",
+    # Summarization tasks
+    "xsum": "Summarization",
+    "cnndm": "Summarization",
+    "wikihow": "Summarization",
+    # Reranking tasks
+    "stackoverflow_dup": "Reranking",
+    # STS tasks
+    "sts12": "STS",
+    "sts22": "STS",
+    "stsbenchmark": "STS",
+    # Classification tasks
+    "toxic_conversations": "Classification",
+    "amazon_counterfactual": "Classification",
+    "amazon_polarity": "Classification",
+    "imdb": "Classification",
+    "cola": "Classification",
+    "banking77": "Classification",
+    # Clustering tasks
+    "amazon_reviews": "Clustering",
+    "emotion": "Clustering",
+    "mtop_intent": "Clustering",
+    "mtop_domain": "Clustering",
+    "massive_scenario": "Clustering",
+    "massive_intent": "Clustering",
+    "tweet_sentiment": "Clustering",
+    "arxiv_clustering_p2p": "Clustering",
+    "arxiv_clustering_s2s": "Clustering",
+    "biorxiv_clustering_p2p": "Clustering",
+    "biorxiv_clustering_s2s": "Clustering",
+    "medrxiv_clustering_p2p": "Clustering",
+    "medrxiv_clustering_s2s": "Clustering",
+    "reddit_clustering_p2p": "Clustering",
+    "reddit_clustering_s2s": "Clustering",
+    "stackexchange_clustering_p2p": "Clustering",
+    "stackexchange_clustering_s2s": "Clustering",
+    "twentynewsgroups": "Clustering",
+}
+
+assert set(NAME_TO_TASK.keys()) == set(NAME_TO_TASK_TYPE.keys())
+
+# NLI tasks 
 NLI_TASKS = [
     "snli",
     "mnli",
@@ -137,23 +213,23 @@ CLUSTERING_TASKS = [
 # Datasets sorted by total size (unique_queries + unique_documents), shortest first
 # as they appear in dataset_list.txt
 DATASETS_BY_SIZE = [
-    "sts12",  #      2,712
-    "sts22",  #      3,062
-    "scifact",  #      5,992
-    "stsbenchmark",  #      6,420
-    "nfcorpus",  #      6,547
-    "arguana",  #     28,728
-    "fiqa2018",  #     63,638
-    "squad",  #    118,846
-    "triviaqa",  #    137,483
-    "anli",  #    164,019
-    "qqp",  #    172,242
-    "naturalquestions",  #    175,446
-    #"miracl",  #    227,090               NOT DONE
-    "specter",  #    241,084
-    "sentence_compression",  #    356,409
-    "stackoverflow_dup",  #    373,863
-    "stackexchange_dup_p2p",  #    374,049
+    # "sts12",  #      2,712
+    # "sts22",  #      3,062
+    # "scifact",  #      5,992
+    # "stsbenchmark",  #      6,420
+    # "nfcorpus",  #      6,547
+    # "arguana",  #     28,728
+    # "fiqa2018",  #     63,638
+    # "squad",  #    118,846
+    # "triviaqa",  #    137,483
+    # "anli",  #    164,019
+    # "qqp",  #    172,242
+    # "naturalquestions",  #    175,446
+    # #"miracl",  #    227,090               NOT DONE
+    # "specter",  #    241,084
+    # "sentence_compression",  #    356,409
+    # "stackoverflow_dup",  #    373,863
+    # "stackexchange_dup_p2p",  #    374,049
     "wikihow",  #    422,657
     "xsum",  #    429,542
     "stackexchange_dup_s2s",  #    462,315
@@ -170,12 +246,12 @@ DATASETS_BY_SIZE = [
     "fever",  #  5,533,044
     "xnli",  #  7,253,838
     "msmarco",  #  9,351,742
-    "stackexchange",  #  9,500,045   NOT DONE
-    "bioasq",  # 27,284,021
-    "s2orc_abstract_citation",  # 56,386,121
-    "s2orc_title_citation",  # 65,572,442
-    "paq",  # 73,376,018
-    "s2orc_title_abstract",  # 82,561,651
+    "stackexchange",  #  9,500,045   
+    # "bioasq",  # 27,284,021
+    # "s2orc_abstract_citation",  # 56,386,121
+    # "s2orc_title_citation",  # 65,572,442
+    # "paq",  # 73,376,018
+    # "s2orc_title_abstract",  # 82,561,651
 ]
 
 

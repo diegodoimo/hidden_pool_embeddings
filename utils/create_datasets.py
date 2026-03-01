@@ -14,6 +14,9 @@ from dataclasses import dataclass
 
 from functools import partial
 import mteb
+from tasks import NAME_TO_TASK_TYPE
+
+
 
 # taken from embeddinggemma
 # https://github.com/huggingface/transformers/blob/bdee0889714e9cb3e53d3b1b2a626919479d356c/src/transformers/models/gemma3/convert_gemma3_weights.py#L700C1-L715C10
@@ -52,6 +55,34 @@ TASK_PROMPTS = {
     "Summarization": "task: summarization | query: ",
 }
 
+@dataclass
+class TrainTaskMetadata:
+    type: str
+    prompt: str = None
+
+
+TASK_TYPE_TO_TASK_METADATA = {
+    "Retrieval": TrainTaskMetadata(type="Retrieval", prompt=TASK_PROMPTS["Retrieval"]),
+    "PairClassification": TrainTaskMetadata(
+        type="PairClassification", prompt=TASK_PROMPTS["PairClassification"]
+    ),
+    "Summarization": TrainTaskMetadata(
+        type="Summarization", prompt=TASK_PROMPTS["Summarization"]
+    ),
+    "Reranking": TrainTaskMetadata(type="Reranking", prompt=TASK_PROMPTS["Reranking"]),
+    "STS": TrainTaskMetadata(type="STS", prompt=TASK_PROMPTS["STS"]),
+    "Classification": TrainTaskMetadata(
+        type="Classification", prompt=TASK_PROMPTS["Classification"]
+    ),
+    "Clustering": TrainTaskMetadata(
+        type="Clustering", prompt=TASK_PROMPTS["Clustering"]
+    ),
+}
+
+
+
+
+
 # Example subset of 10 datasets from results/datasets_negatives/qwen3_600m leaf folders.
 # Use as datasets_subset=QWEN3_600M_10DATASET_SUBSET to restrict training to these.
 QWEN3_600M_DATASET_SUBSET = [
@@ -67,6 +98,38 @@ QWEN3_600M_DATASET_SUBSET = [
     "nli/snli",
 ]
 
+# All datasets in results/datasets_negatives/qwen3_600m
+FULL_TRAIN_DATA = [
+    "nli/anli",
+    "nli/mnli",
+    "nli/snli",
+    "retrieval/domain_specific_qa/amazonqa",
+    "retrieval/domain_specific_qa/fiqa2018",
+    "retrieval/fact_verification/fever",
+    "retrieval/fact_verification/scifact",
+    "retrieval/general_retrieval/arguana",
+    "retrieval/general_retrieval/msmarco",
+    "retrieval/general_retrieval/nfcorpus",
+    "retrieval/open_domain_qa/eli5",
+    "retrieval/open_domain_qa/hotpotqa",
+    "retrieval/open_domain_qa/naturalquestions",
+    "retrieval/open_domain_qa/squad",
+    "retrieval/open_domain_qa/triviaqa",
+    "retrieval/paraphrase_detection/qqp",
+    "retrieval/paraphrase_detection/stackexchange_dup_p2p",
+    "retrieval/paraphrase_detection/stackexchange_dup_s2s",
+    "retrieval/paraphrase_detection/stackoverflow_dup",
+    "retrieval/scientific_doc_retrieval/specter",
+    "retrieval/summarization/cnndm",
+    "retrieval/summarization/sentence_compression",
+    "retrieval/summarization/wikihow",
+    "retrieval/summarization/xsum",
+    "sts/sts12",
+    "sts/sts22",
+    "sts/stsbenchmark",
+]
+
+
 
 # MTEB 20-task subset (mteb_20task_subset_selection.md) - minimizes eval time while preserving category averages
 TASK_DICT = {
@@ -75,104 +138,55 @@ TASK_DICT = {
         "CQADupstackGamingRetrieval",
         "CQADupstackUnixRetrieval",
         "HotpotQAHardNegatives",
-        # "TRECCOVID",
+        "TRECCOVID",
         # "TwentyNewsgroupsClustering.v2",
         # "BiorxivClusteringP2P.v2",
         # "MedrxivClusteringS2S.v2",
         # "StackExchangeClustering.v2",
         # "AskUbuntuDupQuestions",
-        # "BIOSSES",
+        "BIOSSES",
         "STS17",
         "STS12",
-        # "AmazonCounterfactualClassification",
+        # "AmazonCounterfactualClassification", 
         # "MassiveScenarioClassification",
         # "TweetSentimentExtractionClassification",
         # "MTOPDomainClassification",
         # "TwitterSemEval2015",
         # "SprintDuplicateQuestions",
-        # "SummEvalSummarization.v2",
+        "SummEvalSummarization.v2",
     ],
 }
 
 
-def get_eval_tasks(eval_set):
-    """Return list of MTEB task objects for evaluation."""
 
+#*******************************************************************************************
+
+def get_eval_tasks(eval_set, task_types=None):
+    """Return list of MTEB task objects for evaluation.
+
+    Args:
+        eval_set: Benchmark name (e.g. 'mteb_eng_v2', 'mteb_multilingual_v2', 'mteb_eng_v2_reduced').
+        task_types: Optional list of task type strings (e.g. ['Retrieval', 'STS']) to restrict
+            evaluation to. If None or empty, all tasks from the benchmark are returned.
+            Valid types: Retrieval, Reranking, Classification, PairClassification, Clustering,
+            MultilabelClassification, BitextMining, STS, Summarization, InstructionRetrieval.
+    """
     if eval_set == "mteb_multilingual_v2":
         benchmark = mteb.get_benchmark("MTEB(Multilingual, v2)")
         tasks = list(benchmark.tasks)
     elif eval_set == "mteb_eng_v2":
         benchmark = mteb.get_benchmark("MTEB(eng, v2)")
         tasks = list(benchmark.tasks)
-    elif eval_set == "mteb_eng_v2_20":
-        task_names = TASK_DICT["mteb_eng_v2_20"]
+    elif eval_set == "mteb_eng_v2_reduced":
+        task_names = TASK_DICT["mteb_eng_v2_reduced"]
         tasks = [mteb.get_task(name) for name in task_names]
     else:
         raise ValueError(f"Unknown eval_set: {eval_set}")
+
+    if task_types:
+        task_types_set = set(task_types)
+        tasks = [t for t in tasks if t.metadata.type in task_types_set]
     return tasks
-
-
-@dataclass
-class TrainTaskMetadata:
-    type: str
-    prompt: str = None
-
-
-FOLDER_TO_TASK = {
-    "retrieval/general_retrieval": TrainTaskMetadata(
-        type="Retrieval",
-        prompt="Given a web search query, retrieve relevant passages that answer the query",
-    ),
-    "retrieval/domain_specific_qa": TrainTaskMetadata(
-        type="Retrieval",
-        prompt="Given a question, retrieve passages that answer the question",
-    ),
-    "retrieval/open_domain_qa": TrainTaskMetadata(
-        type="Retrieval",
-        prompt="Given a question, retrieve passages that answer the question",
-    ),
-    "retrieval/fact_verification": TrainTaskMetadata(
-        type="Retrieval",
-        prompt="Given a claim, retrieve documents that support or refute the claim",
-    ),
-    "retrieval/paraphrase_detection": TrainTaskMetadata(
-        type="STS",
-        prompt="Retrieve semantically similar text",
-    ),
-    "retrieval/scientific_doc_retrieval": TrainTaskMetadata(
-        type="Retrieval",
-        prompt="Given a scientific paper title, retrieve the paper abstract",
-    ),
-    "retrieval/summarization": TrainTaskMetadata(
-        type="Summarization",
-        prompt="Given a summary, retrieve the original document",
-    ),
-    "nli": TrainTaskMetadata(
-        type="Classification",
-        prompt="Given a premise, retrieve a hypothesis that is entailed by the premise",
-    ),
-    "sts": TrainTaskMetadata(
-        type="STS",
-        prompt="Retrieve semantically similar text",
-    ),
-}
-
-DEFAULT_TASK = TrainTaskMetadata(
-    type="Retrieval",
-    prompt="Given a web search query, retrieve relevant passages that answer the query",
-)
-
-
-def _infer_task_metadata(parquet_path, base_dir):
-    """Infer task metadata from the directory structure."""
-    rel = os.path.relpath(os.path.dirname(parquet_path), base_dir)
-    parts = rel.replace(os.sep, "/").split("/")
-    for depth in range(len(parts), 0, -1):
-        key = "/".join(parts[:depth])
-        if key in FOLDER_TO_TASK:
-            return FOLDER_TO_TASK[key]
-    return DEFAULT_TASK
-
 
 def _load_parquet_safe(path):
     """Load a parquet file as an HF Dataset with fallback for metadata issues."""
@@ -594,12 +608,75 @@ def create_dataset(
 # ---------------------------------------------------------------------------
 
 
+def _filter_long_hard_negatives_batch(examples, tokenizer, max_seq_len):
+    """Return a boolean keep-mask for a batch of hard-negative rows.
+
+    A row is discarded when *any* of query_prompt, positive_prompt, or any
+    entry in negative_prompts tokenizes to more than max_seq_len tokens.
+
+    Tokenization is done without special tokens and without truncation so that
+    the raw length is measured.  The function avoids a Python-level loop over
+    negatives by flattening all negative lists, batch-tokenizing them, and then
+    mapping the results back to individual examples.
+    """
+    batch_size = len(examples["query_prompt"])
+
+    # --- Query lengths ---
+    q_encs = tokenizer(
+        examples["query_prompt"],
+        add_special_tokens=False,
+        return_attention_mask=False,
+        truncation=False,
+    )["input_ids"]
+    q_lengths = np.array([len(ids) for ids in q_encs])
+
+    # --- Positive lengths ---
+    p_encs = tokenizer(
+        examples["positive_prompt"],
+        add_special_tokens=False,
+        return_attention_mask=False,
+        truncation=False,
+    )["input_ids"]
+    p_lengths = np.array([len(ids) for ids in p_encs])
+
+    # --- Negative lengths (flattened) ---
+    neg_counts = [len(examples["negative_prompts"][i]) for i in range(batch_size)]
+    flat_neg_prompts = [
+        prompt
+        for i in range(batch_size)
+        for prompt in examples["negative_prompts"][i]
+    ]
+
+    neg_too_long = np.zeros(batch_size, dtype=bool)
+    if flat_neg_prompts:
+        n_encs = tokenizer(
+            flat_neg_prompts,
+            add_special_tokens=False,
+            return_attention_mask=False,
+            truncation=False,
+        )["input_ids"]
+        n_lengths = np.array([len(ids) for ids in n_encs])
+        # Map back to per-example "any negative too long"
+        offset = 0
+        for i, count in enumerate(neg_counts):
+            if count > 0 and np.any(n_lengths[offset : offset + count] > max_seq_len):
+                neg_too_long[i] = True
+            offset += count
+
+    keep = (
+        (q_lengths <= max_seq_len) & (p_lengths <= max_seq_len) & ~neg_too_long
+    )
+    return keep.tolist()
+
+
 def create_hard_negatives_datasets(
     base_dir,
     num_hard_negatives,
     tokenizer,
     instruction_template,
     rank=0,
+    max_length=None,
+    max_seq_len=None,
     datasets_subset: Optional[List[str]] = None,
 ):
     """Load and tokenize all hard-negative parquet datasets under *base_dir*.
@@ -642,16 +719,31 @@ def create_hard_negatives_datasets(
                 f"Restricted to {len(parquet_files)} datasets (subset of {len(datasets_subset)} requested)"
             )
 
+    # dataset_name = leaf dir (e.g. msmarco), not filename (data.parquet)
+    def _dataset_name_from_path(p):
+        return os.path.basename(os.path.dirname(p))
+
+    assert all([_dataset_name_from_path(p) in NAME_TO_TASK_TYPE for p in parquet_files]), "mapping dataset name dataset task not found"
+
     if rank == 0:
         print(f"Found {len(parquet_files)} datasets under {base_dir}")
 
     all_datasets = []
+    midpoint = len(parquet_files) // 2
     for i, path in enumerate(parquet_files):
-        task_metadata = _infer_task_metadata(path, base_dir)
+
+        dataset_name = _dataset_name_from_path(path)
+        task_metadata = TASK_TYPE_TO_TASK_METADATA[NAME_TO_TASK_TYPE[dataset_name]]
+
         ds_name = os.path.relpath(os.path.dirname(path), base_dir)
 
         if rank == 0:
             print(f"  Loading {ds_name} {i}/{len(parquet_files)}...")
+
+        if i == midpoint and dist.is_initialized():
+            dist.barrier()
+            if rank == 0:
+                print("  [barrier] ranks synced at dataset midpoint")
 
         ds = _load_parquet_safe(path)
 
@@ -664,7 +756,22 @@ def create_hard_negatives_datasets(
             task_metadata=task_metadata,
             num_hard_negatives=num_hard_negatives,
         )
-        ds = ds.map(build_fn, batched=True, batch_size=10000,)
+        ds = ds.map(build_fn, batched=True, batch_size=10000)
+
+        # Step 2 (optional): filter rows where any component exceeds max_seq_len
+        if max_seq_len is not None:
+            n_before = len(ds)
+            filter_fn = partial(
+                _filter_long_hard_negatives_batch,
+                tokenizer=tokenizer,
+                max_seq_len=max_seq_len,
+            )
+            ds = ds.filter(filter_fn, batched=True, batch_size=1000)
+            if rank == 0:
+                print(
+                    f"    [{ds_name}] filtered {n_before - len(ds)} / {n_before} rows "
+                    f"exceeding max_seq_len={max_seq_len} tokens"
+                )
 
         # Step 3: Add lengths and dataset_name for sorting (tokenization done in collate)
         # len_fn = partial(

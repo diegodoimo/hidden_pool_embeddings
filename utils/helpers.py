@@ -112,14 +112,18 @@ def save_model(model, output_dir, RANK, dist_type="ddp"):
 
     # 2. Handle DDP/DataParallel/Compile/Plain PyTorch Saving (needs the unwrapped model)
 
-    # Unwrap all layers (DDP, DataParallel, torch.compile)
-    options = (torch.nn.parallel.DistributedDataParallel, torch.nn.DataParallel)
-    while isinstance(model, options):
-        model = model.module
-
-    # Unwrap torch.compile
-    if hasattr(model, "_orig_mod"):
-        model = model._orig_mod
+    # Iteratively unwrap all layers (torch.compile, DDP, DataParallel) in any order.
+    # compile wraps DDP, so _orig_mod must be checked at every level.
+    ddp_types = (torch.nn.parallel.DistributedDataParallel, torch.nn.DataParallel)
+    changed = True
+    while changed:
+        changed = False
+        if hasattr(model, "_orig_mod"):          # torch.compile
+            model = model._orig_mod
+            changed = True
+        if isinstance(model, ddp_types):         # DDP / DataParallel
+            model = model.module
+            changed = True
 
     # Get state dict from the fully unwrapped model
     state_dict = model.state_dict()

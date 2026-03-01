@@ -97,12 +97,6 @@ class Trainer:
         self.model = DDP(self.model, device_ids=[self.local_rank])
         self.model = torch.compile(self.model)
         # self.model.compile(mode="reduce-overhead")
-
-        # self.model.compile(
-        #     mode="default",
-        #     dynamic=True,
-        #     fullgraph=False  # Allow graph breaks
-        # )
         print_memory_consumed(message="memory consumed after loading model")
 
         self.optimizer, self.lr_scheduler = get_scheduler_optimizer(
@@ -110,7 +104,6 @@ class Trainer:
             args,
             len_dataloader,
         )
-        # print(self.model)
 
     def train(
         self,
@@ -140,10 +133,25 @@ class Trainer:
             "lr": args.learning_rate,
             "batch_size": args.batch_size,
             "weight_decay": args.weight_decay,
-            "lora_rank": args.lora_rank,
-            "lora_alpha": args.lora_alpha,
-            "lora_dropout": args.lora_dropout,
         }
+        if args.use_lora:
+            stats["train_params"]["lora"] = {
+                "rank": args.lora_rank,
+                "alpha": args.lora_alpha,
+                "dropout": args.lora_dropout,
+            }
+        else:
+            stats["train_params"]["lora"] = False
+
+        if args.measure_baselines:
+            self.model.eval()
+            results, summary = evaluator.evaluate(
+                self.model, batch_size=args.per_device_eval_batch_size
+            )
+            self.model.train()
+            stats["test_perf"][0] = summary
+            if RANK == 0:
+                print(summary)
 
         if RANK == 0:
             print("log_steps:", log_steps)
@@ -152,9 +160,10 @@ class Trainer:
             print(f"  Num Epochs = {args.num_train_epochs}")
             print(f"  Learning rate = {args.learning_rate}")
             print(f"  Weight Decay = {args.weight_decay}")
-            print(f"  Lora Rank = {args.lora_rank}")
-            print(f"  Lora Alpha = {args.lora_alpha}")
-            print(f"  Lora Dropout = {args.lora_dropout}")
+            if args.use_lora:
+                print(f"  Lora Rank = {args.lora_rank}")
+                print(f"  Lora Alpha = {args.lora_alpha}")
+                print(f"  Lora Dropout = {args.lora_dropout}")
             print(f"  Batch size per device = {args.per_device_train_batch_size}")
             print(
                 f"  Total batch size (w. parallel, distributed & accumulation) = {args.batch_size}"
@@ -272,9 +281,11 @@ class Trainer:
                             json.dump(stats, f, indent=4)
 
                 if completed_steps in eval_steps:
+                    self.model.eval()
                     _, summary = evaluator.evaluate(
                         self.model, batch_size=args.per_device_eval_batch_size
                     )
+                    self.model.train()
 
                     if RANK == 0:
                         print(f"iter {completed_steps}.")
@@ -295,9 +306,21 @@ class Trainer:
                         self.model, output_dir, RANK=RANK, dist_type=args.dist_type
                     )
 
+            total_time = time.time() - start
+            stats["total_time_min"] = total_time / 60
             if RANK == 0:
                 with open(f"{args.output_dir}/train_logs{filename}.json", "w") as f:
                     json.dump(stats, f, indent=4)
+
+            eval_tasks = get_eval_tasks(
+                "mteb_eng_v2",
+                task_types=["Retrieval", "Summarization", "STS", "Reranking"],
+            )
+            evaluator.update_datasets(eval_tasks)
+            results, summary = evaluator.evaluate(
+                self.model, batch_size=args.per_device_eval_batch_size
+            )
+            stats["mteb_eng_v2_full"] = summary
 
             output_dir = f"epoch_{epoch+1}{filename}"
             if args.output_dir is not None:
@@ -319,13 +342,11 @@ def main():
     dist.init_process_group(
         "nccl",
         device_id=torch.device("cuda", LOCAL_RANK),
-        timeout=timedelta(seconds=60),
+        timeout=timedelta(minutes=30),
     )
     rank = dist.get_rank()
     torch.cuda.set_device(LOCAL_RANK)
-
     torch.set_float32_matmul_precision("high")
-    # torch.cuda.set_device(dist.get_rank())
 
     args.batch_size = WORLD_SIZE * args.per_device_train_batch_size
     args.gradient_accumulation_steps = 1
@@ -346,7 +367,7 @@ def main():
             activation_checkpointing=args.activation_checkpointing,
             attention_pooling=args.attention_pooling,
             cls_query_pooling=args.cls_query_pooling,
-            attention_dim=256,
+            attention_dim=args.attention_dim,
         )
 
         model_name = "t5gemma2"
@@ -399,13 +420,22 @@ def main():
             "Expected a path containing 'qwen3' or 'embeddinggemma'."
         )
 
+    if RANK == 0:
+        print(f"length_strategy={args.length_strategy}, max_seq_len={args.max_seq_len}")
+
+    train_list = None  # defaults to all
+    if args.train_subset == "reduced":
+        train_list = QWEN3_600M_DATASET_SUBSET
+
+    teacher_model = args.negatives_dir.split("/")[-1]
     train_dataset = create_hard_negatives_datasets(
         base_dir=args.negatives_dir,
         num_hard_negatives=args.num_hard_negatives,
         tokenizer=tokenizer,
         instruction_template=instruction_template,
         rank=RANK,
-        datasets_subset=QWEN3_600M_DATASET_SUBSET,
+        datasets_subset=train_list,
+        max_seq_len=args.max_seq_len if args.length_strategy == "filter" else None,
     )
 
     dist.barrier()
@@ -441,6 +471,7 @@ def main():
         tokenizer=tokenizer,
         eot_id=eot_id,
         add_special_tokens=add_special_tokens,
+        max_seq_len=args.max_seq_len if args.length_strategy == "truncate" else None,
     )
 
     train_loader = DataLoader(
@@ -473,6 +504,12 @@ def main():
         loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
 
     dist.barrier()
+
+    suffix = f"{model_name}_train-{teacher_model}_gpus{WORLD_SIZE}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_{args.batch_strategy}"
+    if args.out_filename:
+        args.out_filename = f"{args.out_filename}_{suffix}"
+    else:
+        args.out_filename = suffix
 
     trainer = Trainer(
         len_dataloader=len(train_loader),

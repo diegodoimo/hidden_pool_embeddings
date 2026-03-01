@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --partition=H100
-##SBATCH --nodelist=dgx004
+#SBATCH --nodelist=dgx004
 #SBATCH --account=lade
 #SBATCH --nodes=1
-#SBATCH --time=24:00:00            
+#SBATCH --time=12:00:00            
 #SBATCH --ntasks-per-node=1       
-#SBATCH --cpus-per-task=100
+#SBATCH --cpus-per-task=20
 #SBATCH --mem=50G       
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:2
+#SBATCH --gres=gpu:H100:1
 ##SBATCH --gres=gpu:A100:2
 
 
