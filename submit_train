@@ -2,16 +2,14 @@
 #SBATCH --partition=H100
 ##SBATCH --partition=DGX
 #SBATCH --account=lade
-##SBATCH --nodelist=dgx003
+##SBATCH --nodelist=dgx004
 #SBATCH --nodes=1
 #SBATCH --time=24:00:00            
 #SBATCH --ntasks-per-node=1       
-#SBATCH --cpus-per-task=16  #32          
-#SBATCH --mem=100G          #it is intended per node          
+#SBATCH --cpus-per-task=28  #32          
+#SBATCH --mem=300G                   
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:2   #it is intended per node
-
-
+#SBATCH --gres=gpu:H100:4
 
 #source /u/area/ddoimo/anaconda3/bin/activate ./env_a100
 module load cuda/12.8 
@@ -30,8 +28,6 @@ head_node=${nodes[0]}
 head_node_ip=$(getent hosts "$head_node" | awk '{ print $1 }')
 GPU_NUMBER=$(echo $CUDA_VISIBLE_DEVICES | tr ',' ' ' | wc -w) 
 
-TORCHDYNAMO_VERBOSE=1
-
 torchrun \
     --nnodes=$SLURM_NTASKS \
     --node-rank=$SLURM_NODEID \
@@ -40,23 +36,25 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train.py \
-    --use_hard_negatives \
     --num_hard_negatives 7 \
     --negatives_dir results/datasets_negatives/qwen3_600m \
     --model_name_or_path google/t5gemma-2-270m-270m  \
+    --length_strategy truncate \
+    --batch_strategy grouped \
     --eval_set mteb_eng_v2_reduced \
+    --max_seq_len 1024  \
     --attention_dim 256 \
     --num_workers 16 \
-    --per_device_train_batch_size 64 \
+    --per_device_train_batch_size 16 \
     --per_device_eval_batch_size 128 \
-    --learning_rate 2e-5 \
-    --lr_min_fact 0.1 \
+    --learning_rate 1e-5 \
+    --lr_min_fact 0.01 \
     --warmup_ratio 0.03 \
-    --weight_decay 0.1  \
+    --weight_decay 0.01  \
     --num_train_epochs 1 \
     --checkpointing_steps 1 \
-    --logging_steps 10 \
-    --eval_steps 7 \
+    --logging_steps 50 \
+    --eval_steps 5 \
     --output_dir "./results/train" \
     --measure_baselines \
     # --eval_only \

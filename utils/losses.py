@@ -46,8 +46,8 @@ class EmbeddingGemmaLossDistributed(nn.Module):
     def pairwise_dot_squared(x, B):
         dots = x @ x.t()
         dots_sq = dots**2
-        # Zero out diagonal in-place (most efficient)
-        dots_sq.fill_diagonal_(0)
+        diag_mask = torch.eye(B, dtype=torch.bool, device=dots_sq.device)
+        dots_sq = dots_sq.masked_fill(diag_mask, 0)
         return dots_sq.sum() / (B * (B - 1))
 
     def forward(
@@ -122,14 +122,13 @@ class EmbeddingGemmaLossHardNegatives(nn.Module):
     def pairwise_dot_squared(x, B, ids=None):
         dots = x @ x.t()
         dots_sq = dots**2
-        dots_sq.fill_diagonal_(0)
-        #if ids is not None:
+        diag_mask = torch.eye(B, dtype=torch.bool, device=dots_sq.device)
         same_id = ids.unsqueeze(1) == ids.unsqueeze(0)
-        same_id.fill_diagonal_(False)
-        dots_sq.masked_fill_(same_id, 0)
+        same_id = same_id.masked_fill(diag_mask, False)
+        exclude = diag_mask | same_id
+        dots_sq = dots_sq.masked_fill(exclude, 0)
         num_pairs = (B * (B - 1) - same_id.float().sum()).clamp(min=1)
         return dots_sq.sum() / num_pairs
-        #return dots_sq.sum() / (B * (B - 1))
 
     def forward(
         self,

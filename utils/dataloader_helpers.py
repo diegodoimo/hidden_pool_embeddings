@@ -290,13 +290,27 @@ def collate_fn_with_hard_negatives(
     tokenizer=None,
     eot_id=None,
     add_special_tokens=False,
+    max_seq_len=None,
 ):
     """Collate function for batches that include hard negatives.
 
     Tokenizes prompts in the collate (like collate_fn_with_padding), then returns
     padded tensors for queries and all docs (positives + negatives concatenated)
     for a single forward pass.
+
+    When max_seq_len is set (option 1 / truncation strategy), every tokenizer call
+    uses truncation=True so that no sequence exceeds max_seq_len tokens.  When
+    eot_id is also appended the effective content budget is max_seq_len-1 tokens
+    so that the final sequence (content + eot) stays within the limit.
     """
+
+    # Reserve one slot for eot_id when it is appended after tokenisation.
+    _max_content = (max_seq_len - 1) if (max_seq_len is not None and eot_id is not None) else max_seq_len
+    _trunc_kwargs = (
+        {"truncation": True, "max_length": _max_content}
+        if max_seq_len is not None
+        else {}
+    )
 
     # Tokenize queries (like collate_fn_with_padding)
     query_prompts = [item["query_prompt"] for item in batch]
@@ -304,6 +318,7 @@ def collate_fn_with_hard_negatives(
         query_prompts,
         add_special_tokens=add_special_tokens,
         return_attention_mask=False,
+        **_trunc_kwargs,
     )["input_ids"]
 
     if eot_id is not None:
@@ -317,6 +332,7 @@ def collate_fn_with_hard_negatives(
         pos_prompts,
         add_special_tokens=add_special_tokens,
         return_attention_mask=False,
+        **_trunc_kwargs,
     )["input_ids"]
     if eot_id is not None:
         pos_token_ids = [torch.tensor(tok + [eot_id]) for tok in pos_encs]
@@ -332,6 +348,7 @@ def collate_fn_with_hard_negatives(
             neg_prompts,
             add_special_tokens=add_special_tokens,
             return_attention_mask=False,
+            **_trunc_kwargs,
         )["input_ids"]
 
         if eot_id is not None:

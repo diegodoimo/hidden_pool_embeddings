@@ -56,18 +56,23 @@ class evaluate_retrieval:
         self.world_size = dist.get_world_size()
         self.rank = dist.get_rank()
         self.tokenizer = tokenizer
-        self.tasks = tasks
         self.padding_side = padding_side
         self.add_special_tokens = add_special_tokens
         self.eot_id = eot_id
+        self.instruction_template = instruction_template
+        self.max_samples = max_samples
 
         t1 = time.time()
         _print_ram(label="before loading datasets", rank=self.rank)
-        self.datasets = self.prepare_datasets(instruction_template, max_samples=max_samples)
+        self.datasets = self.prepare_datasets(tasks = tasks, instruction_template = self.instruction_template, max_samples=self.max_samples)
         dist.barrier()
-        _print_ram(label="after loading datastes", rank=self.rank)
+        _print_ram(label="after loading datasets", rank=self.rank)
         if self.rank == 0:
-            print(f"datsets prepared in {(time.time()-t1)/60:.2f} min")
+            print(f"datasets prepared in {(time.time()-t1)/60:.2f} min")
+
+    def update_datasets(self, tasks):
+        del self.datasets
+        self.datasets = self.prepare_datasets(tasks=tasks, instruction_template=self.instruction_template, max_samples=self.max_samples)
 
     def _get_max_split_size_from_hub(self, task):
         """Query HF Hub for the largest split size (rows) without downloading data.
@@ -112,13 +117,14 @@ class evaluate_retrieval:
 
     def prepare_datasets(
         self,
+        tasks,
         instruction_template,
         max_samples=1_000_000,
     ):
 
         datasets = {}
-        n_tasks = len(self.tasks)
-        for i, task in enumerate(self.tasks):
+        n_tasks = len(tasks)
+        for i, task in enumerate(tasks):
             task_name = task.metadata.name
             task_type = task.metadata.type
 
@@ -288,6 +294,9 @@ class evaluate_retrieval:
         return summary
 
     def evaluate(self, model, batch_size=64):
+
+        model = model.eval()
+        
         results = defaultdict(list)
         eval_context = EvalContext(
             tokenizer=self.tokenizer,

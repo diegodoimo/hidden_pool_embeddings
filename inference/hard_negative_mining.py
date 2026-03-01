@@ -1,4 +1,9 @@
 import os
+
+# Disable Rust-level tokenizer parallelism to avoid deadlocks when the process
+# is forked by DataLoader workers or DDP (the tokenizer is used inside collate_fn).
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import torch
 from torch.utils.data import DataLoader
 from mteb.types import PromptType
@@ -19,6 +24,9 @@ from inference.helpers import encode, search
 from dataclasses import dataclass
 import json
 from utils.helpers import print_memory_consumed, return_formatted
+#from .helpers import last_token_pool as _default_pool
+
+
 
 # Maximum number of queries to process in a single mine-one pass.
 # When the total number of unique queries exceeds this, the full
@@ -26,6 +34,14 @@ from utils.helpers import print_memory_consumed, return_formatted
 # iteratively in chunks of this size.  This avoids the need for
 # stream_to_cpu which may not be available on every server.
 ITERATIVE_ENCODE_THRESHOLD = 10**6
+
+
+def _get_hidden_size(model):
+    """Unwrap DDP and EncoderWithPooling to reach the model with config."""
+    m = model.module if hasattr(model, "module") else model
+    while hasattr(m, "model") and not hasattr(m, "config"):
+        m = m.model
+    return m.config.hidden_size
 
 
 def estimate_chunk_sizes(query_embeddings, max_corpus_chunk=5 * 10**4):
@@ -305,7 +321,7 @@ class HardNegativesMiner:
         add_special_tokens=False,
         eot_id=None,
     ):
-        from .helpers import last_token_pool as _default_pool
+        
 
         self.world_size = dist.get_world_size()
         self.rank = dist.get_rank()
@@ -498,10 +514,7 @@ class HardNegativesMiner:
         # GPU memory, we stream embeddings to CPU during encoding and
         # keep them there throughout the search.
         n_queries = len(dataset["unique_queries"])
-        if hasattr(model, "module"):
-            hidden_size = model.module.config.hidden_size
-        else:
-            hidden_size = model.config.hidden_size
+        hidden_size = _get_hidden_size(model)
         query_emb_bytes = n_queries * hidden_size * 4  # float32
         topk_bytes = n_queries * top_k * 12  # float32 scores + int64 indices
         free_mem, _ = torch.cuda.mem_get_info()
@@ -664,7 +677,7 @@ class HardNegativesMiner:
             ]
 
             # Threshold based on this specific (query, positive) pair's score
-            upper_threshold = min(0.9 * query_positive_scores[qrel_idx], 0.9)
+            upper_threshold = min(0.9 * query_positive_scores[qrel_idx], 0.85)
 
             # Find valid hard negatives
             valid_mask = candidate_scores < upper_threshold
@@ -681,7 +694,7 @@ class HardNegativesMiner:
                 continue
 
             # Cap number of negatives
-            selected = valid_idx[:24]
+            selected = valid_idx[:15]
             corpus_indices = candidate_indices[selected]
 
             neg_corpus_ids = array_ids[corpus_indices].tolist()
