@@ -1,9 +1,10 @@
 import torch
 import os
 
-# Disable Rust-level tokenizer parallelism to avoid deadlocks when the process
-# is forked by DataLoader workers or DDP (the tokenizer is used inside collate_fn).
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# Tokenizer parallelism: safe to enable because the DataLoader uses
+# multiprocessing_context="spawn" (no fork → no thread-pool deadlock).
+# os.environ["TOKENIZERS_PARALLELISM"] = "false"  # OLD: disabled for fork safety
+os.environ["TOKENIZERS_PARALLELISM"] = "true"
 import numpy as np
 import time
 import json
@@ -42,6 +43,52 @@ from utils.create_datasets import (
 )
 from models.modules import last_token_pool, add_pooling_layers, mean_pool
 from datetime import timedelta
+
+
+class CudaDataPrefetcher:
+    """Prefetches batches onto GPU using a side CUDA stream.
+
+    While the current batch is being processed on the default stream, the next
+    batch is asynchronously transferred to GPU on a separate stream.  This
+    hides the host-to-device copy latency almost entirely.
+    """
+
+    def __init__(self, loader, device):
+        self.loader = loader
+        self.device = device
+        self.stream = torch.cuda.Stream(device=device)
+        self.iter = None
+        self.next_batch = None
+
+    def _preload(self):
+        try:
+            batch = next(self.iter)
+        except StopIteration:
+            self.next_batch = None
+            return
+        with torch.cuda.stream(self.stream):
+            self.next_batch = {
+                key: (
+                    val.to(self.device, non_blocking=True)
+                    if isinstance(val, torch.Tensor)
+                    else val
+                )
+                for key, val in batch.items()
+            }
+
+    def next(self):
+        if self.iter is None:
+            self.iter = iter(self.loader)
+            self._preload()
+        torch.cuda.current_stream(self.device).wait_stream(self.stream)
+        batch = self.next_batch
+        if batch is not None:
+            # Ensure tensors record the dependency on the side stream
+            for val in batch.values():
+                if isinstance(val, torch.Tensor):
+                    val.record_stream(torch.cuda.current_stream(self.device))
+            self._preload()
+        return batch
 
 
 class Trainer:
@@ -181,22 +228,31 @@ class Trainer:
         total_loss = 0
         total_time = 0
 
+        use_hard_negatives = isinstance(loss_fn, EmbeddingGemmaLossHardNegatives)
+
         start = time.time()
         for epoch in range(args.num_train_epochs):
 
             self.model.train()
             # gradient accumulation step may not finish with a proper update at the end of the epoch so we call zero grad here
-            self.optimizer.zero_grad()
+            # OLD: self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
 
             if hasattr(train_loader.sampler, "set_epoch"):
                 train_loader.sampler.set_epoch(epoch)
 
-            for index, batch in enumerate(train_loader):
+            # --- OLD: synchronous iteration with blocking .to(device) ---
+            # for index, batch in enumerate(train_loader):
+            #     batch = {
+            #         key: val.to(self.device) if isinstance(val, torch.Tensor) else val
+            #         for key, val in batch.items()
+            #     }
+            # --- END OLD ---
 
-                batch = {
-                    key: val.to(self.device) if isinstance(val, torch.Tensor) else val
-                    for key, val in batch.items()
-                }
+            prefetcher = CudaDataPrefetcher(train_loader, self.device)
+            batch = prefetcher.next()
+            index = 0
+            while batch is not None:
 
                 query_inputs = batch["query_token_ids"]
                 query_mask = batch["query_attention_mask"]
@@ -207,10 +263,6 @@ class Trainer:
                 num_neg = batch["num_hard_negatives"]
 
                 B = query_inputs.shape[0]
-
-                use_hard_negatives = isinstance(
-                    loss_fn, EmbeddingGemmaLossHardNegatives
-                )
 
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 
@@ -250,9 +302,12 @@ class Trainer:
                 )
                 self.optimizer.step()
                 self.lr_scheduler.step()
-                self.optimizer.zero_grad()
+                # OLD: self.optimizer.zero_grad()
+                self.optimizer.zero_grad(set_to_none=True)
 
                 completed_steps += 1
+                index += 1
+                batch = prefetcher.next()
 
                 if completed_steps in log_steps:
 
@@ -474,6 +529,16 @@ def main():
         max_seq_len=args.max_seq_len if args.length_strategy == "truncate" else None,
     )
 
+    # OLD: DataLoader without persistent workers / spawn
+    # train_loader = DataLoader(
+    #     train_dataset,
+    #     batch_size=args.per_device_train_batch_size,
+    #     sampler=sampler,
+    #     collate_fn=collate_fn,
+    #     num_workers=args.num_workers,
+    #     pin_memory=True,
+    # )
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.per_device_train_batch_size,
@@ -481,6 +546,9 @@ def main():
         collate_fn=collate_fn,
         num_workers=args.num_workers,
         pin_memory=True,
+        persistent_workers=args.num_workers > 0,
+        prefetch_factor=4 if args.num_workers > 0 else None,
+        multiprocessing_context="spawn" if args.num_workers > 0 else None,
     )
 
     # **************************************
