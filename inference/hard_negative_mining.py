@@ -33,7 +33,7 @@ from utils.helpers import print_memory_consumed, return_formatted
 # encode → search → get_hard_negatives → save pipeline is run
 # iteratively in chunks of this size.  This avoids the need for
 # stream_to_cpu which may not be available on every server.
-ITERATIVE_ENCODE_THRESHOLD = 10**6
+#ITERATIVE_ENCODE_THRESHOLD = 10**6
 
 
 def _get_hidden_size(model):
@@ -320,6 +320,7 @@ class HardNegativesMiner:
         max_length=512,
         add_special_tokens=False,
         eot_id=None,
+        iterative_encode_threshold=10**7
     ):
         
 
@@ -332,6 +333,13 @@ class HardNegativesMiner:
         self.max_length = max_length
         self.add_special_tokens = add_special_tokens
         self.eot_id = eot_id
+        
+        # Maximum number of queries to process in a single mine-one pass.
+        # When the total number of unique queries exceeds this, the full
+        # encode → search → get_hard_negatives → save pipeline is run
+        # iteratively in chunks of this size.  This avoids the need for
+        # stream_to_cpu which may not be available on every server.
+        self.iterative_encode_threshold = iterative_encode_threshold
 
         if self.rank == 0:
             Path(path).mkdir(parents=True, exist_ok=True)
@@ -741,7 +749,7 @@ class HardNegativesMiner:
     ):
         """Mine hard negatives for very large query sets in chunks.
 
-        When unique queries exceed ``ITERATIVE_ENCODE_THRESHOLD`` the full
+        When unique queries exceed ``self.iterative_encode_threshold`` the full
         encode → search → get_hard_negatives → save pipeline is run on
         successive chunks of queries that individually fit in GPU memory.
         Each chunk produces its own Parquet shard so that peak RAM stays
@@ -751,7 +759,7 @@ class HardNegativesMiner:
             TripletStats accumulated across all chunks.
         """
         n_queries = len(dataset["unique_queries"])
-        chunk_size = ITERATIVE_ENCODE_THRESHOLD
+        chunk_size = self.iterative_encode_threshold
         n_chunks = (n_queries + chunk_size - 1) // chunk_size
 
         if self.rank == 0:
@@ -811,7 +819,7 @@ class HardNegativesMiner:
                 "n_positives": dataset["n_positives"],
             }
 
-            # mine_one will see ≤ ITERATIVE_ENCODE_THRESHOLD queries,
+            # mine_one will see ≤ self.iterative_encode_threshold queries,
             # so it will use the normal GPU path (no stream_to_cpu).
             hard_negatives, stats = self.mine_one(
                 dataset=chunk_dataset,
@@ -915,9 +923,9 @@ class HardNegativesMiner:
                     print_memory_consumed(rank=self.rank)
 
                 # Decide whether to use the iterative path for very
-                # large query sets (> ITERATIVE_ENCODE_THRESHOLD).
+                # large query sets (> self.iterative_encode_threshold).
                 n_unique_queries = len(dataset["unique_queries"])
-                use_iterative = n_unique_queries > ITERATIVE_ENCODE_THRESHOLD
+                use_iterative = n_unique_queries > self.iterative_encode_threshold
                 # Broadcast from rank 0 so every GPU takes the same path.
                 _flag = torch.tensor([int(use_iterative)], device=f"cuda:{self.rank}")
                 dist.broadcast(_flag, src=0)

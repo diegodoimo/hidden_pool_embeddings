@@ -36,6 +36,7 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train.py \
+    --out_filename improved_loss \
     --num_hard_negatives 7 \
     --negatives_dir results/datasets_negatives/qwen3_600m \
     --model_name_or_path google/t5gemma-2-270m-270m  \
@@ -58,12 +59,12 @@ torchrun \
     --output_dir "./results/train" \
     --measure_baselines \
     # --eval_only \
-    #--distributed_loss \
+    # --distributed_loss \
     # --use_lora \
     # --lora_rank 128 \
     # --lora_alpha 256 \
     # --lora_dropout 0.1 \
-    #--activation_checkpointing \
-    #--model_name_or_path google/t5gemma-2-270m-270m  \
-    #--model_name_or_path google/embeddinggemma-300m \
-    #--model_name_or_path Qwen/Qwen3-Embedding-0.6B \
+    # --activation_checkpointing \
+    # --model_name_or_path google/t5gemma-2-270m-270m  \
+    # --model_name_or_path google/embeddinggemma-300m \
+    # --model_name_or_path Qwen/Qwen3-Embedding-0.6B \

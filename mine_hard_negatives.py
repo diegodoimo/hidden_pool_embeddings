@@ -216,6 +216,7 @@ def main():
         max_length=max_length,
         add_special_tokens=False,
         eot_id=tokenizer.pad_token_id,
+        iterative_encode_threshold=10**7
     )
 
     if RANK == 0:

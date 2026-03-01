@@ -230,15 +230,15 @@ DATASETS_BY_SIZE = [
     # "sentence_compression",  #    356,409
     # "stackoverflow_dup",  #    373,863
     # "stackexchange_dup_p2p",  #    374,049
-    "wikihow",  #    422,657
-    "xsum",  #    429,542
-    "stackexchange_dup_s2s",  #    462,315
-    "mnli",  #    544,416
-    "pubmedqa",  #    546,761
-    "cnndm",  #    592,859
-    "snli",  #    637,407
-    "eli5",  #    648,429
-    "mrtydi",  #  1,051,025
+    # "wikihow",  #    422,657
+    # "xsum",  #    429,542
+    # "stackexchange_dup_s2s",  #    462,315
+    # "mnli",  #    544,416
+    # "pubmedqa",  #    546,761
+    # "cnndm",  #    592,859
+    # "snli",  #    637,407
+    # "eli5",  #    648,429
+    # "mrtydi",  #  1,051,025
     "yahooanswers",  #  2,369,859
     "amazonqa",  #  3,264,575
     "gooaq",  #  4,488,520

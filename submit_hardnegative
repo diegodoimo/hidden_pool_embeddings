@@ -38,7 +38,7 @@ torchrun \
     --rdzv-endpoint=$head_node:0 \
     mine_hard_negatives.py  \
     --model_name_or_path "Qwen/Qwen3-Embedding-8B" \
-    --batch_size 16 \
+    --batch_size 32 \
     --task_types "sorted"  \
     #--task_names "stackexchange" \
 
