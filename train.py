@@ -43,6 +43,7 @@ from utils.create_datasets import (
 from models.modules import last_token_pool, add_pooling_layers, mean_pool
 from datetime import timedelta
 
+
 class Trainer:
     def __init__(
         self,
@@ -198,7 +199,9 @@ class Trainer:
 
                 B = query_inputs.shape[0]
 
-                use_hard_negatives = isinstance(loss_fn, EmbeddingGemmaLossHardNegatives)
+                use_hard_negatives = isinstance(
+                    loss_fn, EmbeddingGemmaLossHardNegatives
+                )
 
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
 
@@ -269,7 +272,9 @@ class Trainer:
                             json.dump(stats, f, indent=4)
 
                 if completed_steps in eval_steps:
-                    _, summary = evaluator.evaluate(self.model, batch_size=args.per_device_eval_batch_size)
+                    _, summary = evaluator.evaluate(
+                        self.model, batch_size=args.per_device_eval_batch_size
+                    )
 
                     if RANK == 0:
                         print(f"iter {completed_steps}.")
@@ -320,7 +325,7 @@ def main():
     torch.cuda.set_device(LOCAL_RANK)
 
     torch.set_float32_matmul_precision("high")
-    #torch.cuda.set_device(dist.get_rank())
+    # torch.cuda.set_device(dist.get_rank())
 
     args.batch_size = WORLD_SIZE * args.per_device_train_batch_size
     args.gradient_accumulation_steps = 1
@@ -466,7 +471,7 @@ def main():
     )
     if WORLD_SIZE > 1 and args.distributed_loss:
         loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
-    
+
     dist.barrier()
 
     trainer = Trainer(
@@ -478,9 +483,11 @@ def main():
     )
 
     if args.eval_only:
-        results, summary = evaluator.evaluate(trainer.model, batch_size=args.per_device_eval_batch_size)
+        results, summary = evaluator.evaluate(
+            trainer.model, batch_size=args.per_device_eval_batch_size
+        )
 
-        if RANK ==0:
+        if RANK == 0:
             print(results)
 
         label = args.eval_set
