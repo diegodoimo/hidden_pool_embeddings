@@ -24,8 +24,9 @@ from inference.helpers import encode, search
 from dataclasses import dataclass
 import json
 from utils.helpers import print_memory_consumed, return_formatted
-#from .helpers import last_token_pool as _default_pool
+import pyarrow.compute as pc
 
+# from .helpers import last_token_pool as _default_pool
 
 
 # Maximum number of queries to process in a single mine-one pass.
@@ -33,7 +34,7 @@ from utils.helpers import print_memory_consumed, return_formatted
 # encode → search → get_hard_negatives → save pipeline is run
 # iteratively in chunks of this size.  This avoids the need for
 # stream_to_cpu which may not be available on every server.
-#ITERATIVE_ENCODE_THRESHOLD = 10**6
+# ITERATIVE_ENCODE_THRESHOLD = 10**6
 
 
 def _get_hidden_size(model):
@@ -320,9 +321,8 @@ class HardNegativesMiner:
         max_length=512,
         add_special_tokens=False,
         eot_id=None,
-        iterative_encode_threshold=10**7
+        iterative_encode_threshold=10**7,
     ):
-        
 
         self.world_size = dist.get_world_size()
         self.rank = dist.get_rank()
@@ -440,36 +440,75 @@ class HardNegativesMiner:
                 start = time.time()
                 print("removing long sequences from full queries and corpus")
 
-            t1 = time.time()
+            # --- Old approach (kept for reference) ---
+            # t1 = time.time()
+            # filtered_qrels = filter_qrels_by_length(
+            #     unique_queries_dataset.removed_ids,
+            #     corpus_dataset.removed_ids,
+            #     data_split["qrels"],
+            # )
+            # dist.barrier()
+            # t2 = time.time()
+            # corpus_ids_set = set(corpus_dataset["id"])
+            # unique_queries_dataset_set = set(unique_queries_dataset["id"])
+            # dist.barrier()
+            # t3 = time.time()
+            # assert set(filtered_qrels["query_id"]).issubset(unique_queries_dataset_set), "filtered qrels contain query IDs not in unique queries"
+            # assert set(filtered_qrels["positive_id"]).issubset(
+            #     corpus_ids_set
+            # ), "filtered qrels contain positive IDs not in corpus"
+            # dist.barrier()
+            # t4 = time.time()
+            #
+            # if self.rank == 0:
+            #     print(
+            #         f"full queries and corpus filtered in {(time.time()-start)/60:.2f}min"
+            #     )
+            #     print("filtering times:")
+            #     print((t2-t1)/60)
+            #     print((t3-t2)/60)
+            #     print((t4-t3)/60)
+            #     num_queries_lost = len(set(unique_queries_dataset["id"])) - len(
+            #         set(filtered_qrels["query_id"])
+            #     )
+            #     if num_queries_lost > 0:
+            #         print(
+            #             f"Note: {num_queries_lost} valid queries were excluded because all their paired positives were removed"
+            #         )
+            # --------------------------------------------------
+
             filtered_qrels = filter_qrels_by_length(
                 unique_queries_dataset.removed_ids,
                 corpus_dataset.removed_ids,  # All removed corpus IDs (including positives)
                 data_split["qrels"],
             )
             dist.barrier()
-            t2 = time.time()
-            corpus_ids_set = set(corpus_dataset["id"])
-            unique_queries_dataset_set = set(unique_queries_dataset["id"])
+
+            # Validate filtered pairs using PyArrow — avoids materialising
+            # millions of Python strings just for a subset check.
+
+            corpus_ids_arr = corpus_dataset.data.table.column("id")
+            query_ids_arr = unique_queries_dataset.data.table.column("id")
+            qrel_qids = filtered_qrels.data.table.column("query_id")
+            qrel_pids = filtered_qrels.data.table.column("positive_id")
+
+            assert pc.all(
+                pc.is_in(qrel_qids, value_set=pc.unique(query_ids_arr).combine_chunks())
+            ).as_py(), "filtered qrels contain query IDs not in unique queries"
+            assert pc.all(
+                pc.is_in(
+                    qrel_pids, value_set=pc.unique(corpus_ids_arr).combine_chunks()
+                )
+            ).as_py(), "filtered qrels contain positive IDs not in corpus"
             dist.barrier()
-            t3 = time.time()
-            # Check that filtered pairs only contain valid IDs
-            assert set(filtered_qrels["query_id"]).issubset(unique_queries_dataset_set), "filtered qrels contain query IDs not in unique queries"
-            assert set(filtered_qrels["positive_id"]).issubset(
-                corpus_ids_set
-            ), "filtered qrels contain positive IDs not in corpus"
-            dist.barrier()
-            t4 = time.time()
 
             if self.rank == 0:
                 print(
                     f"full queries and corpus filtered in {(time.time()-start)/60:.2f}min"
                 )
-                print("filtering times:")
-                print((t2-t1)/60)
-                print((t3-t2)/60)
-                print((t4-t3)/60)
-                num_queries_lost = len(set(unique_queries_dataset["id"])) - len(
-                    set(filtered_qrels["query_id"])
+                num_queries_lost = (
+                    pc.count_distinct(query_ids_arr).as_py()
+                    - pc.count_distinct(qrel_qids).as_py()
                 )
                 if num_queries_lost > 0:
                     print(
@@ -568,9 +607,16 @@ class HardNegativesMiner:
             print(f"queries embedding duration: {(time.time()-start)/60:.2f} min")
 
         # Create mappings from IDs to embedding indices
-        unique_query_id_to_idx = {
-            qid: idx for idx, qid in enumerate(dataset["unique_queries"]["id"])
-        }
+        # Extract columns from Arrow once — avoids repeated materialisation
+        # of 14M Python strings each time dataset[...]["col"] is called.
+        # unique_query_id_to_idx = {
+        #     qid: idx for idx, qid in enumerate(dataset["unique_queries"]["id"])
+        # }
+        _unique_query_ids = dataset["unique_queries"].data.table.column("id").to_pylist()
+        _qrel_query_ids = dataset["qrels"].data.table.column("query_id").to_pylist()
+        _qrel_positive_ids = dataset["qrels"].data.table.column("positive_id").to_pylist()
+        _corpus_ids = dataset["corpus"].data.table.column("id").to_pylist()
+        unique_query_id_to_idx = {qid: idx for idx, qid in enumerate(_unique_query_ids)}
 
         dist.barrier()
         if self.rank == 0:
@@ -604,11 +650,16 @@ class HardNegativesMiner:
             corpus_dataset=dataset["corpus"],
             collate_fn=collate_fn,
             n_positives=dataset["n_positives"],
-            qrels_query_ids=dataset["qrels"]["query_id"],
-            qrels_positive_ids=dataset["qrels"]["positive_id"],
-            unique_query_ids=dataset["unique_queries"]["id"],
+            # Re-use pre-extracted lists instead of dataset[...]["col"]
+            # qrels_query_ids=dataset["qrels"]["query_id"],
+            # qrels_positive_ids=dataset["qrels"]["positive_id"],
+            # unique_query_ids=dataset["unique_queries"]["id"],
+            # corpus_ids=dataset["corpus"]["id"],
+            qrels_query_ids=_qrel_query_ids,
+            qrels_positive_ids=_qrel_positive_ids,
+            unique_query_ids=_unique_query_ids,
             unique_query_id_to_idx=unique_query_id_to_idx,
-            corpus_ids=dataset["corpus"]["id"],
+            corpus_ids=_corpus_ids,
             top_k=top_k,
             batch_size=batch_size,
             chunk_size=chunk_size,
@@ -630,10 +681,15 @@ class HardNegativesMiner:
         hard_negatives, stats = self.get_hard_negatives(
             top_scores=top_scores,
             top_indices=top_indices,
-            corpus_ids=dataset["corpus"]["id"],
-            query_ids=dataset["qrels"]["query_id"],
-            positive_ids=dataset["qrels"]["positive_id"],
-            unique_query_ids=dataset["unique_queries"]["id"],
+            # Re-use pre-extracted lists instead of dataset[...]["col"]
+            # corpus_ids=dataset["corpus"]["id"],
+            # query_ids=dataset["qrels"]["query_id"],
+            # positive_ids=dataset["qrels"]["positive_id"],
+            # unique_query_ids=dataset["unique_queries"]["id"],
+            corpus_ids=_corpus_ids,
+            query_ids=_qrel_query_ids,
+            positive_ids=_qrel_positive_ids,
+            unique_query_ids=_unique_query_ids,
             query_positive_scores=query_positive_scores,
             unique_query_id_to_idx=unique_query_id_to_idx,
             has_title=has_title,
@@ -771,8 +827,8 @@ class HardNegativesMiner:
         chunk_size = self.iterative_encode_threshold
         n_chunks = (n_queries + chunk_size - 1) // chunk_size
 
-        #-----------------------
-        max_nreps = max(1, int(10**6//self.iterative_encode_threshold))
+        # -----------------------
+        max_nreps = max(1, int(10**6 // self.iterative_encode_threshold))
 
         if self.rank == 0:
             print(
@@ -783,9 +839,12 @@ class HardNegativesMiner:
 
         accumulated_stats = TripletStats()
 
-        # Pre-extract qrels columns (may be Arrow columns — convert once)
-        all_qrel_query_ids = list(dataset["qrels"]["query_id"])
-        all_qrel_positive_ids = list(dataset["qrels"]["positive_id"])
+        # Pre-extract qrels columns via Arrow — avoids materialising 14M
+        # Python strings through HF Dataset.__getitem__ overhead.
+        # all_qrel_query_ids = list(dataset["qrels"]["query_id"])
+        # all_qrel_positive_ids = list(dataset["qrels"]["positive_id"])
+        all_qrel_query_ids = dataset["qrels"].data.table.column("query_id").to_pylist()
+        all_qrel_positive_ids = dataset["qrels"].data.table.column("positive_id").to_pylist()
 
         time_perf = {}
         start = time.time()
@@ -889,17 +948,18 @@ class HardNegativesMiner:
             dist.barrier()
             torch.cuda.synchronize()
             if self.rank == 0:
-                elapsed_time = time.time()-start
+                elapsed_time = time.time() - start
 
-                time_perf[f"iter_{it}_time_min"] = elapsed_time/60
+                time_perf[f"iter_{it}_time_min"] = elapsed_time / 60
                 time_perf["chunk_size"] = chunk_size_doc
 
-                with open(f"time_to_1M_chunk-size{self.iterative_encode_threshold}.json", "w") as f:
+                with open(
+                    f"time_to_1M_chunk-size{self.iterative_encode_threshold}.json", "w"
+                ) as f:
                     json.dump(time_perf, f, indent=2)
 
                 print(f"Chunk {ci + 1}/{n_chunks} done")
                 print_memory_consumed(rank=self.rank)
-
 
         return accumulated_stats
 

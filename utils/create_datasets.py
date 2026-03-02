@@ -56,6 +56,7 @@ TASK_PROMPTS = {
     "Summarization": "task: summarization | query: ",
 }
 
+
 @dataclass
 class TrainTaskMetadata:
     type: str
@@ -79,9 +80,6 @@ TASK_TYPE_TO_TASK_METADATA = {
         type="Clustering", prompt=TASK_PROMPTS["Clustering"]
     ),
 }
-
-
-
 
 
 # Example subset of 10 datasets from results/datasets_negatives/qwen3_600m leaf folders.
@@ -131,7 +129,6 @@ FULL_TRAIN_DATA = [
 ]
 
 
-
 # MTEB 20-task subset (mteb_20task_subset_selection.md) - minimizes eval time while preserving category averages
 TASK_DICT = {
     "mteb_eng_v2_reduced": [
@@ -148,7 +145,7 @@ TASK_DICT = {
         "BIOSSES",
         "STS17",
         "STS12",
-        # "AmazonCounterfactualClassification", 
+        # "AmazonCounterfactualClassification",
         # "MassiveScenarioClassification",
         # "TweetSentimentExtractionClassification",
         # "MTOPDomainClassification",
@@ -159,8 +156,8 @@ TASK_DICT = {
 }
 
 
+# *******************************************************************************************
 
-#*******************************************************************************************
 
 def get_eval_tasks(eval_set, task_types=None):
     """Return list of MTEB task objects for evaluation.
@@ -188,6 +185,7 @@ def get_eval_tasks(eval_set, task_types=None):
         task_types_set = set(task_types)
         tasks = [t for t in tasks if t.metadata.type in task_types_set]
     return tasks
+
 
 def _load_parquet_safe(path):
     """Load a parquet file as an HF Dataset with fallback for metadata issues."""
@@ -287,79 +285,78 @@ def filter_qrels_by_length(
     if not removed_query_ids and not removed_positive_ids:
         return qrels_dataset
 
-    # --- Previous approach (kept for reference) ---
+    # --- Previous pd.Series approach (kept for reference) ---
     # pd.Series(qrels_dataset["query_id"]) first decodes the internal Arrow column
     # into 14M Python string objects, then wraps them in a Series — that
     # materialisation alone took ~3.75 min for 14M rows.
-    # The fix: operate directly on the underlying Arrow table so the data
-    # never leaves C++ memory.
-    rank = dist.get_rank()
-    dist.barrier()
-    t1 = time.time()
-
-    removed_query_set = set(removed_query_ids)
-    removed_positive_set = set(removed_positive_ids)
-
-    dist.barrier()
-    t2 = time.time()
-
-    query_valid = (
-        ~pd.Series(qrels_dataset["query_id"]).isin(removed_query_set).to_numpy()
-    )
-    positive_valid = (
-        ~pd.Series(qrels_dataset["positive_id"]).isin(removed_positive_set).to_numpy()
-    )
-    dist.barrier()
-    t3 = time.time()
-    keep_mask = query_valid & positive_valid
-    valid_indices = np.where(keep_mask)[0].tolist()
-    dist.barrier()
-    t4 = time.time()
-    filtered_qrels = qrels_dataset.select(valid_indices)
-
-    dist.barrier()
-    t5 = time.time()
-    if rank == 0:
-        print("times filtering:")
-        print((t2-t1)/60)
-        print((t3-t2)/60)
-        print((t4-t3)/60)
-        print((t5-t4)/60)
-    # these are the times. Manageble
-    # 6.441275278727213e-06
-    # 3.7673192660013837
-    # 0.004844097296396891
-    # 0.22334847052892048
-    return filtered_qrels
-    # -----------------------------------------------
-
-    # Access the underlying Arrow table — no Python object creation for 14M rows.
-    # pc.is_in runs entirely in C++ against an Arrow hash table, then
-    # table.filter() applies the boolean mask without going through Python.
-
-    # SOME ERROR AFFECTS THE BELOW CODE
-
-    # import pyarrow as pa
-    # import pyarrow.compute as pc
-    # from datasets import Dataset
-
-    # arrow_table = qrels_dataset.data.table
-
-    # query_keep = pc.invert(
-    #     pc.is_in(
-    #         arrow_table.column("query_id"),
-    #         value_set=pa.array(list(removed_query_ids)),
-    #     )
+    #
+    # rank = dist.get_rank()
+    # dist.barrier()
+    # t1 = time.time()
+    #
+    # removed_query_set = set(removed_query_ids)
+    # removed_positive_set = set(removed_positive_ids)
+    #
+    # dist.barrier()
+    # t2 = time.time()
+    #
+    # query_valid = (
+    #     ~pd.Series(qrels_dataset["query_id"]).isin(removed_query_set).to_numpy()
     # )
-    # positive_keep = pc.invert(
-    #     pc.is_in(
-    #         arrow_table.column("positive_id"),
-    #         value_set=pa.array(list(removed_positive_ids)),
-    #     )
+    # positive_valid = (
+    #     ~pd.Series(qrels_dataset["positive_id"]).isin(removed_positive_set).to_numpy()
     # )
-    # keep_mask = pc.and_(query_keep, positive_keep)
+    # dist.barrier()
+    # t3 = time.time()
+    # keep_mask = query_valid & positive_valid
+    # valid_indices = np.where(keep_mask)[0].tolist()
+    # dist.barrier()
+    # t4 = time.time()
+    # filtered_qrels = qrels_dataset.select(valid_indices)
+    #
+    # dist.barrier()
+    # t5 = time.time()
+    # if rank == 0:
+    #     print("times filtering:")
+    #     print((t2-t1)/60)
+    #     print((t3-t2)/60)
+    #     print((t4-t3)/60)
+    #     print((t5-t4)/60)
+    # return filtered_qrels
+    # ----------------------------------------------------------
 
-    # return Dataset(arrow_table.filter(keep_mask))
+    # Use PyArrow compute to filter entirely in C++ — no Python string
+    # materialisation for 14M rows.
+    import pyarrow as pa
+    import pyarrow.compute as pc
+
+    arrow_table = qrels_dataset.data.table
+
+    masks = []
+    if removed_query_ids:
+        query_remove_arr = pa.array(list(removed_query_ids), type=pa.string())
+        masks.append(
+            pc.invert(
+                pc.is_in(arrow_table.column("query_id"), value_set=query_remove_arr)
+            )
+        )
+    if removed_positive_ids:
+        pos_remove_arr = pa.array(list(removed_positive_ids), type=pa.string())
+        masks.append(
+            pc.invert(
+                pc.is_in(arrow_table.column("positive_id"), value_set=pos_remove_arr)
+            )
+        )
+
+    if len(masks) == 2:
+        keep_mask = pc.and_(masks[0], masks[1])
+    else:
+        keep_mask = masks[0]
+
+    # Convert boolean ChunkedArray → numpy (cheap: only bools, not strings)
+    # and use .select() which preserves Dataset metadata / features.
+    valid_indices = np.nonzero(keep_mask.combine_chunks().to_numpy())[0]
+    return qrels_dataset.select(valid_indices)
 
 
 def _remove_long_sequences(rows, tokenizer, max_length):
@@ -559,7 +556,7 @@ def create_dataset(
     tokenizer,
     prompt_type,
     max_length,
-    verbose=False
+    verbose=False,
 ):
     """Create dataset.
 
@@ -668,9 +665,7 @@ def _filter_long_hard_negatives_batch(examples, tokenizer, max_seq_len):
     # --- Negative lengths (flattened) ---
     neg_counts = [len(examples["negative_prompts"][i]) for i in range(batch_size)]
     flat_neg_prompts = [
-        prompt
-        for i in range(batch_size)
-        for prompt in examples["negative_prompts"][i]
+        prompt for i in range(batch_size) for prompt in examples["negative_prompts"][i]
     ]
 
     neg_too_long = np.zeros(batch_size, dtype=bool)
@@ -689,9 +684,7 @@ def _filter_long_hard_negatives_batch(examples, tokenizer, max_seq_len):
                 neg_too_long[i] = True
             offset += count
 
-    keep = (
-        (q_lengths <= max_seq_len) & (p_lengths <= max_seq_len) & ~neg_too_long
-    )
+    keep = (q_lengths <= max_seq_len) & (p_lengths <= max_seq_len) & ~neg_too_long
     return keep.tolist()
 
 
@@ -749,7 +742,9 @@ def create_hard_negatives_datasets(
     def _dataset_name_from_path(p):
         return os.path.basename(os.path.dirname(p))
 
-    assert all([_dataset_name_from_path(p) in NAME_TO_TASK_TYPE for p in parquet_files]), "mapping dataset name dataset task not found"
+    assert all(
+        [_dataset_name_from_path(p) in NAME_TO_TASK_TYPE for p in parquet_files]
+    ), "mapping dataset name dataset task not found"
 
     if rank == 0:
         print(f"Found {len(parquet_files)} datasets under {base_dir}")
@@ -823,7 +818,7 @@ def create_hard_negatives_datasets(
             "positive_id",
             "query_id",
             "dataset_name",
-            "total_length"
+            "total_length",
         }
         cols_to_remove = [c for c in ds.column_names if c not in cols_to_keep]
         ds = ds.remove_columns(cols_to_remove)
@@ -835,6 +830,5 @@ def create_hard_negatives_datasets(
         total_tokens = np.sum(combined["total_length"])
         print(f"Total training examples: {len(combined)/10**6:.2f}M")
         print(f"Total tokens: {total_tokens/10**9:.2f}B")
-
 
     return combined
