@@ -35,7 +35,7 @@ torchrun \
     --rdzv-id=$SLURM_PROCID \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
-    train.py \
+    benchmark_tokenizer.py \
     --train_subset reduced \
     --out_filename test_speedup_improved_loss \
     --num_hard_negatives 7 \
