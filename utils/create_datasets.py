@@ -86,7 +86,7 @@ TASK_TYPE_TO_TASK_METADATA = {
 # Use as datasets_subset=QWEN3_600M_10DATASET_SUBSET to restrict training to these.
 QWEN3_600M_DATASET_SUBSET = [
     # "retrieval/general_retrieval/msmarco",
-    #"retrieval/general_retrieval/nfcorpus",
+    # "retrieval/general_retrieval/nfcorpus",
     "retrieval/general_retrieval/arguana",
     # "retrieval/domain_specific_qa/fiqa2018",
     # "retrieval/open_domain_qa/naturalquestions",
@@ -153,8 +153,6 @@ TASK_DICT = {
     #     # "SprintDuplicateQuestions",
     #     "SummEvalSummarization.v2",
     # ],
-
-
     "mteb_eng_v2_reduced": [
         "SCIDOCS",
         # "CQADupstackGamingRetrieval",
@@ -175,7 +173,7 @@ TASK_DICT = {
         # "MTOPDomainClassification",
         # "TwitterSemEval2015",
         # "SprintDuplicateQuestions",
-        #"SummEvalSummarization.v2",
+        # "SummEvalSummarization.v2",
     ],
 }
 
@@ -793,7 +791,6 @@ def create_hard_negatives_datasets(
         ds = _load_parquet_safe(path)
 
         # Step 1: Build prompts (mirror create_dataset: map with _build_prompt)
-        start = time.time()
         build_fn = partial(
             _build_prompts_hard_negatives_batch,
             tokenizer=tokenizer,
@@ -801,7 +798,11 @@ def create_hard_negatives_datasets(
             task_metadata=task_metadata,
             num_hard_negatives=num_hard_negatives,
         )
-        ds = ds.map(build_fn, batched=True, batch_size=10000)
+        ds = ds.map(
+            build_fn,
+            batched=True,
+            batch_size=10000,
+        )
 
         # Step 2 (optional): filter rows where any component exceeds max_seq_len
         if max_seq_len is not None:
@@ -814,7 +815,7 @@ def create_hard_negatives_datasets(
             ds = ds.filter(filter_fn, batched=True, batch_size=1000)
             if rank == 0:
                 print(
-                    f"    [{ds_name}] filtered {n_before - len(ds)} / {n_before} rows "
+                    f"[{ds_name}] filtered {n_before - len(ds)} / {n_before} rows "
                     f"exceeding max_seq_len={max_seq_len} tokens"
                 )
 

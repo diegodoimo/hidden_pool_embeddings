@@ -5,21 +5,26 @@ F2LLM has parquet files with heterogeneous schemas (3, 26, 27, or 28 columns),
 so load_dataset() fails with CastError when unifying them. We load each
 parquet separately and concatenate with a normalized schema.
 """
+
 import os
 from datasets import load_dataset, Dataset, concatenate_datasets, Value, Features
 
 # Target schema: superset of all variants (query, passage, negative_1..24)
-TARGET_FEATURES = Features({
-    "query": Value("string"),
-    "passage": Value("string"),
-    **{f"negative_{i}": Value("string") for i in range(1, 25)},
-})
+TARGET_FEATURES = Features(
+    {
+        "query": Value("string"),
+        "passage": Value("string"),
+        **{f"negative_{i}": Value("string") for i in range(1, 25)},
+    }
+)
 
 
 def _normalize_to_target(ds: Dataset) -> Dataset:
     """Map dataset columns to target schema; add empty strings for missing negatives."""
     cols = set(ds.column_names)
-    keep = ["query", "passage"] + [f"negative_{i}" for i in range(1, 25) if f"negative_{i}" in cols]
+    keep = ["query", "passage"] + [
+        f"negative_{i}" for i in range(1, 25) if f"negative_{i}" in cols
+    ]
     out = ds.select_columns(keep)
     for i in range(1, 25):
         if f"negative_{i}" not in cols:
@@ -41,10 +46,16 @@ def _get_f2llm_snapshot_path():
             load_dataset("codefuse-ai/F2LLM")
         except Exception:
             pass
-        base = os.path.join(cache_dir, "hub", "datasets--codefuse-ai--F2LLM", "snapshots")
+        base = os.path.join(
+            cache_dir, "hub", "datasets--codefuse-ai--F2LLM", "snapshots"
+        )
     if not os.path.isdir(base):
-        raise FileNotFoundError(f"No F2LLM cache at {base}; run with HF access to download")
-    snapshot_dirs = [d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))]
+        raise FileNotFoundError(
+            f"No F2LLM cache at {base}; run with HF access to download"
+        )
+    snapshot_dirs = [
+        d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))
+    ]
     if not snapshot_dirs:
         raise FileNotFoundError(f"No F2LLM snapshot in {base}")
     return os.path.join(base, snapshot_dirs[0])
@@ -85,6 +96,7 @@ def load_f2llm(return_per_source=False, sources=None):
             ds = Dataset.from_parquet(path)
         except Exception:
             import pyarrow.parquet as pq
+
             table = pq.read_table(path)
             table = table.replace_schema_metadata({})
             ds = Dataset(table)
@@ -190,8 +202,13 @@ def inspect_dataset(data, per_source=None):
     print("=" * 60)
 
 
+data, per_source = load_f2llm(return_per_source=True, sources=None)
+
+data["query"]
+per_source
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="Download/inspect F2LLM dataset")
     parser.add_argument(
         "--load",
