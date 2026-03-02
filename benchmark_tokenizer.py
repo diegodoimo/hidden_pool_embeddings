@@ -213,7 +213,7 @@ def main():
     #  Side-by-side comparison                                            #
     # ------------------------------------------------------------------ #
     names = list(all_results.keys())
-    if len(names) == 2:
+    if len(names) == 2 and RANK == 0:
         a, b = names
         sa = all_results[a]["timing_stats"]
         sb = all_results[b]["timing_stats"]
