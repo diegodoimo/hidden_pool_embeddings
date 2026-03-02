@@ -29,6 +29,7 @@ from utils.create_datasets import (
 )
 from utils.dataloader_helpers import (
     collate_fn_with_hard_negatives,
+    collate_fn_with_hard_negatives_v2,
     collate_fn_pretokenized,
     DatasetAwareSampler,
 )
@@ -125,68 +126,113 @@ def main():
         seed=42,
     )
 
-    # timing_stats is updated in-process only; num_workers MUST stay 0 here.
-    # (Worker processes run in separate address spaces and cannot share the dict.)
-    timing_stats: dict[str, float] = defaultdict(float)
+    # ------------------------------------------------------------------ #
+    #  Collate variants to benchmark                                      #
+    # ------------------------------------------------------------------ #
+    STEP_KEYS = [
+        "prompt_extract",
+        "tokenize_parallel",
+        "id_build",
+        "query_pad",
+        "doc_pad",
+        "total",
+    ]
+    NUM_BENCH_BATCHES = 100
 
-    collate_fn = partial(
-        collate_fn_with_hard_negatives,
-        pad_token_id=tokenizer.pad_token_id,
-        num_hard_negatives=args.num_hard_negatives,
-        padding_side="right",
-        eot_id=eot_id,
-        max_seq_len=args.max_seq_len if args.length_strategy == "truncate" else None,
-        timing_stats=timing_stats,
-    )
+    collate_variants = {
+        "v1_thread_pool": collate_fn_with_hard_negatives,
+        "v2_rust_encode_batch": collate_fn_with_hard_negatives_v2,
+    }
 
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.per_device_train_batch_size,
-        sampler=sampler,
-        collate_fn=collate_fn,
-        # num_workers MUST be 0 for collate_fn step-timing to work: workers run in
-        # separate processes and cannot share the timing_stats dict.
-        num_workers=0,
-        pin_memory=True,
-        persistent_workers=False,
-        prefetch_factor=None,
-        multiprocessing_context=None,
-    )
+    all_results: dict[str, dict] = {}  # variant_name -> {duration, timing_stats}
 
-    start = time.time()
-    for index, batch in enumerate(train_loader):
-        batch = {
-            key: val.to(device) if isinstance(val, torch.Tensor) else val
-            for key, val in batch.items()
+    for variant_name, collate_func in collate_variants.items():
+        timing_stats: dict[str, float] = defaultdict(float)
+
+        collate_fn = partial(
+            collate_func,
+            pad_token_id=tokenizer.pad_token_id,
+            num_hard_negatives=args.num_hard_negatives,
+            padding_side="right",
+            tokenizer=tokenizer,
+            eot_id=eot_id,
+            add_special_tokens=add_special_tokens,
+            max_seq_len=(
+                args.max_seq_len if args.length_strategy == "truncate" else None
+            ),
+            timing_stats=timing_stats,
+        )
+
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.per_device_train_batch_size,
+            sampler=sampler,
+            collate_fn=collate_fn,
+            # num_workers MUST be 0 for collate_fn step-timing to work.
+            num_workers=0,
+            pin_memory=True,
+            persistent_workers=False,
+            prefetch_factor=None,
+            multiprocessing_context=None,
+        )
+
+        # Reset sampler so both variants iterate the same batches
+        sampler.set_epoch(0)
+
+        start = time.time()
+        for index, batch in enumerate(train_loader):
+            batch = {
+                key: val.to(device) if isinstance(val, torch.Tensor) else val
+                for key, val in batch.items()
+            }
+            if index >= NUM_BENCH_BATCHES:
+                break
+
+        duration = time.time() - start
+        all_results[variant_name] = {
+            "duration": duration,
+            "timing_stats": dict(timing_stats),
         }
-        if index > 100:
-            break
 
-    duration = time.time() - start
-    print(f"Total dataloader loop duration: {duration:.3f}s")
-
-    # Print per-step timing report
-    n_calls = int(timing_stats.get("_calls", 0))
-    if n_calls > 0:
-        STEP_KEYS = [
-            "prompt_extract",
-            "tokenize_parallel",
-            "id_build",
-            "query_pad",
-            "doc_pad",
-            "total",
-        ]
+        # Per-variant report
+        n_calls = int(timing_stats.get("_calls", 0))
         total_acc = timing_stats.get("total", 1e-9)
-        print(f"\ncollate_fn step timings ({n_calls} calls):")
-        print(f"  {'step':<20}  {'total_s':>10}  {'avg_ms':>10}  {'pct':>7}")
-        print(f"  {'-'*20}  {'-'*10}  {'-'*10}  {'-'*7}")
+        print(f"\n{'='*60}")
+        print(f"  {variant_name}  ({n_calls} calls, {duration:.3f}s wall)")
+        print(f"{'='*60}")
+        if n_calls > 0:
+            print(f"  {'step':<20}  {'total_s':>10}  {'avg_ms':>10}  {'pct':>7}")
+            print(f"  {'-'*20}  {'-'*10}  {'-'*10}  {'-'*7}")
+            for key in STEP_KEYS:
+                val = timing_stats.get(key, 0.0)
+                avg_ms = val / n_calls * 1000
+                pct = val / total_acc * 100 if key != "total" else 100.0
+                print(f"  {key:<20}  {val:>10.3f}  {avg_ms:>10.2f}  {pct:>6.1f}%")
+
+    # ------------------------------------------------------------------ #
+    #  Side-by-side comparison                                            #
+    # ------------------------------------------------------------------ #
+    names = list(all_results.keys())
+    if len(names) == 2:
+        a, b = names
+        sa = all_results[a]["timing_stats"]
+        sb = all_results[b]["timing_stats"]
+        na = int(sa.get("_calls", 1))
+        nb = int(sb.get("_calls", 1))
+        print(f"\n{'='*72}")
+        print(f"  Comparison: {a} vs {b}")
+        print(f"{'='*72}")
+        header = f"  {'step':<20}  {'v1 avg_ms':>10}  {'v2 avg_ms':>10}  {'speedup':>8}"
+        print(header)
+        print(f"  {'-'*20}  {'-'*10}  {'-'*10}  {'-'*8}")
         for key in STEP_KEYS:
-            val = timing_stats.get(key, 0.0)
-            avg_ms = val / n_calls * 1000
-            pct = val / total_acc * 100 if key != "total" else 100.0
-            print(f"  {key:<20}  {val:>10.3f}  {avg_ms:>10.2f}  {pct:>6.1f}%")
-    else:
-        print("No collate_fn timing data collected (was num_workers > 0?).")
+            va = sa.get(key, 0.0) / na * 1000
+            vb = sb.get(key, 0.0) / nb * 1000
+            speedup = va / vb if vb > 0 else float("inf")
+            print(f"  {key:<20}  {va:>10.2f}  {vb:>10.2f}  {speedup:>7.2f}x")
+        da = all_results[a]["duration"]
+        db = all_results[b]["duration"]
+        print(f"\n  Wall time: {a}={da:.3f}s  {b}={db:.3f}s  speedup={da/db:.2f}x")
 
 
 if __name__ == "__main__":
