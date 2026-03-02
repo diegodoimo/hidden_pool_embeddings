@@ -86,15 +86,15 @@ TASK_TYPE_TO_TASK_METADATA = {
 # Use as datasets_subset=QWEN3_600M_10DATASET_SUBSET to restrict training to these.
 QWEN3_600M_DATASET_SUBSET = [
     # "retrieval/general_retrieval/msmarco",
-    "retrieval/general_retrieval/nfcorpus",
+    #"retrieval/general_retrieval/nfcorpus",
     "retrieval/general_retrieval/arguana",
-    "retrieval/domain_specific_qa/fiqa2018",
-    "retrieval/open_domain_qa/naturalquestions",
-    "retrieval/open_domain_qa/squad",
-    "retrieval/fact_verification/scifact",
-    "retrieval/summarization/xsum",
-    "sts/stsbenchmark",
-    "nli/snli",
+    # "retrieval/domain_specific_qa/fiqa2018",
+    # "retrieval/open_domain_qa/naturalquestions",
+    # "retrieval/open_domain_qa/squad",
+    # "retrieval/fact_verification/scifact",
+    # "retrieval/summarization/xsum",
+    # "sts/stsbenchmark",
+    # "nli/snli",
 ]
 
 # All datasets in results/datasets_negatives/qwen3_600m
@@ -131,27 +131,51 @@ FULL_TRAIN_DATA = [
 
 # MTEB 20-task subset (mteb_20task_subset_selection.md) - minimizes eval time while preserving category averages
 TASK_DICT = {
+    # "mteb_eng_v2_reduced": [
+    #     "SCIDOCS",
+    #     "CQADupstackGamingRetrieval",
+    #     "CQADupstackUnixRetrieval",
+    #     "HotpotQAHardNegatives",
+    #     "TRECCOVID",
+    #     # "TwentyNewsgroupsClustering.v2",
+    #     # "BiorxivClusteringP2P.v2",
+    #     # "MedrxivClusteringS2S.v2",
+    #     # "StackExchangeClustering.v2",
+    #     # "AskUbuntuDupQuestions",
+    #     "BIOSSES",
+    #     "STS17",
+    #     "STS12",
+    #     # "AmazonCounterfactualClassification",
+    #     # "MassiveScenarioClassification",
+    #     # "TweetSentimentExtractionClassification",
+    #     # "MTOPDomainClassification",
+    #     # "TwitterSemEval2015",
+    #     # "SprintDuplicateQuestions",
+    #     "SummEvalSummarization.v2",
+    # ],
+
+
     "mteb_eng_v2_reduced": [
         "SCIDOCS",
-        "CQADupstackGamingRetrieval",
-        "CQADupstackUnixRetrieval",
-        "HotpotQAHardNegatives",
-        "TRECCOVID",
+        # "CQADupstackGamingRetrieval",
+        # "CQADupstackUnixRetrieval",
+        # "HotpotQAHardNegatives",
+        # "TRECCOVID",
         # "TwentyNewsgroupsClustering.v2",
         # "BiorxivClusteringP2P.v2",
         # "MedrxivClusteringS2S.v2",
         # "StackExchangeClustering.v2",
         # "AskUbuntuDupQuestions",
-        "BIOSSES",
-        "STS17",
-        "STS12",
+        # "BIOSSES",
+        # "STS17",
+        # "STS12",
         # "AmazonCounterfactualClassification",
         # "MassiveScenarioClassification",
         # "TweetSentimentExtractionClassification",
         # "MTOPDomainClassification",
         # "TwitterSemEval2015",
         # "SprintDuplicateQuestions",
-        "SummEvalSummarization.v2",
+        #"SummEvalSummarization.v2",
     ],
 }
 

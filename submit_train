@@ -9,7 +9,7 @@
 #SBATCH --cpus-per-task=28  #32          
 #SBATCH --mem=200G                   
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:2
+#SBATCH --gres=gpu:H100:1
 
 #source /u/area/ddoimo/anaconda3/bin/activate ./env_a100
 module load cuda/12.8 
@@ -36,7 +36,8 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train.py \
-    --out_filename test_speedup \
+    --train_subset reduced \
+    --out_filename test_speedup_improved_loss \
     --num_hard_negatives 7 \
     --negatives_dir results/datasets_negatives/qwen3_600m \
     --model_name_or_path google/t5gemma-2-270m-270m  \
@@ -57,7 +58,7 @@ torchrun \
     --logging_steps 50 \
     --eval_steps 5 \
     --output_dir "./results/train" \
-    --measure_baselines \
+    #--measure_baselines \
     # --eval_only \
     # --distributed_loss \
     # --use_lora \

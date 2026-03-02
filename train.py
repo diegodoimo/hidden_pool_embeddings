@@ -242,17 +242,17 @@ class Trainer:
                 train_loader.sampler.set_epoch(epoch)
 
             # --- OLD: synchronous iteration with blocking .to(device) ---
-            # for index, batch in enumerate(train_loader):
-            #     batch = {
-            #         key: val.to(self.device) if isinstance(val, torch.Tensor) else val
-            #         for key, val in batch.items()
-            #     }
+            for index, batch in enumerate(train_loader):
+                batch = {
+                    key: val.to(self.device) if isinstance(val, torch.Tensor) else val
+                    for key, val in batch.items()
+                }
             # --- END OLD ---
 
-            prefetcher = CudaDataPrefetcher(train_loader, self.device)
-            batch = prefetcher.next()
-            index = 0
-            while batch is not None:
+            # prefetcher = CudaDataPrefetcher(train_loader, self.device)
+            # batch = prefetcher.next()
+            # index = 0
+            # while batch is not None:
 
                 query_inputs = batch["query_token_ids"]
                 query_mask = batch["query_attention_mask"]
@@ -306,8 +306,8 @@ class Trainer:
                 self.optimizer.zero_grad(set_to_none=True)
 
                 completed_steps += 1
-                index += 1
-                batch = prefetcher.next()
+                #index += 1
+                #batch = prefetcher.next()
 
                 if completed_steps in log_steps:
 
