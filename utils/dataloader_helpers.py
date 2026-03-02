@@ -474,3 +474,109 @@ def collate_fn_with_hard_negatives(
         "query_ids": q_ids,
         "num_hard_negatives": num_hard_negatives,
     }
+
+
+def collate_fn_pretokenized(
+    batch,
+    pad_token_id=0,
+    num_hard_negatives=7,
+    padding_side="right",
+    eot_id=None,
+    max_seq_len=None,
+    timing_stats=None,
+):
+    """Collate function for pre-tokenized batches (no tokenizer calls).
+
+    Expects each item in *batch* to carry ``query_token_ids``,
+    ``positive_token_ids`` and ``negative_token_ids`` columns produced by
+    ``create_pretokenized_hard_negatives_datasets``.  Only padding and tensor
+    construction happen here — tokenization cost is zero.
+
+    The return dict has the same schema as ``collate_fn_with_hard_negatives``
+    so callers (Trainer, benchmark script) are interchangeable.
+
+    Args:
+        timing_stats: optional dict-like for per-step wall-clock accumulation.
+    """
+    import time as _time
+
+    _bench = timing_stats is not None
+
+    def _tick() -> float:
+        return _time.perf_counter() if _bench else 0.0
+
+    def _record(key: str, t0: float) -> None:
+        if _bench:
+            timing_stats[key] = timing_stats.get(key, 0.0) + (_time.perf_counter() - t0)
+
+    t_total = _tick()
+
+    _max_content = (
+        (max_seq_len - 1)
+        if (max_seq_len is not None and eot_id is not None)
+        else max_seq_len
+    )
+
+    # --- Extract cached token-ID lists ---
+    t0 = _tick()
+    query_encs = [item["query_token_ids"] for item in batch]
+    pos_encs = [item["positive_token_ids"] for item in batch]
+    flat_neg_encs: list[list[int]] = []
+    for item in batch:
+        flat_neg_encs.extend(item["negative_token_ids"][:num_hard_negatives])
+
+    # Apply truncation if max_seq_len was requested
+    if _max_content is not None:
+        query_encs = [ids[:_max_content] for ids in query_encs]
+        pos_encs = [ids[:_max_content] for ids in pos_encs]
+        flat_neg_encs = [ids[:_max_content] for ids in flat_neg_encs]
+    _record("extract_ids", t0)
+
+    # --- Build sample-ID tensors ---
+    t0 = _tick()
+    pos_ids = torch.tensor(
+        [
+            _str_to_int_id(f"{item['dataset_name']}/{item['positive_id']}")
+            for item in batch
+        ],
+        dtype=torch.long,
+    )
+    q_ids = torch.tensor(
+        [
+            _str_to_int_id(f"{item['dataset_name']}/{item['query_id']}")
+            for item in batch
+        ],
+        dtype=torch.long,
+    )
+    _record("id_build", t0)
+
+    # --- Pad queries ---
+    t0 = _tick()
+    query_padded, query_mask = _fast_pad(
+        query_encs, pad_id=pad_token_id, eot_id=eot_id, padding_side=padding_side
+    )
+    _record("query_pad", t0)
+
+    # --- Pad positives + negatives ---
+    t0 = _tick()
+    all_doc_padded, all_doc_mask = _fast_pad(
+        pos_encs + flat_neg_encs,
+        pad_id=pad_token_id,
+        eot_id=eot_id,
+        padding_side=padding_side,
+    )
+    _record("doc_pad", t0)
+
+    _record("total", t_total)
+    if _bench:
+        timing_stats["_calls"] = timing_stats.get("_calls", 0) + 1
+
+    return {
+        "query_token_ids": query_padded,
+        "query_attention_mask": query_mask,
+        "all_doc_token_ids": all_doc_padded,
+        "all_doc_attention_mask": all_doc_mask,
+        "pos_ids": pos_ids,
+        "query_ids": q_ids,
+        "num_hard_negatives": num_hard_negatives,
+    }
