@@ -448,10 +448,12 @@ class HardNegativesMiner:
             )
             dist.barrier()
             t2 = time.time()
+            # thi is taking 10 min
             corpus_ids_set = set(corpus_dataset["id"])
             unique_queries_dataset_set = set(unique_queries_dataset["id"])
             dist.barrier()
             t3 = time.time()
+            # this is taking 10 min
             # Check that filtered pairs only contain valid IDs
             assert set(filtered_qrels["query_id"]).issubset(unique_queries_dataset_set), "filtered qrels contain query IDs not in unique queries"
             assert set(filtered_qrels["positive_id"]).issubset(
@@ -468,6 +470,7 @@ class HardNegativesMiner:
                 print((t2-t1)/60)
                 print((t3-t2)/60)
                 print((t4-t3)/60)
+                # this is also taking more than 3 min for 14M datasets
                 num_queries_lost = len(set(unique_queries_dataset["id"])) - len(
                     set(filtered_qrels["query_id"])
                 )

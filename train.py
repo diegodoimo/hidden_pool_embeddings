@@ -376,6 +376,8 @@ class Trainer:
                 self.model, batch_size=args.per_device_eval_batch_size
             )
             stats["mteb_eng_v2_full"] = summary
+            with open(f"{args.output_dir}/train_logs{filename}.json", "w") as f:
+                json.dump(stats, f, indent=4)
 
             output_dir = f"epoch_{epoch+1}{filename}"
             if args.output_dir is not None:
