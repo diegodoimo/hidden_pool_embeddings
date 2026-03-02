@@ -151,12 +151,8 @@ print(f"Total dataloader loop duration: {duration:.3f}s")
 n_calls = int(timing_stats.get("_calls", 0))
 if n_calls > 0:
     STEP_KEYS = [
-        "query_tokenize",
-        "query_to_tensor",
-        "pos_tokenize",
-        "pos_to_tensor",
-        "neg_tokenize",
-        "neg_to_tensor",
+        "prompt_extract",
+        "tokenize_parallel",
         "id_build",
         "query_pad",
         "doc_pad",

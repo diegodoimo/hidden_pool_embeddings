@@ -1,5 +1,6 @@
 import math
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor
 from typing import TypeVar
 
 import torch
@@ -11,6 +12,56 @@ from torch.nn.utils.rnn import pad_sequence
 
 
 _T_co = TypeVar("_T_co", covariant=True)
+
+# Persistent thread pool used by collate_fn_with_hard_negatives to overlap the
+# (query + pos) and neg tokeniser calls.  HF fast tokenisers (Rust/rayon)
+# release the GIL, so two Python threads give genuine CPU parallelism.
+# With spawn workers the module is re-imported in each worker, so each worker
+# gets its own 2-thread pool – that is intentional and correct.
+_COLLATE_TOKEN_POOL = _ThreadPoolExecutor(max_workers=2)
+
+
+def _fast_pad(
+    token_lists: list[list[int]],
+    pad_id: int,
+    eot_id: int | None = None,
+    padding_side: str = "right",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pad a list of token-id lists into (N, L) tensors without creating N
+    intermediate 1-D torch.Tensors.
+
+    Steps:
+    1. Allocate a numpy int64 array pre-filled with pad_id  (one alloc).
+    2. Copy each sequence via a numpy slice (much faster than torch.tensor
+       per element and avoids the Python-object overhead of torch.tensor).
+    3. Convert to torch via zero-copy from_numpy.
+    4. Build the attention mask with a single vectorised comparison instead
+       of creating N ones_like tensors and padding them separately.
+
+    Returns:
+        padded  – LongTensor of shape (N, max_len)
+        mask    – LongTensor of shape (N, max_len), 1 for real tokens, 0 for pad
+    """
+    n = len(token_lists)
+    extra = 1 if eot_id is not None else 0
+    max_len = max(len(s) for s in token_lists) + extra
+    arr = np.full((n, max_len), pad_id, dtype=np.int64)
+    if padding_side == "right":
+        for i, s in enumerate(token_lists):
+            L = len(s)
+            arr[i, :L] = s
+            if eot_id is not None:
+                arr[i, L] = eot_id
+    else:  # left padding
+        for i, s in enumerate(token_lists):
+            L = len(s)
+            start = max_len - L - extra
+            arr[i, start : start + L] = s
+            if eot_id is not None:
+                arr[i, start + L] = eot_id
+    padded = torch.from_numpy(arr)
+    mask = (padded != pad_id).to(dtype=torch.long)
+    return padded, mask
 
 
 class LenghtSortedSampler(Sampler[_T_co]):
@@ -335,62 +386,40 @@ def collate_fn_with_hard_negatives(
         else {}
     )
 
-    # --- Tokenize queries ---
+    B = len(batch)
+
+    # --- Build all prompt lists before launching threads ---
     t0 = _tick()
     query_prompts = [item["query_prompt"] for item in batch]
-    query_encs = tokenizer(
-        query_prompts,
-        add_special_tokens=add_special_tokens,
-        return_attention_mask=False,
-        **_trunc_kwargs,
-    )["input_ids"]
-    _record("query_tokenize", t0)
-
-    t0 = _tick()
-    if eot_id is not None:
-        query_token_ids = [torch.tensor(tok + [eot_id]) for tok in query_encs]
-    else:
-        query_token_ids = [torch.tensor(tok) for tok in query_encs]
-    _record("query_to_tensor", t0)
-
-    # --- Tokenize positives ---
-    t0 = _tick()
     pos_prompts = [item["positive_prompt"] for item in batch]
-    pos_encs = tokenizer(
-        pos_prompts,
-        add_special_tokens=add_special_tokens,
-        return_attention_mask=False,
-        **_trunc_kwargs,
-    )["input_ids"]
-    _record("pos_tokenize", t0)
-
-    t0 = _tick()
-    if eot_id is not None:
-        pos_token_ids = [torch.tensor(tok + [eot_id]) for tok in pos_encs]
-    else:
-        pos_token_ids = [torch.tensor(tok) for tok in pos_encs]
-    _record("pos_to_tensor", t0)
-
-    # --- Tokenize negatives (batched across the entire batch for one tokenizer call) ---
-    t0 = _tick()
-    flat_neg_prompts = []
+    flat_neg_prompts: list[str] = []
     for item in batch:
         flat_neg_prompts.extend(item["negative_prompts"][:num_hard_negatives])
+    _record("prompt_extract", t0)
 
-    flat_neg_encs = tokenizer(
-        flat_neg_prompts,
-        add_special_tokens=add_special_tokens,
-        return_attention_mask=False,
-        **_trunc_kwargs,
-    )["input_ids"]
-    _record("neg_tokenize", t0)
+    # --- Parallel tokenisation ---
+    # HF fast tokenisers (Rust/rayon) release the GIL, so two Python threads
+    # give genuine CPU overlap:
+    #   Thread 0 tokenises query + pos in one batched call  (~10 ms)
+    #   Thread 1 tokenises all negatives                    (~59 ms)
+    # Wall time ≈ max(10, 59) instead of 10 + 59.
+    def _tok(texts: list[str]) -> list[list[int]]:
+        return tokenizer(
+            texts,
+            add_special_tokens=add_special_tokens,
+            return_attention_mask=False,
+            **_trunc_kwargs,
+        )["input_ids"]
 
     t0 = _tick()
-    if eot_id is not None:
-        all_neg_token_ids = [torch.tensor(tok + [eot_id]) for tok in flat_neg_encs]
-    else:
-        all_neg_token_ids = [torch.tensor(tok) for tok in flat_neg_encs]
-    _record("neg_to_tensor", t0)
+    f_qpos = _COLLATE_TOKEN_POOL.submit(_tok, query_prompts + pos_prompts)
+    f_neg = _COLLATE_TOKEN_POOL.submit(_tok, flat_neg_prompts)
+    qpos_encs = f_qpos.result()
+    flat_neg_encs = f_neg.result()
+    _record("tokenize_parallel", t0)
+
+    query_encs = qpos_encs[:B]
+    pos_encs = qpos_encs[B:]
 
     # --- Build sample-ID tensors (pos_ids / query_ids) ---
     t0 = _tick()
@@ -410,37 +439,24 @@ def collate_fn_with_hard_negatives(
     )
     _record("id_build", t0)
 
-    # --- Pad queries ---
+    # --- Pad queries via _fast_pad (numpy fill + zero-copy from_numpy) ---
+    # This replaces: creating B individual tensors, creating B ones_like tensors,
+    # two pad_sequence calls.
     t0 = _tick()
-    query_attention_mask = [torch.ones_like(ids) for ids in query_token_ids]
-    query_padded = pad_sequence(
-        query_token_ids,
-        batch_first=True,
-        padding_value=pad_token_id,
-        padding_side=padding_side,
-    )
-    query_mask = pad_sequence(
-        query_attention_mask,
-        batch_first=True,
-        padding_value=0,
-        padding_side=padding_side,
+    query_padded, query_mask = _fast_pad(
+        query_encs, pad_id=pad_token_id, eot_id=eot_id, padding_side=padding_side
     )
     _record("query_pad", t0)
 
-    # --- Pad docs: [pos_0, ..., pos_{B-1}, neg_0_0, ..., neg_{B-1}_{num_neg-1}] ---
+    # --- Pad positives and negatives ---
+    # Positives and negatives are padded together (same semantic role, same
+    # downstream usage) so all_doc_padded has shape
+    # (B + B*num_hard_negatives, max_doc_len).
     t0 = _tick()
-    all_doc_seqs = pos_token_ids + all_neg_token_ids
-    all_doc_attention_mask = [torch.ones_like(ids) for ids in all_doc_seqs]
-    all_doc_padded = pad_sequence(
-        all_doc_seqs,
-        batch_first=True,
-        padding_value=pad_token_id,
-        padding_side=padding_side,
-    )
-    all_doc_mask = pad_sequence(
-        all_doc_attention_mask,
-        batch_first=True,
-        padding_value=0,
+    all_doc_padded, all_doc_mask = _fast_pad(
+        pos_encs + flat_neg_encs,
+        pad_id=pad_token_id,
+        eot_id=eot_id,
         padding_side=padding_side,
     )
     _record("doc_pad", t0)
