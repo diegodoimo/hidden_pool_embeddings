@@ -7,9 +7,9 @@
 #SBATCH --time=24:00:00            
 #SBATCH --ntasks-per-node=1       
 #SBATCH --cpus-per-task=28  #32          
-#SBATCH --mem=200G                   
+#SBATCH --mem=100G                   
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:1
+#SBATCH --gres=gpu:H100:4
 
 #source /u/area/ddoimo/anaconda3/bin/activate ./env_a100
 module load cuda/12.8 

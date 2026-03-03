@@ -51,6 +51,9 @@ from datetime import timedelta
 def main():
 
     args = parse_args()
+    WORLD_SIZE = int(os.environ["WORLD_SIZE"])
+    LOCAL_RANK = int(os.environ["LOCAL_RANK"])
+    RANK = int(os.environ["RANK"])
 
     dist.init_process_group(
         "nccl",
@@ -68,18 +71,9 @@ def main():
         if token:
             hf_login(token=token)
 
-    WORLD_SIZE = int(os.environ["WORLD_SIZE"])
-    LOCAL_RANK = int(os.environ["LOCAL_RANK"])
-    RANK = int(os.environ["RANK"])
-    dist.init_process_group(
-        "nccl",
-        device_id=torch.device("cuda", LOCAL_RANK),
-        timeout=timedelta(minutes=30),
-    )
-    rank = dist.get_rank()
-    torch.cuda.set_device(LOCAL_RANK)
     torch.set_float32_matmul_precision("high")
     device = torch.device("cuda", LOCAL_RANK)
+
 
     args.batch_size = WORLD_SIZE * args.per_device_train_batch_size
     args.gradient_accumulation_steps = 1
@@ -137,7 +131,7 @@ def main():
         "doc_pad",
         "total",
     ]
-    NUM_BENCH_BATCHES = 100
+    NUM_BENCH_BATCHES = 500
 
     collate_variants = {
         "v1_thread_pool": collate_fn_with_hard_negatives,
@@ -236,8 +230,4 @@ def main():
 
 
 if __name__ == "__main__":
-
-    WORLD_SIZE = int(os.environ["WORLD_SIZE"])
-    LOCAL_RANK = int(os.environ["LOCAL_RANK"])
-    RANK = int(os.environ["RANK"])
     main()
