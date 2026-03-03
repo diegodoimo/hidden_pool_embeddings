@@ -1,21 +1,21 @@
 #!/bin/bash
-##SBATCH --partition=H100
-#SBATCH --partition=DGX
+#SBATCH --partition=H100
+##SBATCH --partition=DGX
 #SBATCH --account=lade
-##SBATCH --nodelist=dgx004
+##SBATCH --nodelist=dgx002
 #SBATCH --nodes=1
 #SBATCH --time=24:00:00            
 #SBATCH --ntasks-per-node=1       
-#SBATCH --cpus-per-task=28  #32          
+#SBATCH --cpus-per-task=56  #32          
 #SBATCH --mem=300G                   
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:A100:4
+#SBATCH --gres=gpu:H100:4
 
-source /u/area/ddoimo/anaconda3/bin/activate ./env_a100
-# module load cuda/12.8 
-# export CUDA_HOME=$CUDA_PATH
+#source /u/area/ddoimo/anaconda3/bin/activate ./env_a100
+module load cuda/12.8 
+export CUDA_HOME=$CUDA_PATH
 
-# source /u/area/ddoimo/anaconda3/bin/activate ./env_h100 
+source /u/area/ddoimo/anaconda3/bin/activate ./env_h100 
 
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
@@ -37,6 +37,7 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train.py \
+    --tokenize_dataset \
     --out_filename test_speedup_improved_loss \
     --num_hard_negatives 7 \
     --negatives_dir results/datasets_negatives/qwen3_600m \

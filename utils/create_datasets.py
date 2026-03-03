@@ -1056,18 +1056,22 @@ def create_pretokenized_hard_negatives_datasets(
 
     all_datasets = []
     midpoint = len(parquet_files) // 2
+    dist.barrier()
+    start = time.time()
     for i, path in enumerate(parquet_files):
+
+
         dataset_name = _dataset_name_from_path(path)
         task_metadata = TASK_TYPE_TO_TASK_METADATA[NAME_TO_TASK_TYPE[dataset_name]]
         ds_name = os.path.relpath(os.path.dirname(path), base_dir)
 
         if rank == 0:
-            print(f"  Loading {ds_name} {i}/{len(parquet_files)}...")
+            print(f"Loading {ds_name} {i}/{len(parquet_files)}")
 
-        if i == midpoint and dist.is_initialized():
-            dist.barrier()
-            if rank == 0:
-                print("  [barrier] ranks synced at dataset midpoint")
+        # if i == midpoint and dist.is_initialized():
+        #     dist.barrier()
+        #     if rank == 0:
+        #         print("  [barrier] ranks synced at dataset midpoint")
 
         ds = _load_parquet_safe(path)
 
@@ -1118,6 +1122,12 @@ def create_pretokenized_hard_negatives_datasets(
         cols_to_remove = [c for c in ds.column_names if c not in cols_to_keep]
         ds = ds.remove_columns(cols_to_remove)
         all_datasets.append(ds)
+
+        dist.barrier()
+        if rank == 0:
+            print(f"time required: {time.time() - start}")
+        start = time.time()
+
 
     combined = concatenate_datasets(all_datasets)
 
