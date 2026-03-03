@@ -61,6 +61,14 @@ def _get_f2llm_snapshot_path():
     return os.path.join(base, snapshot_dirs[0])
 
 
+def get_f2llm_sources():
+    """Return list of F2LLM source names (parquet stems) available in cache."""
+    snapshot = _get_f2llm_snapshot_path()
+    return sorted(
+        f.replace(".parquet", "") for f in os.listdir(snapshot) if f.endswith(".parquet")
+    )
+
+
 def load_f2llm(return_per_source=False, sources=None):
     """
     Load F2LLM, handling schema mismatches across parquet files.
@@ -201,8 +209,6 @@ def inspect_dataset(data, per_source=None):
 
     print("=" * 60)
 
-
-data, per_source = load_f2llm(return_per_source=True, sources=None)
 
 if __name__ == "__main__":
     import argparse
