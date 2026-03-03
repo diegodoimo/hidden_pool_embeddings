@@ -127,7 +127,7 @@ def main():
     )
 
     # ------------------------------------------------------------------ #
-    #  Collate variants to benchmark                                      #
+    #  Collate variants to benchmark                                     #
     # ------------------------------------------------------------------ #
     STEP_KEYS = [
         "prompt_extract",
@@ -236,7 +236,6 @@ def main():
 
 
 if __name__ == "__main__":
-
     WORLD_SIZE = int(os.environ["WORLD_SIZE"])
     LOCAL_RANK = int(os.environ["LOCAL_RANK"])
     RANK = int(os.environ["RANK"])
