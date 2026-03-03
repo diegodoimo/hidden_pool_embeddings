@@ -26,8 +26,9 @@ export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
 nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 head_node=${nodes[0]}
 head_node_ip=$(getent hosts "$head_node" | awk '{ print $1 }')
-GPU_NUMBER=$(echo $CUDA_VISIBLE_DEVICES | tr ',' ' ' | wc -w) 
-
+GPU_NUMBER=$(echo $CUDA_VISIBLE_DEVICES | tr ',' ' ' | wc -w)
+WORKERS_PER_RANK=$(( SLURM_CPUS_PER_TASK / GPU_NUMBER ))
+echo WORKERS_PER_RANK
 torchrun \
     --nnodes=$SLURM_NTASKS \
     --node-rank=$SLURM_NODEID \
@@ -46,7 +47,7 @@ torchrun \
     --eval_set mteb_eng_v2_reduced \
     --max_seq_len 1024  \
     --attention_dim 256 \
-    --num_workers 16 \
+    --num_workers $WORKERS_PER_RANK \
     --per_device_train_batch_size 16 \
     --per_device_eval_batch_size 128 \
     --learning_rate 1e-5 \

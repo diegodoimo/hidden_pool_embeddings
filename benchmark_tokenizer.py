@@ -133,6 +133,7 @@ def main():
         "total",
     ]
     NUM_BENCH_BATCHES = 500
+    NUM_WARMUP_BATCHES = 50
 
     collate_variants = {
         "v0_baseline": collate_fn_with_hard_negatives_v0,
@@ -140,6 +141,47 @@ def main():
         "v1_thread_pool": collate_fn_with_hard_negatives,
         "v2_rust_encode_batch": collate_fn_with_hard_negatives_v2,
     }
+
+    # ------------------------------------------------------------------ #
+    #  Warmup pass                                                        #
+    #  Runs BEFORE any timed variant so that:                             #
+    #    - OS page cache is warm for all variants equally                 #
+    #    - HuggingFace tokenizer Rust/rayon thread pool is initialised    #
+    #  Without this, v0 (first variant) pays a cold-start penalty that    #
+    #  makes all subsequent variants look artificially faster.            #
+    # ------------------------------------------------------------------ #
+    if RANK == 0:
+        print(f"Warming up ({NUM_WARMUP_BATCHES} batches, untimed)...")
+
+    _warmup_collate = partial(
+        collate_fn_with_hard_negatives,
+        pad_token_id=tokenizer.pad_token_id,
+        num_hard_negatives=args.num_hard_negatives,
+        padding_side="right",
+        tokenizer=tokenizer,
+        eot_id=eot_id,
+        add_special_tokens=add_special_tokens,
+        max_seq_len=(args.max_seq_len if args.length_strategy == "truncate" else None),
+        timing_stats=None,
+    )
+    _warmup_loader = DataLoader(
+        train_dataset,
+        batch_size=args.per_device_train_batch_size,
+        sampler=sampler,
+        collate_fn=_warmup_collate,
+        num_workers=0,
+        pin_memory=False,
+        persistent_workers=False,
+        prefetch_factor=None,
+        multiprocessing_context=None,
+    )
+    sampler.set_epoch(0)
+    for _i, _ in enumerate(_warmup_loader):
+        if _i >= NUM_WARMUP_BATCHES:
+            break
+    del _warmup_loader, _warmup_collate
+    if RANK == 0:
+        print("Warmup done.\n")
 
     all_results: dict[str, dict] = {}  # variant_name -> {duration, timing_stats}
 
@@ -240,6 +282,89 @@ def main():
                 f"{ref_dur / all_results[n]['duration']:>{col_w}.2f}x" for n in names
             )
         )
+
+    # ------------------------------------------------------------------ #
+    #  Wall-time benchmark with num_workers > 0  (production setting)    #
+    #                                                                      #
+    #  With workers > 0, collate runs inside worker subprocesses.         #
+    #  The timing_stats dict lives in the main process and is NOT updated  #
+    #  by workers (separate memory), so per-step breakdown is impossible.  #
+    #  We measure only total wall time, which is the relevant metric for   #
+    #  actual training throughput.                                         #
+    # ------------------------------------------------------------------ #
+    if args.num_workers > 0:
+        if RANK == 0:
+            print(f"\n{'='*80}")
+            print(
+                f"  Wall-time benchmark  (num_workers={args.num_workers},  production setting)"
+            )
+            print(f"{'='*80}")
+
+        wall_results: dict[str, float] = {}
+
+        for variant_name, collate_func in collate_variants.items():
+            collate_fn = partial(
+                collate_func,
+                pad_token_id=tokenizer.pad_token_id,
+                num_hard_negatives=args.num_hard_negatives,
+                padding_side="right",
+                tokenizer=tokenizer,
+                eot_id=eot_id,
+                add_special_tokens=add_special_tokens,
+                max_seq_len=(
+                    args.max_seq_len if args.length_strategy == "truncate" else None
+                ),
+                timing_stats=None,  # workers can't update main-process dict
+            )
+
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=args.per_device_train_batch_size,
+                sampler=sampler,
+                collate_fn=collate_fn,
+                num_workers=args.num_workers,
+                pin_memory=True,
+                persistent_workers=True,
+                prefetch_factor=4,
+                multiprocessing_context="spawn",
+            )
+
+            sampler.set_epoch(0)
+
+            # brief per-variant warmup to spin up worker pool
+            for _i, _ in enumerate(train_loader):
+                if _i >= 5:
+                    break
+
+            sampler.set_epoch(0)
+            start = time.time()
+            for index, batch in enumerate(train_loader):
+                batch = {
+                    key: val.to(device) if isinstance(val, torch.Tensor) else val
+                    for key, val in batch.items()
+                }
+                if index >= NUM_BENCH_BATCHES:
+                    break
+            wall_results[variant_name] = time.time() - start
+
+            # explicitly shut down workers before next variant
+            train_loader._iterator = None
+            del train_loader
+
+        if RANK == 0:
+            col_w = 14
+            print(
+                f"\n  {'variant':<22}"
+                + "".join(f"{'wall_s':>{col_w}}  {'ms/batch':>{col_w}}")
+            )
+            print(f"  {'-'*22}" + (f"  {'-'*col_w}" * 2))
+            ref = wall_results[list(wall_results.keys())[0]]
+            for name, dur in wall_results.items():
+                ms_per = dur / NUM_BENCH_BATCHES * 1000
+                speedup = ref / dur
+                print(
+                    f"  {name:<22}  {dur:>{col_w}.3f}  {ms_per:>{col_w}.2f}  {speedup:>6.2f}x"
+                )
 
 
 if __name__ == "__main__":
