@@ -1053,7 +1053,7 @@ def collate_fn_pretokenized(
         query_encs = [ids[:_max_content] for ids in query_encs]
         pos_encs = [ids[:_max_content] for ids in pos_encs]
         flat_neg_encs = [ids[:_max_content] for ids in flat_neg_encs]
-    _record("extract_ids", t0)
+    # _record("extract_ids", t0)
 
     # # --- Build sample-ID tensors ---
     # t0 = _tick()

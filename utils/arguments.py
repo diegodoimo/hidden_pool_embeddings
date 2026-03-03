@@ -54,7 +54,9 @@ def parse_args():
     parser.add_argument("--save_checkpoint", action="store_true")
 
     parser.add_argument("--eval_only", action="store_true")
-    parser.add_argument("--dist_type", type=str, default="ddp", help="Distributed backend: ddp or fsdp")
+    parser.add_argument(
+        "--dist_type", type=str, default="ddp", help="Distributed backend: ddp or fsdp"
+    )
 
     parser.add_argument("--distributed_loss", action="store_true")
     parser.add_argument("--attention_pooling", action="store_true")
@@ -98,6 +100,16 @@ def parse_args():
         default="full",
         choices=["full", "reduced"],
         help="MTEB evaluation set: full eng/multilingual or reduced task subset",
+    )
+    parser.add_argument(
+        "--tokenize_dataset",
+        action="store_true",
+        help=(
+            "Pre-tokenize the dataset at construction time using "
+            "create_pretokenized_hard_negatives_datasets.  The collate function "
+            "will then only pad pre-computed token IDs, avoiding any tokenizer "
+            "calls at training time."
+        ),
     )
 
     args = parser.parse_args()

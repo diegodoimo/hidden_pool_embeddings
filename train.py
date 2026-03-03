@@ -23,11 +23,13 @@ from models.t5gemma2model import get_model_t5gemma2_model
 from utils.optimizer import get_scheduler_optimizer
 from utils.create_datasets import (
     create_hard_negatives_datasets,
+    create_pretokenized_hard_negatives_datasets,
     QWEN3_600M_DATASET_SUBSET,
     get_eval_tasks,
 )
 from utils.dataloader_helpers import (
     collate_fn_with_hard_negatives,
+    collate_fn_pretokenized,
     DatasetAwareSampler,
 )
 from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLossHardNegatives
@@ -485,18 +487,27 @@ def main():
         train_list = QWEN3_600M_DATASET_SUBSET
 
     teacher_model = args.negatives_dir.split("/")[-1]
-    train_dataset = create_hard_negatives_datasets(
-        base_dir=args.negatives_dir,
-        num_hard_negatives=args.num_hard_negatives,
-        tokenizer=tokenizer,
-        instruction_template=instruction_template,
-        rank=RANK,
-        datasets_subset=train_list,
-        max_seq_len=args.max_seq_len if args.length_strategy == "filter" else None,
-    )
-
-
-
+    if args.tokenize_dataset:
+        train_dataset = create_pretokenized_hard_negatives_datasets(
+            base_dir=args.negatives_dir,
+            num_hard_negatives=args.num_hard_negatives,
+            tokenizer=tokenizer,
+            instruction_template=instruction_template,
+            add_special_tokens=add_special_tokens,
+            rank=RANK,
+            datasets_subset=train_list,
+            max_seq_len=args.max_seq_len if args.length_strategy == "filter" else None,
+        )
+    else:
+        train_dataset = create_hard_negatives_datasets(
+            base_dir=args.negatives_dir,
+            num_hard_negatives=args.num_hard_negatives,
+            tokenizer=tokenizer,
+            instruction_template=instruction_template,
+            rank=RANK,
+            datasets_subset=train_list,
+            max_seq_len=args.max_seq_len if args.length_strategy == "filter" else None,
+        )
 
     dist.barrier()
     if RANK == 0:
@@ -523,16 +534,30 @@ def main():
             seed=42,
         )
 
-    collate_fn = partial(
-        collate_fn_with_hard_negatives,
-        pad_token_id=tokenizer.pad_token_id,
-        num_hard_negatives=args.num_hard_negatives,
-        padding_side="right",
-        tokenizer=tokenizer,
-        eot_id=eot_id,
-        add_special_tokens=add_special_tokens,
-        max_seq_len=args.max_seq_len if args.length_strategy == "truncate" else None,
-    )
+    if args.tokenize_dataset:
+        collate_fn = partial(
+            collate_fn_pretokenized,
+            pad_token_id=tokenizer.pad_token_id,
+            num_hard_negatives=args.num_hard_negatives,
+            padding_side="right",
+            eot_id=eot_id,
+            max_seq_len=(
+                args.max_seq_len if args.length_strategy == "truncate" else None
+            ),
+        )
+    else:
+        collate_fn = partial(
+            collate_fn_with_hard_negatives,
+            pad_token_id=tokenizer.pad_token_id,
+            num_hard_negatives=args.num_hard_negatives,
+            padding_side="right",
+            tokenizer=tokenizer,
+            eot_id=eot_id,
+            add_special_tokens=add_special_tokens,
+            max_seq_len=(
+                args.max_seq_len if args.length_strategy == "truncate" else None
+            ),
+        )
 
     # OLD: DataLoader without persistent workers / spawn
     # train_loader = DataLoader(
@@ -545,7 +570,7 @@ def main():
     # )
 
     # num workers can be slightly more that tot/num_ranks (empirical factor)
-    args.num_workers = int(args.num_workers*1.25)
+    args.num_workers = int(args.num_workers * 1.25)
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.per_device_train_batch_size,
