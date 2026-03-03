@@ -190,21 +190,24 @@ def main():
             "duration": duration,
             "timing_stats": dict(timing_stats),
         }
-
+        
         # Per-variant report
         n_calls = int(timing_stats.get("_calls", 0))
         total_acc = timing_stats.get("total", 1e-9)
-        print(f"\n{'='*60}")
-        print(f"  {variant_name}  ({n_calls} calls, {duration:.3f}s wall)")
-        print(f"{'='*60}")
+        if RANK == 0:
+            print(f"\n{'='*60}")
+            print(f"  {variant_name}  ({n_calls} calls, {duration:.3f}s wall)")
+            print(f"{'='*60}")
         if n_calls > 0:
-            print(f"  {'step':<20}  {'total_s':>10}  {'avg_ms':>10}  {'pct':>7}")
-            print(f"  {'-'*20}  {'-'*10}  {'-'*10}  {'-'*7}")
+            if RANK == 0:
+                print(f"  {'step':<20}  {'total_s':>10}  {'avg_ms':>10}  {'pct':>7}")
+                print(f"  {'-'*20}  {'-'*10}  {'-'*10}  {'-'*7}")
             for key in STEP_KEYS:
                 val = timing_stats.get(key, 0.0)
                 avg_ms = val / n_calls * 1000
                 pct = val / total_acc * 100 if key != "total" else 100.0
-                print(f"  {key:<20}  {val:>10.3f}  {avg_ms:>10.2f}  {pct:>6.1f}%")
+                if RANK == 0:
+                    print(f"  {key:<20}  {val:>10.3f}  {avg_ms:>10.2f}  {pct:>6.1f}%")
 
     # ------------------------------------------------------------------ #
     #  Side-by-side comparison (all variants vs first)                   #
