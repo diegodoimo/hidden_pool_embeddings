@@ -759,18 +759,18 @@ def collate_fn_with_hard_negatives(
             invocations so the caller can compute per-batch averages.  Only works
             with ``num_workers=0`` in the DataLoader (workers are separate processes).
     """
-    import time as _time
+    # import time as _time
 
-    _bench = timing_stats is not None
+    # _bench = timing_stats is not None
 
-    def _tick() -> float:
-        return _time.perf_counter() if _bench else 0.0
+    # def _tick() -> float:
+    #     return _time.perf_counter() if _bench else 0.0
 
-    def _record(key: str, t0: float) -> None:
-        if _bench:
-            timing_stats[key] = timing_stats.get(key, 0.0) + (_time.perf_counter() - t0)
+    # def _record(key: str, t0: float) -> None:
+    #     if _bench:
+    #         timing_stats[key] = timing_stats.get(key, 0.0) + (_time.perf_counter() - t0)
 
-    t_total = _tick()
+    # t_total = _tick()
 
     # Reserve one slot for eot_id when it is appended after tokenisation.
     _max_content = (
@@ -782,13 +782,13 @@ def collate_fn_with_hard_negatives(
     B = len(batch)
 
     # --- Build all prompt lists before launching threads ---
-    t0 = _tick()
+    # t0 = _tick()
     query_prompts = [item["query_prompt"] for item in batch]
     pos_prompts = [item["positive_prompt"] for item in batch]
     flat_neg_prompts: list[str] = []
     for item in batch:
         flat_neg_prompts.extend(item["negative_prompts"][:num_hard_negatives])
-    _record("prompt_extract", t0)
+    # _record("prompt_extract", t0)
 
     # --- Parallel tokenisation ---
     # HF fast tokenisers (Rust/rayon) release the GIL, so two Python threads
@@ -810,18 +810,18 @@ def collate_fn_with_hard_negatives(
             **_trunc_kwargs,
         )["input_ids"]
 
-    t0 = _tick()
+    # t0 = _tick()
     f_qpos = _COLLATE_TOKEN_POOL.submit(_tok, query_prompts + pos_prompts)
     f_neg = _COLLATE_TOKEN_POOL.submit(_tok, flat_neg_prompts)
     qpos_encs = f_qpos.result()
     flat_neg_encs = f_neg.result()
-    _record("tokenize_parallel", t0)
+    # _record("tokenize_parallel", t0)
 
     query_encs = qpos_encs[:B]
     pos_encs = qpos_encs[B:]
 
     # --- Build sample-ID tensors (pos_ids / query_ids) ---
-    t0 = _tick()
+    # t0 = _tick()
     pos_ids = torch.tensor(
         [
             _str_to_int_id(f"{item['dataset_name']}/{item['positive_id']}")
@@ -836,33 +836,33 @@ def collate_fn_with_hard_negatives(
         ],
         dtype=torch.long,
     )
-    _record("id_build", t0)
+    # _record("id_build", t0)
 
     # --- Pad queries via _fast_pad (numpy fill + zero-copy from_numpy) ---
     # This replaces: creating B individual tensors, creating B ones_like tensors,
     # two pad_sequence calls.
-    t0 = _tick()
+    # t0 = _tick()
     query_padded, query_mask = _fast_pad(
         query_encs, pad_id=pad_token_id, eot_id=eot_id, padding_side=padding_side
     )
-    _record("query_pad", t0)
+    # _record("query_pad", t0)
 
     # --- Pad positives and negatives ---
     # Positives and negatives are padded together (same semantic role, same
     # downstream usage) so all_doc_padded has shape
     # (B + B*num_hard_negatives, max_doc_len).
-    t0 = _tick()
+    # t0 = _tick()
     all_doc_padded, all_doc_mask = _fast_pad(
         pos_encs + flat_neg_encs,
         pad_id=pad_token_id,
         eot_id=eot_id,
         padding_side=padding_side,
     )
-    _record("doc_pad", t0)
+    # _record("doc_pad", t0)
 
-    _record("total", t_total)
-    if _bench:
-        timing_stats["_calls"] = timing_stats.get("_calls", 0) + 1
+    # _record("total", t_total)
+    # if _bench:
+    #     timing_stats["_calls"] = timing_stats.get("_calls", 0) + 1
 
     return {
         "query_token_ids": query_padded,

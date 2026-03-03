@@ -541,6 +541,8 @@ def main():
     #     pin_memory=True,
     # )
 
+    # num workers can be slightly more that tot/num_ranks (empirical factor)
+    args.num_workers = int(args.num_workers*1.25)
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.per_device_train_batch_size,

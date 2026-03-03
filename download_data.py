@@ -204,8 +204,6 @@ def inspect_dataset(data, per_source=None):
 
 data, per_source = load_f2llm(return_per_source=True, sources=None)
 
-data["query"]
-per_source
 if __name__ == "__main__":
     import argparse
 

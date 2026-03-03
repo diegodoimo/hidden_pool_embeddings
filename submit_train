@@ -4,12 +4,12 @@
 #SBATCH --account=lade
 ##SBATCH --nodelist=dgx004
 #SBATCH --nodes=1
-#SBATCH --time=24:00:00            
+#SBATCH --time=2:00:00            
 #SBATCH --ntasks-per-node=1       
-#SBATCH --cpus-per-task=56  #32          
-#SBATCH --mem=100G                   
+#SBATCH --cpus-per-task=28  #32          
+#SBATCH --mem=300G                   
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:4
+#SBATCH --gres=gpu:H100:2
 
 #source /u/area/ddoimo/anaconda3/bin/activate ./env_a100
 module load cuda/12.8 
@@ -27,9 +27,7 @@ nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 head_node=${nodes[0]}
 head_node_ip=$(getent hosts "$head_node" | awk '{ print $1 }')
 GPU_NUMBER=$(echo $CUDA_VISIBLE_DEVICES | tr ',' ' ' | wc -w)
-#WORKERS_PER_RANK=$(( SLURM_CPUS_PER_TASK / GPU_NUMBER ))
-WORKERS_PER_RANK=18
-echo $WORKERS_PER_RANK
+WORKERS_PER_RANK=$(( SLURM_CPUS_PER_TASK / GPU_NUMBER ))
 
 torchrun \
     --nnodes=$SLURM_NTASKS \
@@ -38,8 +36,7 @@ torchrun \
     --rdzv-id=$SLURM_PROCID \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
-    benchmark_tokenizer.py \
-    --train_subset reduced \
+    train.py \
     --out_filename test_speedup_improved_loss \
     --num_hard_negatives 7 \
     --negatives_dir results/datasets_negatives/qwen3_600m \
@@ -61,6 +58,7 @@ torchrun \
     --logging_steps 50 \
     --eval_steps 5 \
     --output_dir "./results/train" \
+    #--train_subset reduced \
     #--measure_baselines \
     # --eval_only \
     # --distributed_loss \

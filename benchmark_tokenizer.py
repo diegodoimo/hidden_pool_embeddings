@@ -324,7 +324,7 @@ def main():
         for variant_name, collate_func in collate_variants.items():
             if RANK == 0:
                 print(f"benchmarking variant: {variant_name}")
-                
+
             collate_fn = partial(
                 collate_func,
                 pad_token_id=tokenizer.pad_token_id,
@@ -338,6 +338,8 @@ def main():
                 ),
                 timing_stats=None,  # workers can't update main-process dict
             )
+
+
 
             train_loader = DataLoader(
                 train_dataset,
@@ -392,3 +394,57 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+# RESULTS
+
+# ================================================================================
+#   Wall-time benchmark  (num_workers=22,  production setting)
+# ================================================================================
+# benchmarking variant: v0_baseline
+# benchmarking variant: v01_intermediate
+# benchmarking variant: v1_thread_pool
+# benchmarking variant: v2_rust_encode_batch
+
+#   variant                         wall_s        ms/batch   batches   speedup
+#   ----------------------  --------------  --------------  --------  --------
+#   v0_baseline                      1.922            5.93       324     1.00x
+#   v01_intermediate                 2.302            7.11       324     0.83x
+#   v1_thread_pool                   1.917            5.92       324     1.00x
+#   v2_rust_encode_batch             1.495            4.61       324     1.29x
+
+
+
+# ================================================================================
+#   Wall-time benchmark  (num_workers=18,  production setting)
+# ================================================================================
+# benchmarking variant: v0_baseline
+# benchmarking variant: v01_intermediate
+# benchmarking variant: v1_thread_pool
+# benchmarking variant: v2_rust_encode_batch
+
+#   variant                         wall_s        ms/batch   batches   speedup
+#   ----------------------  --------------  --------------  --------  --------
+#   v0_baseline                      1.622            5.01       324     1.00x
+#   v01_intermediate                 1.728            5.33       324     0.94x
+#   v1_thread_pool                   1.337            4.13       324     1.21x
+#   v2_rust_encode_batch             1.429            4.41       324     1.13x
+
+
+
+# ================================================================================
+#   Wall-time benchmark  (num_workers=14,  production setting)
+# ================================================================================
+# benchmarking variant: v0_baseline
+# benchmarking variant: v01_intermediate
+# benchmarking variant: v1_thread_pool
+# benchmarking variant: v2_rust_encode_batch
+
+#   variant                         wall_s        ms/batch   batches   speedup
+#   ----------------------  --------------  --------------  --------  --------
+#   v0_baseline                      1.757            5.42       324     1.00x
+#   v01_intermediate                 1.898            5.86       324     0.93x
+#   v1_thread_pool                   1.535            4.74       324     1.14x
+#   v2_rust_encode_batch             1.680            5.18       324     1.05x
