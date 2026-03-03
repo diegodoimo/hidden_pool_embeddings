@@ -219,17 +219,20 @@ def main():
         sampler.set_epoch(0)
 
         start = time.time()
+        n_batches = 0
         for index, batch in enumerate(train_loader):
             batch = {
                 key: val.to(device) if isinstance(val, torch.Tensor) else val
                 for key, val in batch.items()
             }
-            if index >= NUM_BENCH_BATCHES:
+            n_batches += 1
+            if index + 1 >= NUM_BENCH_BATCHES:
                 break
 
         duration = time.time() - start
         all_results[variant_name] = {
             "duration": duration,
+            "n_batches": n_batches,
             "timing_stats": dict(timing_stats),
         }
         
@@ -274,9 +277,21 @@ def main():
                 val = s.get(key, 0.0) / n * 1000
                 row.append(f"{val:>{col_w}.2f}")
             print("".join(row))
+        _nb0 = all_results[baseline_name]["n_batches"]
         print(
             f"\n  {'Wall time (s)':<20}"
             + "".join(f"{all_results[n]['duration']:>{col_w}.3f}" for n in names)
+        )
+        print(
+            f"  {'Wall ms/batch':<20}"
+            + "".join(
+                f"{all_results[n]['duration'] / all_results[n]['n_batches'] * 1000:>{col_w}.2f}"
+                for n in names
+            )
+        )
+        print(
+            f"  {'batches measured':<20}"
+            + "".join(f"{all_results[n]['n_batches']:>{col_w}d}" for n in names)
         )
         ref_dur = all_results[baseline_name]["duration"]
         print(
@@ -343,14 +358,16 @@ def main():
 
             sampler.set_epoch(0)
             start = time.time()
+            n_batches_w = 0
             for index, batch in enumerate(train_loader):
                 batch = {
                     key: val.to(device) if isinstance(val, torch.Tensor) else val
                     for key, val in batch.items()
                 }
-                if index >= NUM_BENCH_BATCHES:
+                n_batches_w += 1
+                if index + 1 >= NUM_BENCH_BATCHES:
                     break
-            wall_results[variant_name] = time.time() - start
+            wall_results[variant_name] = (time.time() - start, n_batches_w)
 
             # explicitly shut down workers before next variant
             train_loader._iterator = None
@@ -359,16 +376,15 @@ def main():
         if RANK == 0:
             col_w = 14
             print(
-                f"\n  {'variant':<22}"
-                + "".join(f"{'wall_s':>{col_w}}  {'ms/batch':>{col_w}}")
+                f"\n  {'variant':<22}  {'wall_s':>{col_w}}  {'ms/batch':>{col_w}}  {'batches':>8}  {'speedup':>8}"
             )
-            print(f"  {'-'*22}" + (f"  {'-'*col_w}" * 2))
-            ref = wall_results[list(wall_results.keys())[0]]
-            for name, dur in wall_results.items():
-                ms_per = dur / NUM_BENCH_BATCHES * 1000
-                speedup = ref / dur
+            print(f"  {'-'*22}  {'-'*col_w}  {'-'*col_w}  {'-'*8}  {'-'*8}")
+            ref_dur_w, _ = wall_results[list(wall_results.keys())[0]]
+            for name, (dur, nb) in wall_results.items():
+                ms_per = dur / nb * 1000
+                speedup = ref_dur_w / dur
                 print(
-                    f"  {name:<22}  {dur:>{col_w}.3f}  {ms_per:>{col_w}.2f}  {speedup:>6.2f}x"
+                    f"  {name:<22}  {dur:>{col_w}.3f}  {ms_per:>{col_w}.2f}  {nb:>8d}  {speedup:>7.2f}x"
                 )
 
 
