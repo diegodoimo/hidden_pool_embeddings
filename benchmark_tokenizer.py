@@ -306,6 +306,8 @@ def main():
         wall_results: dict[str, float] = {}
 
         for variant_name, collate_func in collate_variants.items():
+            if RANK == 0:
+                print(f"benchmarking variant: {variant_name}")
             collate_fn = partial(
                 collate_func,
                 pad_token_id=tokenizer.pad_token_id,
