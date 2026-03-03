@@ -495,6 +495,9 @@ def main():
         max_seq_len=args.max_seq_len if args.length_strategy == "filter" else None,
     )
 
+
+
+
     dist.barrier()
     if RANK == 0:
         print(f"datasets prepared in {time.time()-start:.1f}s")

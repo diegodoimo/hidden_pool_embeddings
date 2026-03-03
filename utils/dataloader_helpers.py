@@ -1021,18 +1021,18 @@ def collate_fn_pretokenized(
     Args:
         timing_stats: optional dict-like for per-step wall-clock accumulation.
     """
-    import time as _time
+    # import time as _time
 
-    _bench = timing_stats is not None
+    # _bench = timing_stats is not None
 
-    def _tick() -> float:
-        return _time.perf_counter() if _bench else 0.0
+    # def _tick() -> float:
+    #     return _time.perf_counter() if _bench else 0.0
 
-    def _record(key: str, t0: float) -> None:
-        if _bench:
-            timing_stats[key] = timing_stats.get(key, 0.0) + (_time.perf_counter() - t0)
+    # def _record(key: str, t0: float) -> None:
+    #     if _bench:
+    #         timing_stats[key] = timing_stats.get(key, 0.0) + (_time.perf_counter() - t0)
 
-    t_total = _tick()
+    # t_total = _tick()
 
     _max_content = (
         (max_seq_len - 1)
@@ -1041,7 +1041,7 @@ def collate_fn_pretokenized(
     )
 
     # --- Extract cached token-ID lists ---
-    t0 = _tick()
+    # t0 = _tick()
     query_encs = [item["query_token_ids"] for item in batch]
     pos_encs = [item["positive_token_ids"] for item in batch]
     flat_neg_encs: list[list[int]] = []
@@ -1055,8 +1055,8 @@ def collate_fn_pretokenized(
         flat_neg_encs = [ids[:_max_content] for ids in flat_neg_encs]
     _record("extract_ids", t0)
 
-    # --- Build sample-ID tensors ---
-    t0 = _tick()
+    # # --- Build sample-ID tensors ---
+    # t0 = _tick()
     pos_ids = torch.tensor(
         [
             _str_to_int_id(f"{item['dataset_name']}/{item['positive_id']}")
@@ -1071,28 +1071,28 @@ def collate_fn_pretokenized(
         ],
         dtype=torch.long,
     )
-    _record("id_build", t0)
+    # _record("id_build", t0)
 
     # --- Pad queries ---
-    t0 = _tick()
+    # t0 = _tick()
     query_padded, query_mask = _fast_pad(
         query_encs, pad_id=pad_token_id, eot_id=eot_id, padding_side=padding_side
     )
-    _record("query_pad", t0)
+    # _record("query_pad", t0)
 
     # --- Pad positives + negatives ---
-    t0 = _tick()
+    # t0 = _tick()
     all_doc_padded, all_doc_mask = _fast_pad(
         pos_encs + flat_neg_encs,
         pad_id=pad_token_id,
         eot_id=eot_id,
         padding_side=padding_side,
     )
-    _record("doc_pad", t0)
+    # _record("doc_pad", t0)
 
-    _record("total", t_total)
-    if _bench:
-        timing_stats["_calls"] = timing_stats.get("_calls", 0) + 1
+    # _record("total", t_total)
+    # if _bench:
+    #     timing_stats["_calls"] = timing_stats.get("_calls", 0) + 1
 
     return {
         "query_token_ids": query_padded,
