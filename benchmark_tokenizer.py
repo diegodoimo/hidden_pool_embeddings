@@ -142,164 +142,164 @@ def main():
         "v2_rust_encode_batch": collate_fn_with_hard_negatives_v2,
     }
 
-    # ------------------------------------------------------------------ #
-    #  Warmup pass                                                        #
-    #  Runs BEFORE any timed variant so that:                             #
-    #    - OS page cache is warm for all variants equally                 #
-    #    - HuggingFace tokenizer Rust/rayon thread pool is initialised    #
-    #  Without this, v0 (first variant) pays a cold-start penalty that    #
-    #  makes all subsequent variants look artificially faster.            #
-    # ------------------------------------------------------------------ #
-    if RANK == 0:
-        print(f"Warming up ({NUM_WARMUP_BATCHES} batches, untimed)...")
+    # # ------------------------------------------------------------------ #
+    # #  Warmup pass                                                        #
+    # #  Runs BEFORE any timed variant so that:                             #
+    # #    - OS page cache is warm for all variants equally                 #
+    # #    - HuggingFace tokenizer Rust/rayon thread pool is initialised    #
+    # #  Without this, v0 (first variant) pays a cold-start penalty that    #
+    # #  makes all subsequent variants look artificially faster.            #
+    # # ------------------------------------------------------------------ #
+    # if RANK == 0:
+    #     print(f"Warming up ({NUM_WARMUP_BATCHES} batches, untimed)...")
 
-    _warmup_collate = partial(
-        collate_fn_with_hard_negatives,
-        pad_token_id=tokenizer.pad_token_id,
-        num_hard_negatives=args.num_hard_negatives,
-        padding_side="right",
-        tokenizer=tokenizer,
-        eot_id=eot_id,
-        add_special_tokens=add_special_tokens,
-        max_seq_len=(args.max_seq_len if args.length_strategy == "truncate" else None),
-        timing_stats=None,
-    )
-    _warmup_loader = DataLoader(
-        train_dataset,
-        batch_size=args.per_device_train_batch_size,
-        sampler=sampler,
-        collate_fn=_warmup_collate,
-        num_workers=0,
-        pin_memory=False,
-        persistent_workers=False,
-        prefetch_factor=None,
-        multiprocessing_context=None,
-    )
-    sampler.set_epoch(0)
-    for _i, _ in enumerate(_warmup_loader):
-        if _i >= NUM_WARMUP_BATCHES:
-            break
-    del _warmup_loader, _warmup_collate
-    if RANK == 0:
-        print("Warmup done.\n")
+    # _warmup_collate = partial(
+    #     collate_fn_with_hard_negatives,
+    #     pad_token_id=tokenizer.pad_token_id,
+    #     num_hard_negatives=args.num_hard_negatives,
+    #     padding_side="right",
+    #     tokenizer=tokenizer,
+    #     eot_id=eot_id,
+    #     add_special_tokens=add_special_tokens,
+    #     max_seq_len=(args.max_seq_len if args.length_strategy == "truncate" else None),
+    #     timing_stats=None,
+    # )
+    # _warmup_loader = DataLoader(
+    #     train_dataset,
+    #     batch_size=args.per_device_train_batch_size,
+    #     sampler=sampler,
+    #     collate_fn=_warmup_collate,
+    #     num_workers=0,
+    #     pin_memory=False,
+    #     persistent_workers=False,
+    #     prefetch_factor=None,
+    #     multiprocessing_context=None,
+    # )
+    # sampler.set_epoch(0)
+    # for _i, _ in enumerate(_warmup_loader):
+    #     if _i >= NUM_WARMUP_BATCHES:
+    #         break
+    # del _warmup_loader, _warmup_collate
+    # if RANK == 0:
+    #     print("Warmup done.\n")
 
-    all_results: dict[str, dict] = {}  # variant_name -> {duration, timing_stats}
+    # all_results: dict[str, dict] = {}  # variant_name -> {duration, timing_stats}
 
-    for variant_name, collate_func in collate_variants.items():
-        timing_stats: dict[str, float] = defaultdict(float)
+    # for variant_name, collate_func in collate_variants.items():
+    #     timing_stats: dict[str, float] = defaultdict(float)
 
-        collate_fn = partial(
-            collate_func,
-            pad_token_id=tokenizer.pad_token_id,
-            num_hard_negatives=args.num_hard_negatives,
-            padding_side="right",
-            tokenizer=tokenizer,
-            eot_id=eot_id,
-            add_special_tokens=add_special_tokens,
-            max_seq_len=(
-                args.max_seq_len if args.length_strategy == "truncate" else None
-            ),
-            timing_stats=timing_stats,
-        )
+    #     collate_fn = partial(
+    #         collate_func,
+    #         pad_token_id=tokenizer.pad_token_id,
+    #         num_hard_negatives=args.num_hard_negatives,
+    #         padding_side="right",
+    #         tokenizer=tokenizer,
+    #         eot_id=eot_id,
+    #         add_special_tokens=add_special_tokens,
+    #         max_seq_len=(
+    #             args.max_seq_len if args.length_strategy == "truncate" else None
+    #         ),
+    #         timing_stats=timing_stats,
+    #     )
 
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=args.per_device_train_batch_size,
-            sampler=sampler,
-            collate_fn=collate_fn,
-            # num_workers MUST be 0 for collate_fn step-timing to work.
-            num_workers=0,
-            pin_memory=True,
-            persistent_workers=False,
-            prefetch_factor=None,
-            multiprocessing_context=None,
-        )
+    #     train_loader = DataLoader(
+    #         train_dataset,
+    #         batch_size=args.per_device_train_batch_size,
+    #         sampler=sampler,
+    #         collate_fn=collate_fn,
+    #         # num_workers MUST be 0 for collate_fn step-timing to work.
+    #         num_workers=0,
+    #         pin_memory=True,
+    #         persistent_workers=False,
+    #         prefetch_factor=None,
+    #         multiprocessing_context=None,
+    #     )
 
-        # Reset sampler so both variants iterate the same batches
-        sampler.set_epoch(0)
+    #     # Reset sampler so both variants iterate the same batches
+    #     sampler.set_epoch(0)
 
-        start = time.time()
-        n_batches = 0
-        for index, batch in enumerate(train_loader):
-            batch = {
-                key: val.to(device) if isinstance(val, torch.Tensor) else val
-                for key, val in batch.items()
-            }
-            n_batches += 1
-            if index + 1 >= NUM_BENCH_BATCHES:
-                break
+    #     start = time.time()
+    #     n_batches = 0
+    #     for index, batch in enumerate(train_loader):
+    #         batch = {
+    #             key: val.to(device) if isinstance(val, torch.Tensor) else val
+    #             for key, val in batch.items()
+    #         }
+    #         n_batches += 1
+    #         if index + 1 >= NUM_BENCH_BATCHES:
+    #             break
 
-        duration = time.time() - start
-        all_results[variant_name] = {
-            "duration": duration,
-            "n_batches": n_batches,
-            "timing_stats": dict(timing_stats),
-        }
+    #     duration = time.time() - start
+    #     all_results[variant_name] = {
+    #         "duration": duration,
+    #         "n_batches": n_batches,
+    #         "timing_stats": dict(timing_stats),
+    #     }
         
-        # Per-variant report
-        n_calls = int(timing_stats.get("_calls", 0))
-        total_acc = timing_stats.get("total", 1e-9)
-        if RANK == 0:
-            print(f"\n{'='*60}")
-            print(f"  {variant_name}  ({n_calls} calls, {duration:.3f}s wall)")
-            print(f"{'='*60}")
-        if n_calls > 0:
-            if RANK == 0:
-                print(f"  {'step':<20}  {'total_s':>10}  {'avg_ms':>10}  {'pct':>7}")
-                print(f"  {'-'*20}  {'-'*10}  {'-'*10}  {'-'*7}")
-            for key in STEP_KEYS:
-                val = timing_stats.get(key, 0.0)
-                avg_ms = val / n_calls * 1000
-                pct = val / total_acc * 100 if key != "total" else 100.0
-                if RANK == 0:
-                    print(f"  {key:<20}  {val:>10.3f}  {avg_ms:>10.2f}  {pct:>6.1f}%")
+    #     # Per-variant report
+    #     n_calls = int(timing_stats.get("_calls", 0))
+    #     total_acc = timing_stats.get("total", 1e-9)
+    #     if RANK == 0:
+    #         print(f"\n{'='*60}")
+    #         print(f"  {variant_name}  ({n_calls} calls, {duration:.3f}s wall)")
+    #         print(f"{'='*60}")
+    #     if n_calls > 0:
+    #         if RANK == 0:
+    #             print(f"  {'step':<20}  {'total_s':>10}  {'avg_ms':>10}  {'pct':>7}")
+    #             print(f"  {'-'*20}  {'-'*10}  {'-'*10}  {'-'*7}")
+    #         for key in STEP_KEYS:
+    #             val = timing_stats.get(key, 0.0)
+    #             avg_ms = val / n_calls * 1000
+    #             pct = val / total_acc * 100 if key != "total" else 100.0
+    #             if RANK == 0:
+    #                 print(f"  {key:<20}  {val:>10.3f}  {avg_ms:>10.2f}  {pct:>6.1f}%")
 
-    # ------------------------------------------------------------------ #
-    #  Side-by-side comparison (all variants vs first)                   #
-    # ------------------------------------------------------------------ #
-    names = list(all_results.keys())
-    if RANK == 0 and len(names) >= 2:
-        baseline_name = names[0]
-        sb = all_results[baseline_name]["timing_stats"]
-        nb = int(sb.get("_calls", 1))
-        col_w = 12
-        header_parts = [f"  {'step':<20}"] + [f"{n:>{col_w}}" for n in names]
-        print(f"\n{'='*80}")
-        print(f"  Comparison (avg ms per batch)")
-        print(f"{'='*80}")
-        print("".join(header_parts))
-        print(f"  {'-'*20}" + ("-" * col_w) * len(names))
-        for key in STEP_KEYS:
-            row = [f"  {key:<20}"]
-            for name in names:
-                s = all_results[name]["timing_stats"]
-                n = int(s.get("_calls", 1))
-                val = s.get(key, 0.0) / n * 1000
-                row.append(f"{val:>{col_w}.2f}")
-            print("".join(row))
-        _nb0 = all_results[baseline_name]["n_batches"]
-        print(
-            f"\n  {'Wall time (s)':<20}"
-            + "".join(f"{all_results[n]['duration']:>{col_w}.3f}" for n in names)
-        )
-        print(
-            f"  {'Wall ms/batch':<20}"
-            + "".join(
-                f"{all_results[n]['duration'] / all_results[n]['n_batches'] * 1000:>{col_w}.2f}"
-                for n in names
-            )
-        )
-        print(
-            f"  {'batches measured':<20}"
-            + "".join(f"{all_results[n]['n_batches']:>{col_w}d}" for n in names)
-        )
-        ref_dur = all_results[baseline_name]["duration"]
-        print(
-            f"  {'speedup vs ' + baseline_name:<20}"
-            + "".join(
-                f"{ref_dur / all_results[n]['duration']:>{col_w}.2f}x" for n in names
-            )
-        )
+    # # ------------------------------------------------------------------ #
+    # #  Side-by-side comparison (all variants vs first)                   #
+    # # ------------------------------------------------------------------ #
+    # names = list(all_results.keys())
+    # if RANK == 0 and len(names) >= 2:
+    #     baseline_name = names[0]
+    #     sb = all_results[baseline_name]["timing_stats"]
+    #     nb = int(sb.get("_calls", 1))
+    #     col_w = 12
+    #     header_parts = [f"  {'step':<20}"] + [f"{n:>{col_w}}" for n in names]
+    #     print(f"\n{'='*80}")
+    #     print(f"  Comparison (avg ms per batch)")
+    #     print(f"{'='*80}")
+    #     print("".join(header_parts))
+    #     print(f"  {'-'*20}" + ("-" * col_w) * len(names))
+    #     for key in STEP_KEYS:
+    #         row = [f"  {key:<20}"]
+    #         for name in names:
+    #             s = all_results[name]["timing_stats"]
+    #             n = int(s.get("_calls", 1))
+    #             val = s.get(key, 0.0) / n * 1000
+    #             row.append(f"{val:>{col_w}.2f}")
+    #         print("".join(row))
+    #     _nb0 = all_results[baseline_name]["n_batches"]
+    #     print(
+    #         f"\n  {'Wall time (s)':<20}"
+    #         + "".join(f"{all_results[n]['duration']:>{col_w}.3f}" for n in names)
+    #     )
+    #     print(
+    #         f"  {'Wall ms/batch':<20}"
+    #         + "".join(
+    #             f"{all_results[n]['duration'] / all_results[n]['n_batches'] * 1000:>{col_w}.2f}"
+    #             for n in names
+    #         )
+    #     )
+    #     print(
+    #         f"  {'batches measured':<20}"
+    #         + "".join(f"{all_results[n]['n_batches']:>{col_w}d}" for n in names)
+    #     )
+    #     ref_dur = all_results[baseline_name]["duration"]
+    #     print(
+    #         f"  {'speedup vs ' + baseline_name:<20}"
+    #         + "".join(
+    #             f"{ref_dur / all_results[n]['duration']:>{col_w}.2f}x" for n in names
+    #         )
+    #     )
 
     # ------------------------------------------------------------------ #
     #  Wall-time benchmark with num_workers > 0  (production setting)    #
@@ -310,6 +310,7 @@ def main():
     #  We measure only total wall time, which is the relevant metric for   #
     #  actual training throughput.                                         #
     # ------------------------------------------------------------------ #
+    
     if args.num_workers > 0:
         if RANK == 0:
             print(f"\n{'='*80}")
@@ -323,6 +324,7 @@ def main():
         for variant_name, collate_func in collate_variants.items():
             if RANK == 0:
                 print(f"benchmarking variant: {variant_name}")
+                
             collate_fn = partial(
                 collate_func,
                 pad_token_id=tokenizer.pad_token_id,

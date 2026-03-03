@@ -27,8 +27,10 @@ nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 head_node=${nodes[0]}
 head_node_ip=$(getent hosts "$head_node" | awk '{ print $1 }')
 GPU_NUMBER=$(echo $CUDA_VISIBLE_DEVICES | tr ',' ' ' | wc -w)
-WORKERS_PER_RANK=$(( SLURM_CPUS_PER_TASK / GPU_NUMBER ))
+#WORKERS_PER_RANK=$(( SLURM_CPUS_PER_TASK / GPU_NUMBER ))
+WORKERS_PER_RANK=18
 echo $WORKERS_PER_RANK
+
 torchrun \
     --nnodes=$SLURM_NTASKS \
     --node-rank=$SLURM_NODEID \
