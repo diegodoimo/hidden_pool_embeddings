@@ -28,6 +28,8 @@ from utils.create_datasets import (
     get_eval_tasks,
 )
 from utils.dataloader_helpers import (
+    collate_fn_with_hard_negatives_v0,
+    collate_fn_with_hard_negatives_v01,
     collate_fn_with_hard_negatives,
     collate_fn_with_hard_negatives_v2,
     collate_fn_pretokenized,
@@ -51,6 +53,9 @@ from datetime import timedelta
 def main():
 
     args = parse_args()
+    WORLD_SIZE = int(os.environ["WORLD_SIZE"])
+    LOCAL_RANK = int(os.environ["LOCAL_RANK"])
+    RANK = int(os.environ["RANK"])
 
     dist.init_process_group(
         "nccl",
@@ -68,16 +73,6 @@ def main():
         if token:
             hf_login(token=token)
 
-    WORLD_SIZE = int(os.environ["WORLD_SIZE"])
-    LOCAL_RANK = int(os.environ["LOCAL_RANK"])
-    RANK = int(os.environ["RANK"])
-    dist.init_process_group(
-        "nccl",
-        device_id=torch.device("cuda", LOCAL_RANK),
-        timeout=timedelta(minutes=30),
-    )
-    rank = dist.get_rank()
-    torch.cuda.set_device(LOCAL_RANK)
     torch.set_float32_matmul_precision("high")
     device = torch.device("cuda", LOCAL_RANK)
 
@@ -137,9 +132,11 @@ def main():
         "doc_pad",
         "total",
     ]
-    NUM_BENCH_BATCHES = 100
+    NUM_BENCH_BATCHES = 500
 
     collate_variants = {
+        "v0_baseline": collate_fn_with_hard_negatives_v0,
+        "v01_intermediate": collate_fn_with_hard_negatives_v01,
         "v1_thread_pool": collate_fn_with_hard_negatives,
         "v2_rust_encode_batch": collate_fn_with_hard_negatives_v2,
     }
@@ -210,33 +207,40 @@ def main():
                 print(f"  {key:<20}  {val:>10.3f}  {avg_ms:>10.2f}  {pct:>6.1f}%")
 
     # ------------------------------------------------------------------ #
-    #  Side-by-side comparison                                            #
+    #  Side-by-side comparison (all variants vs first)                   #
     # ------------------------------------------------------------------ #
     names = list(all_results.keys())
-    if len(names) == 2 and RANK == 0:
-        a, b = names
-        sa = all_results[a]["timing_stats"]
-        sb = all_results[b]["timing_stats"]
-        na = int(sa.get("_calls", 1))
+    if RANK == 0 and len(names) >= 2:
+        baseline_name = names[0]
+        sb = all_results[baseline_name]["timing_stats"]
         nb = int(sb.get("_calls", 1))
-        print(f"\n{'='*72}")
-        print(f"  Comparison: {a} vs {b}")
-        print(f"{'='*72}")
-        header = f"  {'step':<20}  {'v1 avg_ms':>10}  {'v2 avg_ms':>10}  {'speedup':>8}"
-        print(header)
-        print(f"  {'-'*20}  {'-'*10}  {'-'*10}  {'-'*8}")
+        col_w = 12
+        header_parts = [f"  {'step':<20}"] + [f"{n:>{col_w}}" for n in names]
+        print(f"\n{'='*80}")
+        print(f"  Comparison (avg ms per batch)")
+        print(f"{'='*80}")
+        print("".join(header_parts))
+        print(f"  {'-'*20}" + ("-" * col_w) * len(names))
         for key in STEP_KEYS:
-            va = sa.get(key, 0.0) / na * 1000
-            vb = sb.get(key, 0.0) / nb * 1000
-            speedup = va / vb if vb > 0 else float("inf")
-            print(f"  {key:<20}  {va:>10.2f}  {vb:>10.2f}  {speedup:>7.2f}x")
-        da = all_results[a]["duration"]
-        db = all_results[b]["duration"]
-        print(f"\n  Wall time: {a}={da:.3f}s  {b}={db:.3f}s  speedup={da/db:.2f}x")
+            row = [f"  {key:<20}"]
+            for name in names:
+                s = all_results[name]["timing_stats"]
+                n = int(s.get("_calls", 1))
+                val = s.get(key, 0.0) / n * 1000
+                row.append(f"{val:>{col_w}.2f}")
+            print("".join(row))
+        print(
+            f"\n  {'Wall time (s)':<20}"
+            + "".join(f"{all_results[n]['duration']:>{col_w}.3f}" for n in names)
+        )
+        ref_dur = all_results[baseline_name]["duration"]
+        print(
+            f"  {'speedup vs ' + baseline_name:<20}"
+            + "".join(
+                f"{ref_dur / all_results[n]['duration']:>{col_w}.2f}x" for n in names
+            )
+        )
 
 
 if __name__ == "__main__":
-    WORLD_SIZE = int(os.environ["WORLD_SIZE"])
-    LOCAL_RANK = int(os.environ["LOCAL_RANK"])
-    RANK = int(os.environ["RANK"])
     main()

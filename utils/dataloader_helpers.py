@@ -388,6 +388,7 @@ def collate_fn_with_hard_negatives_v0(
     eot_id=None,
     add_special_tokens=False,
     max_seq_len=None,
+    timing_stats=None,
 ):
     """Collate function for batches that include hard negatives.
 
@@ -400,6 +401,18 @@ def collate_fn_with_hard_negatives_v0(
     eot_id is also appended the effective content budget is max_seq_len-1 tokens
     so that the final sequence (content + eot) stays within the limit.
     """
+    import time as _time
+
+    _bench = timing_stats is not None
+
+    def _tick() -> float:
+        return _time.perf_counter() if _bench else 0.0
+
+    def _record(key: str, t0: float) -> None:
+        if _bench:
+            timing_stats[key] = timing_stats.get(key, 0.0) + (_time.perf_counter() - t0)
+
+    t_total = _tick()
 
     # Reserve one slot for eot_id when it is appended after tokenisation.
     _max_content = (
@@ -413,8 +426,14 @@ def collate_fn_with_hard_negatives_v0(
         else {}
     )
 
-    # Tokenize queries (like collate_fn_with_padding)
+    # --- Extract prompts ---
+    t0 = _tick()
     query_prompts = [item["query_prompt"] for item in batch]
+    pos_prompts = [item["positive_prompt"] for item in batch]
+    _record("prompt_extract", t0)
+
+    # --- Tokenize queries ---
+    t0 = _tick()
     query_encs = tokenizer(
         query_prompts,
         add_special_tokens=add_special_tokens,
@@ -428,7 +447,6 @@ def collate_fn_with_hard_negatives_v0(
         query_token_ids = [torch.tensor(tok) for tok in query_encs]
 
     # Tokenize positives
-    pos_prompts = [item["positive_prompt"] for item in batch]
     pos_encs = tokenizer(
         pos_prompts,
         add_special_tokens=add_special_tokens,
@@ -440,8 +458,9 @@ def collate_fn_with_hard_negatives_v0(
     else:
         pos_token_ids = [torch.tensor(tok) for tok in pos_encs]
 
+    # Tokenize negatives per item (one tokenizer call per sample)
     all_neg_token_ids = []
-    for i, item in enumerate(batch):
+    for item in batch:
         neg_prompts = item["negative_prompts"][:num_hard_negatives]
 
         neg_encs = tokenizer(
@@ -457,8 +476,10 @@ def collate_fn_with_hard_negatives_v0(
             neg_ids = neg_encs
 
         all_neg_token_ids.extend([torch.tensor(n) for n in neg_ids])
+    _record("tokenize_parallel", t0)
 
-    # pos_ids from dataset_name and positive_id
+    # --- Build sample-ID tensors ---
+    t0 = _tick()
     pos_ids = torch.tensor(
         [
             _str_to_int_id(f"{item['dataset_name']}/{item['positive_id']}")
@@ -466,8 +487,6 @@ def collate_fn_with_hard_negatives_v0(
         ],
         dtype=torch.long,
     )
-
-    # query_ids from dataset_name and query_id
     q_ids = torch.tensor(
         [
             _str_to_int_id(f"{item['dataset_name']}/{item['query_id']}")
@@ -475,8 +494,10 @@ def collate_fn_with_hard_negatives_v0(
         ],
         dtype=torch.long,
     )
+    _record("id_build", t0)
 
-    # Query attention mask: ones for content, then pad (like collate_fn_with_padding)
+    # --- Pad queries ---
+    t0 = _tick()
     query_attention_mask = [torch.ones_like(ids) for ids in query_token_ids]
     query_padded = pad_sequence(
         query_token_ids,
@@ -490,8 +511,10 @@ def collate_fn_with_hard_negatives_v0(
         padding_value=0,
         padding_side=padding_side,
     )
+    _record("query_pad", t0)
 
-    # Build all_doc_seqs: [pos_0, ..., pos_{B-1}, neg_0_0, ..., neg_{B-1}_{num_neg-1}]
+    # --- Pad docs ---
+    t0 = _tick()
     all_doc_seqs = pos_token_ids + all_neg_token_ids
     all_doc_attention_mask = [torch.ones_like(ids) for ids in all_doc_seqs]
 
@@ -507,6 +530,11 @@ def collate_fn_with_hard_negatives_v0(
         padding_value=0,
         padding_side=padding_side,
     )
+    _record("doc_pad", t0)
+
+    _record("total", t_total)
+    if _bench:
+        timing_stats["_calls"] = timing_stats.get("_calls", 0) + 1
 
     return {
         "query_token_ids": query_padded,
@@ -528,6 +556,7 @@ def collate_fn_with_hard_negatives_v01(
     eot_id=None,
     add_special_tokens=False,
     max_seq_len=None,
+    timing_stats=None,
 ):
     """Collate function for batches that include hard negatives.
 
@@ -540,6 +569,18 @@ def collate_fn_with_hard_negatives_v01(
     eot_id is also appended the effective content budget is max_seq_len-1 tokens
     so that the final sequence (content + eot) stays within the limit.
     """
+    import time as _time
+
+    _bench = timing_stats is not None
+
+    def _tick() -> float:
+        return _time.perf_counter() if _bench else 0.0
+
+    def _record(key: str, t0: float) -> None:
+        if _bench:
+            timing_stats[key] = timing_stats.get(key, 0.0) + (_time.perf_counter() - t0)
+
+    t_total = _tick()
 
     # Reserve one slot for eot_id when it is appended after tokenisation.
     _max_content = (
@@ -553,8 +594,17 @@ def collate_fn_with_hard_negatives_v01(
         else {}
     )
 
-    # Tokenize queries (like collate_fn_with_padding)
+    # --- Extract prompts ---
+    t0 = _tick()
     query_prompts = [item["query_prompt"] for item in batch]
+    pos_prompts = [item["positive_prompt"] for item in batch]
+    flat_neg_prompts: list[str] = []
+    for item in batch:
+        flat_neg_prompts.extend(item["negative_prompts"][:num_hard_negatives])
+    _record("prompt_extract", t0)
+
+    # --- Tokenize: 3 separate batched calls (query, pos, all negatives) ---
+    t0 = _tick()
     query_encs = tokenizer(
         query_prompts,
         add_special_tokens=add_special_tokens,
@@ -567,8 +617,6 @@ def collate_fn_with_hard_negatives_v01(
     else:
         query_token_ids = [torch.tensor(tok) for tok in query_encs]
 
-    # Tokenize positives
-    pos_prompts = [item["positive_prompt"] for item in batch]
     pos_encs = tokenizer(
         pos_prompts,
         add_special_tokens=add_special_tokens,
@@ -601,10 +649,6 @@ def collate_fn_with_hard_negatives_v01(
     # --- END OLD ---
 
     # Tokenize negatives – batched across the entire batch for one tokenizer call
-    flat_neg_prompts = []
-    for item in batch:
-        flat_neg_prompts.extend(item["negative_prompts"][:num_hard_negatives])
-
     flat_neg_encs = tokenizer(
         flat_neg_prompts,
         add_special_tokens=add_special_tokens,
@@ -616,8 +660,10 @@ def collate_fn_with_hard_negatives_v01(
         all_neg_token_ids = [torch.tensor(tok + [eot_id]) for tok in flat_neg_encs]
     else:
         all_neg_token_ids = [torch.tensor(tok) for tok in flat_neg_encs]
+    _record("tokenize_parallel", t0)
 
-    # pos_ids from dataset_name and positive_id
+    # --- Build sample-ID tensors ---
+    t0 = _tick()
     pos_ids = torch.tensor(
         [
             _str_to_int_id(f"{item['dataset_name']}/{item['positive_id']}")
@@ -625,8 +671,6 @@ def collate_fn_with_hard_negatives_v01(
         ],
         dtype=torch.long,
     )
-
-    # query_ids from dataset_name and query_id
     q_ids = torch.tensor(
         [
             _str_to_int_id(f"{item['dataset_name']}/{item['query_id']}")
@@ -634,8 +678,10 @@ def collate_fn_with_hard_negatives_v01(
         ],
         dtype=torch.long,
     )
+    _record("id_build", t0)
 
-    # Query attention mask: ones for content, then pad (like collate_fn_with_padding)
+    # --- Pad queries ---
+    t0 = _tick()
     query_attention_mask = [torch.ones_like(ids) for ids in query_token_ids]
     query_padded = pad_sequence(
         query_token_ids,
@@ -649,8 +695,10 @@ def collate_fn_with_hard_negatives_v01(
         padding_value=0,
         padding_side=padding_side,
     )
+    _record("query_pad", t0)
 
-    # Build all_doc_seqs: [pos_0, ..., pos_{B-1}, neg_0_0, ..., neg_{B-1}_{num_neg-1}]
+    # --- Pad docs ---
+    t0 = _tick()
     all_doc_seqs = pos_token_ids + all_neg_token_ids
     all_doc_attention_mask = [torch.ones_like(ids) for ids in all_doc_seqs]
 
@@ -666,6 +714,11 @@ def collate_fn_with_hard_negatives_v01(
         padding_value=0,
         padding_side=padding_side,
     )
+    _record("doc_pad", t0)
+
+    _record("total", t_total)
+    if _bench:
+        timing_stats["_calls"] = timing_stats.get("_calls", 0) + 1
 
     return {
         "query_token_ids": query_padded,
