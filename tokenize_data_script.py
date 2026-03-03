@@ -18,7 +18,9 @@ Usage:
 
 import argparse
 import glob
+import json
 import os
+from collections import Counter
 from functools import partial
 from typing import Optional
 
@@ -30,7 +32,7 @@ from utils.create_datasets import (
     instruction_template_embeddinggemma,
     instruction_template_qwen3,
     _build_and_tokenize_hard_negatives_batch,
-    _filter_long_hard_negatives_batch,
+    _build_prompts_hard_negatives_batch,
     _load_parquet_safe,
 )
 
@@ -38,6 +40,22 @@ INSTRUCTION_TEMPLATES = {
     "qwen3": (instruction_template_qwen3, False),
     "embeddinggemma": (instruction_template_embeddinggemma, True),
     "gemma3_prompt": (instruction_template_embeddinggemma, True),
+}
+
+# Columns that the training dataloader actually consumes.  Stripping the raw
+# text columns keeps the output files compact and consistent with what
+# create_pretokenized_hard_negatives_datasets produces.
+_COLS_TO_KEEP = {
+    "query_prompt",
+    "positive_prompt",
+    "negative_prompts",
+    "positive_id",
+    "query_id",
+    "dataset_name",
+    "total_length",
+    "query_token_ids",
+    "positive_token_ids",
+    "negative_token_ids",
 }
 
 
@@ -51,7 +69,53 @@ def get_instruction_template(name: str):
     return INSTRUCTION_TEMPLATES[name]
 
 
-def tokenize_and_save_dataset(
+def _compute_and_save_metadata(
+    output_path: str,
+    ds_name: str,
+    n_rows_raw: int,
+    rows_saved: int,
+    query_prompts: list,
+    positive_prompts: list,
+    all_neg_flat: list,
+) -> None:
+    """Compute deduplication statistics and write metadata.json next to the parquet.
+
+    Fields written:
+      total_queries / unique_queries   — rows vs distinct query prompt strings
+      total_positives / unique_positives — same for positive passages
+      total_negatives                  — sum of all negative slots across rows
+      unique_negatives                 — number of distinct negative passages
+      negative_count_distribution      — counts-of-counts: {k: n} means n unique
+                                         negatives each appeared in exactly k rows
+      rows_saved                       — rows written to the output parquet
+
+    Stats are measured on *raw* (pre-filter) data to reflect the underlying
+    dataset independently of the chosen max_seq_len threshold.
+    """
+    neg_counter: Counter = Counter(all_neg_flat)
+    count_of_counts: Counter = Counter(neg_counter.values())
+
+    metadata = {
+        "dataset": ds_name,
+        "total_queries": n_rows_raw,
+        "unique_queries": len(set(query_prompts)),
+        "total_positives": n_rows_raw,
+        "unique_positives": len(set(positive_prompts)),
+        "total_negatives": len(all_neg_flat),
+        "unique_negatives": len(neg_counter),
+        # {"k": n} → n unique negatives each appear as a negative for exactly k queries
+        "negative_count_distribution": {
+            str(k): v for k, v in sorted(count_of_counts.items())
+        },
+        "rows_saved": rows_saved,
+    }
+
+    metadata_path = os.path.join(os.path.dirname(output_path), "metadata.json")
+    with open(metadata_path, "w") as fh:
+        json.dump(metadata, fh, indent=2)
+
+
+def tokenize_and_save_dataset_dedup(
     input_path: str,
     output_path: str,
     ds_name: str,
@@ -60,9 +124,18 @@ def tokenize_and_save_dataset(
     add_special_tokens: bool,
     num_hard_negatives: int,
     max_seq_len: Optional[int],
+    num_proc: int = 1,
 ) -> int:
-    """Load, tokenize, and save a single parquet dataset. Returns number of rows saved."""
-    # dataset_name is the leaf folder (e.g. arguana) used for NAME_TO_TASK_TYPE
+    """Load, tokenize, and save a dataset using a deduplicate-then-tokenize strategy.
+
+    Inspired by tokenize_reference.py:
+    1. Build prompt strings for all rows (parallelised via num_proc).
+    2. Collect all *unique* prompts across queries, positives and negatives.
+    3. Tokenize unique prompts in ONE batched call — passages shared across
+       many queries (e.g. MSMARCO corpus) are tokenized only once.
+    4. Assemble per-row token-ID lists from the lookup dict in O(1).
+    5. Filter, sort, strip columns, save parquet + metadata.json.
+    """
     dataset_name = os.path.basename(os.path.dirname(input_path))
     if dataset_name not in NAME_TO_TASK_TYPE:
         raise ValueError(
@@ -74,6 +147,161 @@ def tokenize_and_save_dataset(
     task_metadata = TASK_TYPE_TO_TASK_METADATA[task_type]
 
     ds = _load_parquet_safe(input_path)
+    n_rows_raw = len(ds)
+
+    # ------------------------------------------------------------------
+    # Step 1: Build prompt strings (no tokenization yet).
+    # num_proc parallelises the string-building work across CPU cores.
+    # ------------------------------------------------------------------
+    build_fn = partial(
+        _build_prompts_hard_negatives_batch,
+        tokenizer=tokenizer,
+        instruction_template=instruction_template,
+        task_metadata=task_metadata,
+        num_hard_negatives=num_hard_negatives,
+    )
+    ds = ds.map(build_fn, batched=True, batch_size=10000, num_proc=num_proc)
+    # ds now has: query_prompt, positive_prompt, negative_prompts, total_length
+    # (plus all original columns)
+
+    query_prompts: list[str] = ds["query_prompt"]
+    positive_prompts: list[str] = ds["positive_prompt"]
+    negative_prompts_lists: list[list[str]] = ds["negative_prompts"]
+
+    # ------------------------------------------------------------------
+    # Step 2: Deduplicate across ALL roles together.
+    # Queries use a different instruction prefix than documents, so there
+    # is no accidental collision between a query prompt and a passage prompt.
+    # ------------------------------------------------------------------
+    all_neg_flat: list[str] = [p for row in negative_prompts_lists for p in row]
+
+    # dict.fromkeys preserves first-seen order and deduplicates in O(n)
+    all_unique_prompts: list[str] = list(
+        dict.fromkeys(query_prompts + positive_prompts + all_neg_flat)
+    )
+
+    # ------------------------------------------------------------------
+    # Step 3: Tokenize unique prompts in ONE batched call.
+    # The Rust rayon thread-pool inside the fast tokenizer handles
+    # internal parallelism; no need for Python multiprocessing here.
+    # ------------------------------------------------------------------
+    print(
+        f"  [{dataset_name}] tokenizing {len(all_unique_prompts):,} unique prompts "
+        f"(from {n_rows_raw:,} rows, "
+        f"{len(all_neg_flat):,} total neg slots)"
+    )
+    all_token_ids: list[list[int]] = tokenizer(
+        all_unique_prompts,
+        add_special_tokens=add_special_tokens,
+        return_attention_mask=False,
+        truncation=False,
+    )["input_ids"]
+
+    prompt_to_ids: dict[str, list[int]] = dict(zip(all_unique_prompts, all_token_ids))
+
+    # ------------------------------------------------------------------
+    # Step 4: Assemble per-row token-ID lists via O(1) dict lookup.
+    # ------------------------------------------------------------------
+    query_token_ids: list[list[int]] = [prompt_to_ids[p] for p in query_prompts]
+    positive_token_ids: list[list[int]] = [prompt_to_ids[p] for p in positive_prompts]
+    negative_token_ids: list[list[list[int]]] = [
+        [prompt_to_ids[p] for p in row] for row in negative_prompts_lists
+    ]
+
+    # ------------------------------------------------------------------
+    # Step 5 (optional): filter rows exceeding max_seq_len.
+    # Uses the already-computed token IDs — no re-tokenization.
+    # ------------------------------------------------------------------
+    keep_indices = list(range(n_rows_raw))
+    if max_seq_len is not None:
+        keep_indices = [
+            i
+            for i in range(n_rows_raw)
+            if (
+                len(query_token_ids[i]) <= max_seq_len
+                and len(positive_token_ids[i]) <= max_seq_len
+                and all(len(t) <= max_seq_len for t in negative_token_ids[i])
+            )
+        ]
+        n_filtered = n_rows_raw - len(keep_indices)
+        if n_filtered:
+            print(
+                f"  [{dataset_name}] filtered {n_filtered} / {n_rows_raw} rows "
+                f"exceeding max_seq_len={max_seq_len}"
+            )
+            query_token_ids = [query_token_ids[i] for i in keep_indices]
+            positive_token_ids = [positive_token_ids[i] for i in keep_indices]
+            negative_token_ids = [negative_token_ids[i] for i in keep_indices]
+            ds = ds.select(keep_indices)
+
+    # ------------------------------------------------------------------
+    # Step 6: Attach token-ID columns and tidy up.
+    # ------------------------------------------------------------------
+    ds = ds.add_column("query_token_ids", query_token_ids)
+    ds = ds.add_column("positive_token_ids", positive_token_ids)
+    ds = ds.add_column("negative_token_ids", negative_token_ids)
+
+    if "dataset_name" not in ds.column_names:
+        ds = ds.add_column("dataset_name", [ds_name] * len(ds))
+
+    ds = ds.sort("total_length", reverse=True)
+
+    cols_to_remove = [c for c in ds.column_names if c not in _COLS_TO_KEEP]
+    if cols_to_remove:
+        ds = ds.remove_columns(cols_to_remove)
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    ds.to_parquet(output_path)
+
+    # ------------------------------------------------------------------
+    # Step 7: Save metadata.
+    # ------------------------------------------------------------------
+    _compute_and_save_metadata(
+        output_path=output_path,
+        ds_name=ds_name,
+        n_rows_raw=n_rows_raw,
+        rows_saved=len(ds),
+        query_prompts=query_prompts,
+        positive_prompts=positive_prompts,
+        all_neg_flat=all_neg_flat,
+    )
+
+    return len(ds)
+
+
+def tokenize_and_save_dataset_batch(
+    input_path: str,
+    output_path: str,
+    ds_name: str,
+    tokenizer,
+    instruction_template,
+    add_special_tokens: bool,
+    num_hard_negatives: int,
+    max_seq_len: Optional[int],
+    num_proc: int = 1,
+) -> int:
+    """Load, tokenize, and save a dataset using HF batched map (no deduplication).
+
+    Original pipeline approach: prompt building and tokenization are merged in a
+    single Dataset.map() call via _build_and_tokenize_hard_negatives_batch, then
+    rows exceeding max_seq_len are removed with Dataset.filter().
+
+    Faster than tokenize_and_save_dataset_dedup when passage reuse is low (e.g.
+    STS, NLI, one-to-one pair datasets).  For datasets with heavy passage reuse
+    (MSMARCO, NaturalQuestions, …) the dedup variant is significantly faster.
+    """
+    dataset_name = os.path.basename(os.path.dirname(input_path))
+    if dataset_name not in NAME_TO_TASK_TYPE:
+        raise ValueError(
+            f"Dataset '{dataset_name}' not in NAME_TO_TASK_TYPE. "
+            "Cannot determine task metadata."
+        )
+
+    task_type = NAME_TO_TASK_TYPE[dataset_name]
+    task_metadata = TASK_TYPE_TO_TASK_METADATA[task_type]
+
+    ds = _load_parquet_safe(input_path)
+    n_rows_raw = len(ds)
 
     build_tok_fn = partial(
         _build_and_tokenize_hard_negatives_batch,
@@ -83,24 +311,57 @@ def tokenize_and_save_dataset(
         num_hard_negatives=num_hard_negatives,
         add_special_tokens=add_special_tokens,
     )
-    ds = ds.map(build_tok_fn, batched=True, batch_size=10000)
+    ds = ds.map(build_tok_fn, batched=True, batch_size=10000, num_proc=num_proc)
 
+    # Collect raw prompt lists for metadata before any filtering.
+    query_prompts: list[str] = ds["query_prompt"]
+    positive_prompts: list[str] = ds["positive_prompt"]
+    all_neg_flat: list[str] = [p for row in ds["negative_prompts"] for p in row]
+
+    # Filter using already-computed token IDs — no re-tokenization.
     if max_seq_len is not None:
         n_before = len(ds)
-        filter_fn = partial(
-            _filter_long_hard_negatives_batch,
-            tokenizer=tokenizer,
-            max_seq_len=max_seq_len,
-        )
-        ds = ds.filter(filter_fn, batched=True, batch_size=1000)
-        print(f"  [{dataset_name}] filtered {n_before - len(ds)} / {n_before} rows exceeding max_seq_len={max_seq_len}")
+        query_token_ids: list = ds["query_token_ids"]
+        positive_token_ids: list = ds["positive_token_ids"]
+        negative_token_ids: list = ds["negative_token_ids"]
+        keep_indices = [
+            i
+            for i in range(n_before)
+            if (
+                len(query_token_ids[i]) <= max_seq_len
+                and len(positive_token_ids[i]) <= max_seq_len
+                and all(len(t) <= max_seq_len for t in negative_token_ids[i])
+            )
+        ]
+        n_filtered = n_before - len(keep_indices)
+        if n_filtered:
+            print(
+                f"  [{dataset_name}] filtered {n_filtered} / {n_before} rows "
+                f"exceeding max_seq_len={max_seq_len}"
+            )
+            ds = ds.select(keep_indices)
 
     if "dataset_name" not in ds.column_names:
         ds = ds.add_column("dataset_name", [ds_name] * len(ds))
     ds = ds.sort("total_length", reverse=True)
 
+    cols_to_remove = [c for c in ds.column_names if c not in _COLS_TO_KEEP]
+    if cols_to_remove:
+        ds = ds.remove_columns(cols_to_remove)
+
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     ds.to_parquet(output_path)
+
+    _compute_and_save_metadata(
+        output_path=output_path,
+        ds_name=ds_name,
+        n_rows_raw=n_rows_raw,
+        rows_saved=len(ds),
+        query_prompts=query_prompts,
+        positive_prompts=positive_prompts,
+        all_neg_flat=all_neg_flat,
+    )
+
     return len(ds)
 
 
@@ -152,7 +413,31 @@ def main():
         default=None,
         help="Optional list of dataset paths to restrict (e.g. retrieval/general_retrieval/arguana). If omitted, process all.",
     )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=1,
+        help="Number of parallel workers for dataset map/filter (passed as num_proc to HF datasets). "
+        "Use os.cpu_count() for maximum parallelism. Values > 1 set TOKENIZERS_PARALLELISM=false "
+        "to avoid forking conflicts with Rust tokenizers.",
+    )
+    parser.add_argument(
+        "--implementation",
+        type=str,
+        default="dedup",
+        choices=["dedup", "batch"],
+        help=(
+            "Tokenization strategy. "
+            "'dedup': build prompts first, deduplicate across the dataset, tokenize unique "
+            "strings once — best for datasets with heavy passage reuse (MSMARCO, NQ, …). "
+            "'batch': combined build+tokenize HF map — simpler, best when passage reuse is low."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.num_workers > 1:
+        # Prevent Rust tokenizer threads from being forked inside worker processes.
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
     if not os.path.isdir(args.input_dir):
         raise FileNotFoundError(f"Input directory not found: {args.input_dir}")
@@ -160,8 +445,10 @@ def main():
     instruction_template, add_special_tokens = get_instruction_template(
         args.instruction_template
     )
+    # use_fast=True (default): Rust fast tokenizer is 10-100× faster than the
+    # pure-Python fallback.  trust_remote_code is kept for custom model repos.
     tokenizer = AutoTokenizer.from_pretrained(
-        args.tokenizer_path, use_fast=False, trust_remote_code=True
+        args.tokenizer_path, trust_remote_code=True
     )
 
     pattern = os.path.join(args.input_dir, "**", "data.parquet")
@@ -173,21 +460,21 @@ def main():
 
     if args.datasets_subset is not None:
         subset_set = set(args.datasets_subset)
+
         # Match by inner path (e.g. retrieval/general_retrieval/arguana) so the
         # subset applies across all dataset folders
         def _inner_path(p):
             rel = os.path.relpath(p, args.input_dir)
             parts = rel.split(os.sep)
             return os.path.join(*parts[1:-1]) if len(parts) > 1 else ""
-        parquet_files = [
-            p for p in parquet_files
-            if _inner_path(p) in subset_set
-        ]
-        print(f"Restricted to {len(parquet_files)} datasets (subset of {len(args.datasets_subset)} requested)")
+
+        parquet_files = [p for p in parquet_files if _inner_path(p) in subset_set]
+        print(
+            f"Restricted to {len(parquet_files)} datasets (subset of {len(args.datasets_subset)} requested)"
+        )
 
     print(f"Found {len(parquet_files)} datasets under {args.input_dir}")
     print(f"Output: {args.output_dir}/<dataset_folder>_{args.instruction_template}/")
-    print()
 
     total_rows = 0
     for i, input_path in enumerate(parquet_files):
@@ -196,15 +483,24 @@ def main():
         # or: qwen3_600m/retrieval/general_retrieval/arguana/data.parquet
         parts = rel_path.split(os.sep)
         dataset_folder = parts[0]
-        inner_path = os.path.join(*parts[1:])  # retrieval/general_retrieval/arguana/data.parquet
+        inner_path = os.path.join(
+            *parts[1:]
+        )  # retrieval/general_retrieval/arguana/data.parquet
 
         output_folder = f"{dataset_folder}_{args.instruction_template}"
         output_path = os.path.join(args.output_dir, output_folder, inner_path)
 
         print(f"Processing [{i + 1}/{len(parquet_files)}] {rel_path}")
-        ds_name = os.path.dirname(inner_path)  # e.g. retrieval/general_retrieval/arguana
+        ds_name = os.path.dirname(
+            inner_path
+        )  # e.g. retrieval/general_retrieval/arguana
+        tokenize_fn = (
+            tokenize_and_save_dataset_dedup
+            if args.implementation == "dedup"
+            else tokenize_and_save_dataset_batch
+        )
         try:
-            n = tokenize_and_save_dataset(
+            n = tokenize_fn(
                 input_path=input_path,
                 output_path=output_path,
                 ds_name=ds_name,
@@ -213,6 +509,7 @@ def main():
                 add_special_tokens=add_special_tokens,
                 num_hard_negatives=args.num_hard_negatives,
                 max_seq_len=args.max_seq_len,
+                num_proc=args.num_workers,
             )
             total_rows += n
         except Exception as e:
