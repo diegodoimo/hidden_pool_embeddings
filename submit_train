@@ -1,21 +1,21 @@
 #!/bin/bash
-#SBATCH --partition=H100
-##SBATCH --partition=DGX
+##SBATCH --partition=H100
+#SBATCH --partition=DGX
 #SBATCH --account=lade
 ##SBATCH --nodelist=dgx004
 #SBATCH --nodes=1
-#SBATCH --time=2:00:00            
+#SBATCH --time=24:00:00            
 #SBATCH --ntasks-per-node=1       
 #SBATCH --cpus-per-task=28  #32          
 #SBATCH --mem=300G                   
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:2
+#SBATCH --gres=gpu:A100:4
 
-#source /u/area/ddoimo/anaconda3/bin/activate ./env_a100
-module load cuda/12.8 
-export CUDA_HOME=$CUDA_PATH
+source /u/area/ddoimo/anaconda3/bin/activate ./env_a100
+# module load cuda/12.8 
+# export CUDA_HOME=$CUDA_PATH
 
-source /u/area/ddoimo/anaconda3/bin/activate ./env_h100 
+# source /u/area/ddoimo/anaconda3/bin/activate ./env_h100 
 
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
