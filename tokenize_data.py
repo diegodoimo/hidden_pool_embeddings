@@ -41,7 +41,9 @@ from utils.create_datasets import (
 
 """Tokenize F2LLM datasets from HF cache."""
 from download_data import get_f2llm_sources, load_f2llm
-from datasets import Dataset
+from datasets import Datase
+import time 
+
 
 
 datasets = get_f2llm_sources()
@@ -462,7 +464,6 @@ def get_f2llm_paths(subset_list):
     receive an instruction template and are silently skipped).
     """
     all_sources = get_f2llm_sources()
-    print(all_sources)
     # Check that our naming convention matches the dataset's known source names.
     set_all_f2llm = set(TRANSLATE_F2LLM_NAME[task] for task in all_sources)
     set_known_f2llm_prompts = set(TASK_TO_PROMPT.keys())
@@ -573,6 +574,7 @@ def main():
     total_rows = 0
     processed = 0
     for i, item in enumerate(items):
+
         # ------------------------------------------------------------------
         # Resolve ds_name (leaf, e.g. "arguana") and inner_path
         # (e.g. "retrieval/general_retrieval/arguana/data.parquet").
@@ -608,10 +610,10 @@ def main():
             output_folder, middle_folder, inner_path, "data.parquet"
         )
         print(f"Processing [{i + 1}/{len(items)}] {inner_path}")
-
         # ------------------------------------------------------------------
         # Load raw dataset.
         # ------------------------------------------------------------------
+        start0 = time.time()
         if args.f2llm:
             f2llm_prompt = TASK_TO_PROMPT.get(ds_name)
             ds = load_f2llm(sources=[f2llm_source])
@@ -622,6 +624,8 @@ def main():
         else:
             ds = _load_parquet_safe(input_path)
 
+        print(f"dataset loaded in: {(time.time()-start0)/60} min")
+        start = time.time()
         # ------------------------------------------------------------------
         # Prompt building, tokenization, filtering, save.
         # ds_name is the *leaf* name used for task-type lookup and metadata.
@@ -646,12 +650,18 @@ def main():
         p_prompts: list = ds["positive_prompt"]
         neg_lists: list = ds["negative_prompts"]
 
+        print(f"prompt constructed loaded in: {(time.time()-start)/60} min")
+        start = time.time()
         q_ids, p_ids, n_ids, neg_flat = _tokenize_dedup(
             tokenizer, add_special_tokens, ds_name, q_prompts, p_prompts, neg_lists
         )
+        print(f"prompt tokenized in: {(time.time()-start)/60} min")
+        start = time.time()
         ds, q_ids, p_ids, n_ids = _apply_seq_len_filter(
             ds, q_ids, p_ids, n_ids, args.max_seq_len, ds_name
         )
+        print(f"long sentences pruned in: {(time.time()-start)/60} min")
+
         n = _finalize_and_save(
             ds,
             output_path,
@@ -671,6 +681,7 @@ def main():
     print(
         f"\nDone. Processed {processed}/{len(items)} datasets, "
         f"total rows saved: {total_rows:,}"
+        f"time spent {(time.time()-start)/60} min"
     )
 
 
