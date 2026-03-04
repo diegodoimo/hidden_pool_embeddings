@@ -75,587 +75,7 @@ _COLS_TO_KEEP = {
 }
 
 
-def get_instruction_template(name: str):
-    """Return (template_fn, add_special_tokens) for the given template name."""
-    if name not in INSTRUCTION_TEMPLATES:
-        raise ValueError(
-            f"Unknown instruction_template '{name}'. "
-            f"Choices: {list(INSTRUCTION_TEMPLATES.keys())}"
-        )
-    return INSTRUCTION_TEMPLATES[name]
-
-
-def _compute_and_save_metadata(
-    output_path: str,
-    ds_name: str,
-    n_rows_raw: int,
-    rows_saved: int,
-    query_prompts: list,
-    positive_prompts: list,
-    all_neg_flat: list,
-) -> None:
-    """Compute deduplication statistics and write metadata.json next to the parquet.
-
-    Fields written:
-      total_queries / unique_queries   — rows vs distinct query prompt strings
-      total_positives / unique_positives — same for positive passages
-      total_negatives                  — sum of all negative slots across rows
-      unique_negatives                 — number of distinct negative passages
-      negative_count_distribution      — counts-of-counts: {k: n} means n unique
-                                         negatives each appeared in exactly k rows
-      rows_saved                       — rows written to the output parquet
-
-    Stats are measured on *raw* (pre-filter) data to reflect the underlying
-    dataset independently of the chosen max_seq_len threshold.
-    """
-    neg_counter: Counter = Counter(all_neg_flat)
-    count_of_counts: Counter = Counter(neg_counter.values())
-
-    metadata = {
-        "dataset": ds_name,
-        "total_queries": n_rows_raw,
-        "unique_queries": len(set(query_prompts)),
-        "total_positives": n_rows_raw,
-        "unique_positives": len(set(positive_prompts)),
-        "total_negatives": len(all_neg_flat),
-        "unique_negatives": len(neg_counter),
-        # {"k": n} → n unique negatives each appear as a negative for exactly k queries
-        "negative_count_distribution": {
-            str(k): v for k, v in sorted(count_of_counts.items())
-        },
-        "rows_saved": rows_saved,
-    }
-
-    metadata_path = os.path.join(os.path.dirname(output_path), "metadata.json")
-    with open(metadata_path, "w") as fh:
-        json.dump(metadata, fh, indent=2)
-
-
-def _f2llm_source_to_name_to_task(f2llm_source: str) -> str:
-    """Map F2LLM parquet source name to NAME_TO_TASK key."""
-    return F2LLM_SOURCE_TO_NAME_TO_TASK.get(f2llm_source, f2llm_source)
-
-
-def _strip_f2llm_prompt(text: str, prompt: str) -> str:
-    """Remove F2LLM prompt template from the start of text if present."""
-    if not text or not prompt:
-        return text
-    text = text.strip()
-    # Try exact prompt prefix (with optional trailing space/newline/punctuation)
-    for prefix in (
-        prompt.strip(),
-        prompt.strip() + " ",
-        prompt.strip() + "\n",
-        "Instruct: " + prompt.strip() + "\nQuery:",
-        "Instruct: " + prompt.strip() + "\nQuery: ",
-        "Instruct: " + prompt.strip() + "\\nQuery:",
-        "Instruct: " + prompt.strip() + "\\nQuery: ",
-    ):
-        if text.startswith(prefix):
-            rest = text[len(prefix) :].strip()
-            return rest if rest else text
-    return text
-
-
-def tokenize_f2llm_dataset(
-    f2llm_source: str,
-    output_path: str,
-    tokenizer,
-    instruction_template,
-    add_special_tokens: bool,
-    num_hard_negatives: int,
-    max_seq_len: Optional[int],
-    num_proc: int = 1,
-) -> int:
-    """Tokenize a single F2LLM dataset source and save to parquet.
-
-    Loads data via the download_data pipeline (codefuse-ai/F2LLM). Only processes
-    sources that map to NAME_TO_TASK (for instruction template support). Strips the
-    F2LLM prompt template (from TASK_TO_PROMPT) from query/passage text before
-    applying the instruction template.
-
-    Args:
-        f2llm_source: F2LLM parquet source name (e.g. 'arguana', 'amazon_qa').
-        output_path: Path for output data.parquet.
-        tokenizer: HuggingFace tokenizer.
-        instruction_template: Instruction template callable.
-        add_special_tokens: Pass to tokenizer.
-        num_hard_negatives: Max hard negatives per row.
-        max_seq_len: Filter rows exceeding this length (None = no filter).
-        num_proc: Workers for dataset.map.
-
-    Returns:
-        Number of rows saved.
-
-    Raises:
-        Nothing; logs warning and returns 0 if source not in NAME_TO_TASK.
-    """
-    from datasets import Dataset
-    from download_data import load_f2llm
-
-    ds_name = _f2llm_source_to_name_to_task(f2llm_source)
-    if ds_name not in NAME_TO_TASK_TYPE:
-        warnings.warn(
-            f"F2LLM source '{f2llm_source}' maps to '{ds_name}' which is not in "
-            f"NAME_TO_TASK. Skipping (no instruction template available).",
-            UserWarning,
-            stacklevel=2,
-        )
-        return 0
-
-    task_type = NAME_TO_TASK_TYPE[ds_name]
-    task_metadata = TASK_TYPE_TO_TASK_METADATA[task_type]
-
-    f2llm_prompt = TASK_TO_PROMPT.get(f2llm_source)
-    if f2llm_prompt is None:
-        warnings.warn(
-            f"F2LLM source '{f2llm_source}' not in TASK_TO_PROMPT; "
-            "cannot strip F2LLM prompt template. Skipping tokenization.",
-            UserWarning,
-            stacklevel=2,
-        )
-        return 0
-
-    ds = load_f2llm(sources=[f2llm_source])
-    n_rows_raw = len(ds)
-
-    # Convert F2LLM columns (query, passage, negative_1..24) to expected format
-    # and strip F2LLM prompt template if present
-    def _convert_and_strip(batch):
-        queries = batch["query"]
-        passages = batch["passage"]
-        stripped_queries = []
-        stripped_passages = []
-        stripped_negs = []
-        for i in range(len(queries)):
-            q = queries[i] or ""
-            p = passages[i] or ""
-            if f2llm_prompt:
-                q = _strip_f2llm_prompt(q, f2llm_prompt)
-                p = _strip_f2llm_prompt(p, f2llm_prompt)
-            stripped_queries.append(q)
-            stripped_passages.append(p)
-            negs = []
-            for j in range(1, 25):
-                col = f"negative_{j}"
-                n = ""
-                if col in batch and i < len(batch[col]):
-                    n = batch[col][i] or ""
-                n = str(n).strip()
-                if n:
-                    if f2llm_prompt:
-                        n = _strip_f2llm_prompt(n, f2llm_prompt)
-                    negs.append(n)
-            stripped_negs.append(negs)
-        return {
-            "query_text": stripped_queries,
-            "positive_text": stripped_passages,
-            "negative_text": stripped_negs,
-            "query_id": [str(k) for k in range(len(queries))],
-            "positive_id": [f"pos_{k}" for k in range(len(passages))],
-        }
-
-    # HF Dataset columns are lists when indexed (e.g. ds["query"] = [q1, q2, ...])
-    batch = {col: ds[col] for col in ds.column_names}
-    converted = _convert_and_strip(batch)
-    ds = Dataset.from_dict(converted)
-
-    # Reuse tokenize_and_save_dataset_dedup logic: build prompts, dedup, tokenize
-    build_fn = partial(
-        _build_prompts_hard_negatives_batch,
-        tokenizer=tokenizer,
-        instruction_template=instruction_template,
-        task_metadata=task_metadata,
-        num_hard_negatives=num_hard_negatives,
-    )
-    ds = ds.map(build_fn, batched=True, batch_size=10000, num_proc=num_proc)
-
-    query_prompts = ds["query_prompt"]
-    positive_prompts = ds["positive_prompt"]
-    negative_prompts_lists = ds["negative_prompts"]
-    all_neg_flat = [p for row in negative_prompts_lists for p in row]
-
-    all_unique_prompts = list(
-        dict.fromkeys(query_prompts + positive_prompts + all_neg_flat)
-    )
-
-    print(
-        f"  [{ds_name}] tokenizing {len(all_unique_prompts):,} unique prompts "
-        f"(from {n_rows_raw:,} rows)"
-    )
-    all_token_ids = tokenizer(
-        all_unique_prompts,
-        add_special_tokens=add_special_tokens,
-        return_attention_mask=False,
-        truncation=False,
-    )["input_ids"]
-
-    prompt_to_ids = dict(zip(all_unique_prompts, all_token_ids))
-    query_token_ids = [prompt_to_ids[p] for p in query_prompts]
-    positive_token_ids = [prompt_to_ids[p] for p in positive_prompts]
-    negative_token_ids = [
-        [prompt_to_ids[p] for p in row] for row in negative_prompts_lists
-    ]
-
-    keep_indices = list(range(n_rows_raw))
-    if max_seq_len is not None:
-        keep_indices = [
-            i
-            for i in range(n_rows_raw)
-            if (
-                len(query_token_ids[i]) <= max_seq_len
-                and len(positive_token_ids[i]) <= max_seq_len
-                and all(len(t) <= max_seq_len for t in negative_token_ids[i])
-            )
-        ]
-        n_filtered = n_rows_raw - len(keep_indices)
-        if n_filtered:
-            print(
-                f"  [{ds_name}] filtered {n_filtered} / {n_rows_raw} rows "
-                f"exceeding max_seq_len={max_seq_len}"
-            )
-            query_token_ids = [query_token_ids[i] for i in keep_indices]
-            positive_token_ids = [positive_token_ids[i] for i in keep_indices]
-            negative_token_ids = [negative_token_ids[i] for i in keep_indices]
-            ds = ds.select(keep_indices)
-
-    ds = ds.add_column("query_token_ids", query_token_ids)
-    ds = ds.add_column("positive_token_ids", positive_token_ids)
-    ds = ds.add_column("negative_token_ids", negative_token_ids)
-    ds = ds.add_column("dataset_name", [ds_name] * len(ds))
-
-    ds = ds.sort("total_length", reverse=True)
-
-    cols_to_remove = [c for c in ds.column_names if c not in _COLS_TO_KEEP]
-    if cols_to_remove:
-        ds = ds.remove_columns(cols_to_remove)
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    ds.to_parquet(output_path)
-
-    _compute_and_save_metadata(
-        output_path=output_path,
-        ds_name=ds_name,
-        n_rows_raw=n_rows_raw,
-        rows_saved=len(ds),
-        query_prompts=query_prompts,
-        positive_prompts=positive_prompts,
-        all_neg_flat=all_neg_flat,
-    )
-
-    return len(ds)
-
-
-def tokenize_and_save_dataset_dedup(
-    input_path: str,
-    output_path: str,
-    ds_name: str,
-    tokenizer,
-    instruction_template,
-    add_special_tokens: bool,
-    num_hard_negatives: int,
-    max_seq_len: Optional[int],
-    num_proc: int = 1,
-) -> int:
-    """Load, tokenize, and save a dataset using a deduplicate-then-tokenize strategy.
-
-    Inspired by tokenize_reference.py:
-    1. Build prompt strings for all rows (parallelised via num_proc).
-    2. Collect all *unique* prompts across queries, positives and negatives.
-    3. Tokenize unique prompts in ONE batched call — passages shared across
-       many queries (e.g. MSMARCO corpus) are tokenized only once.
-    4. Assemble per-row token-ID lists from the lookup dict in O(1).
-    5. Filter, sort, strip columns, save parquet + metadata.json.
-    """
-    dataset_name = os.path.basename(os.path.dirname(input_path))
-    if dataset_name not in NAME_TO_TASK_TYPE:
-        raise ValueError(
-            f"Dataset '{dataset_name}' not in NAME_TO_TASK_TYPE. "
-            "Cannot determine task metadata."
-        )
-
-    task_type = NAME_TO_TASK_TYPE[dataset_name]
-    task_metadata = TASK_TYPE_TO_TASK_METADATA[task_type]
-
-    ds = _load_parquet_safe(input_path)
-    n_rows_raw = len(ds)
-
-    # ------------------------------------------------------------------
-    # Step 1: Build prompt strings (no tokenization yet).
-    # num_proc parallelises the string-building work across CPU cores.
-    # ------------------------------------------------------------------
-    build_fn = partial(
-        _build_prompts_hard_negatives_batch,
-        tokenizer=tokenizer,
-        instruction_template=instruction_template,
-        task_metadata=task_metadata,
-        num_hard_negatives=num_hard_negatives,
-    )
-    ds = ds.map(build_fn, batched=True, batch_size=10000, num_proc=num_proc)
-    # ds now has: query_prompt, positive_prompt, negative_prompts, total_length
-    # (plus all original columns)
-
-    query_prompts: list[str] = ds["query_prompt"]
-    positive_prompts: list[str] = ds["positive_prompt"]
-    negative_prompts_lists: list[list[str]] = ds["negative_prompts"]
-
-    # ------------------------------------------------------------------
-    # Step 2: Deduplicate across ALL roles together.
-    # Queries use a different instruction prefix than documents, so there
-    # is no accidental collision between a query prompt and a passage prompt.
-    # ------------------------------------------------------------------
-    all_neg_flat: list[str] = [p for row in negative_prompts_lists for p in row]
-
-    # dict.fromkeys preserves first-seen order and deduplicates in O(n)
-    all_unique_prompts: list[str] = list(
-        dict.fromkeys(query_prompts + positive_prompts + all_neg_flat)
-    )
-
-    # ------------------------------------------------------------------
-    # Step 3: Tokenize unique prompts in ONE batched call.
-    # The Rust rayon thread-pool inside the fast tokenizer handles
-    # internal parallelism; no need for Python multiprocessing here.
-    # ------------------------------------------------------------------
-    print(
-        f"  [{dataset_name}] tokenizing {len(all_unique_prompts):,} unique prompts "
-        f"(from {n_rows_raw:,} rows, "
-        f"{len(all_neg_flat):,} total neg slots)"
-    )
-    all_token_ids: list[list[int]] = tokenizer(
-        all_unique_prompts,
-        add_special_tokens=add_special_tokens,
-        return_attention_mask=False,
-        truncation=False,
-    )["input_ids"]
-
-    prompt_to_ids: dict[str, list[int]] = dict(zip(all_unique_prompts, all_token_ids))
-
-    # ------------------------------------------------------------------
-    # Step 4: Assemble per-row token-ID lists via O(1) dict lookup.
-    # ------------------------------------------------------------------
-    query_token_ids: list[list[int]] = [prompt_to_ids[p] for p in query_prompts]
-    positive_token_ids: list[list[int]] = [prompt_to_ids[p] for p in positive_prompts]
-    negative_token_ids: list[list[list[int]]] = [
-        [prompt_to_ids[p] for p in row] for row in negative_prompts_lists
-    ]
-
-    # ------------------------------------------------------------------
-    # Step 5 (optional): filter rows exceeding max_seq_len.
-    # Uses the already-computed token IDs — no re-tokenization.
-    # ------------------------------------------------------------------
-    keep_indices = list(range(n_rows_raw))
-    if max_seq_len is not None:
-        keep_indices = [
-            i
-            for i in range(n_rows_raw)
-            if (
-                len(query_token_ids[i]) <= max_seq_len
-                and len(positive_token_ids[i]) <= max_seq_len
-                and all(len(t) <= max_seq_len for t in negative_token_ids[i])
-            )
-        ]
-        n_filtered = n_rows_raw - len(keep_indices)
-        if n_filtered:
-            print(
-                f"  [{dataset_name}] filtered {n_filtered} / {n_rows_raw} rows "
-                f"exceeding max_seq_len={max_seq_len}"
-            )
-            query_token_ids = [query_token_ids[i] for i in keep_indices]
-            positive_token_ids = [positive_token_ids[i] for i in keep_indices]
-            negative_token_ids = [negative_token_ids[i] for i in keep_indices]
-            ds = ds.select(keep_indices)
-
-    # ------------------------------------------------------------------
-    # Step 6: Attach token-ID columns and tidy up.
-    # ------------------------------------------------------------------
-    ds = ds.add_column("query_token_ids", query_token_ids)
-    ds = ds.add_column("positive_token_ids", positive_token_ids)
-    ds = ds.add_column("negative_token_ids", negative_token_ids)
-
-    if "dataset_name" not in ds.column_names:
-        ds = ds.add_column("dataset_name", [ds_name] * len(ds))
-
-    ds = ds.sort("total_length", reverse=True)
-
-    cols_to_remove = [c for c in ds.column_names if c not in _COLS_TO_KEEP]
-    if cols_to_remove:
-        ds = ds.remove_columns(cols_to_remove)
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    ds.to_parquet(output_path)
-
-    # ------------------------------------------------------------------
-    # Step 7: Save metadata.
-    # ------------------------------------------------------------------
-    _compute_and_save_metadata(
-        output_path=output_path,
-        ds_name=ds_name,
-        n_rows_raw=n_rows_raw,
-        rows_saved=len(ds),
-        query_prompts=query_prompts,
-        positive_prompts=positive_prompts,
-        all_neg_flat=all_neg_flat,
-    )
-
-    return len(ds)
-
-
-def tokenize_and_save_dataset_batch(
-    input_path: str,
-    output_path: str,
-    ds_name: str,
-    tokenizer,
-    instruction_template,
-    add_special_tokens: bool,
-    num_hard_negatives: int,
-    max_seq_len: Optional[int],
-    num_proc: int = 1,
-) -> int:
-    """Load, tokenize, and save a dataset using HF batched map (no deduplication).
-
-    Original pipeline approach: prompt building and tokenization are merged in a
-    single Dataset.map() call via _build_and_tokenize_hard_negatives_batch, then
-    rows exceeding max_seq_len are removed with Dataset.filter().
-
-    Faster than tokenize_and_save_dataset_dedup when passage reuse is low (e.g.
-    STS, NLI, one-to-one pair datasets).  For datasets with heavy passage reuse
-    (MSMARCO, NaturalQuestions, …) the dedup variant is significantly faster.
-    """
-    dataset_name = os.path.basename(os.path.dirname(input_path))
-    if dataset_name not in NAME_TO_TASK_TYPE:
-        raise ValueError(
-            f"Dataset '{dataset_name}' not in NAME_TO_TASK_TYPE. "
-            "Cannot determine task metadata."
-        )
-
-    task_type = NAME_TO_TASK_TYPE[dataset_name]
-    task_metadata = TASK_TYPE_TO_TASK_METADATA[task_type]
-
-    ds = _load_parquet_safe(input_path)
-    n_rows_raw = len(ds)
-
-    build_tok_fn = partial(
-        _build_and_tokenize_hard_negatives_batch,
-        tokenizer=tokenizer,
-        instruction_template=instruction_template,
-        task_metadata=task_metadata,
-        num_hard_negatives=num_hard_negatives,
-        add_special_tokens=add_special_tokens,
-    )
-    ds = ds.map(
-        build_tok_fn,
-        batched=True,
-        batch_size=10000,
-        num_proc=num_proc,
-    )
-
-    # Collect raw prompt lists for metadata before any filtering.
-    query_prompts: list[str] = ds["query_prompt"]
-    positive_prompts: list[str] = ds["positive_prompt"]
-    all_neg_flat: list[str] = [p for row in ds["negative_prompts"] for p in row]
-
-    # Filter using already-computed token IDs — no re-tokenization.
-    if max_seq_len is not None:
-        n_before = len(ds)
-        query_token_ids: list = ds["query_token_ids"]
-        positive_token_ids: list = ds["positive_token_ids"]
-        negative_token_ids: list = ds["negative_token_ids"]
-        keep_indices = [
-            i
-            for i in range(n_before)
-            if (
-                len(query_token_ids[i]) <= max_seq_len
-                and len(positive_token_ids[i]) <= max_seq_len
-                and all(len(t) <= max_seq_len for t in negative_token_ids[i])
-            )
-        ]
-        n_filtered = n_before - len(keep_indices)
-        if n_filtered:
-            print(
-                f"  [{dataset_name}] filtered {n_filtered} / {n_before} rows "
-                f"exceeding max_seq_len={max_seq_len}"
-            )
-            ds = ds.select(keep_indices)
-
-    if "dataset_name" not in ds.column_names:
-        ds = ds.add_column("dataset_name", [ds_name] * len(ds))
-    ds = ds.sort("total_length", reverse=True)
-
-    cols_to_remove = [c for c in ds.column_names if c not in _COLS_TO_KEEP]
-    if cols_to_remove:
-        ds = ds.remove_columns(cols_to_remove)
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    ds.to_parquet(output_path)
-
-    _compute_and_save_metadata(
-        output_path=output_path,
-        ds_name=ds_name,
-        n_rows_raw=n_rows_raw,
-        rows_saved=len(ds),
-        query_prompts=query_prompts,
-        positive_prompts=positive_prompts,
-        all_neg_flat=all_neg_flat,
-    )
-
-    return len(ds)
-
-
-def _main_f2llm(args):
-    """Tokenize F2LLM datasets from HF cache."""
-    from download_data import get_f2llm_sources
-
-    instruction_template, add_special_tokens = get_instruction_template(
-        args.instruction_template
-    )
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.tokenizer_path, trust_remote_code=True
-    )
-
-    all_sources = get_f2llm_sources()
-    want = set(args.f2llm_sources) if args.f2llm_sources else None
-    sources_to_process = [s for s in all_sources if want is None or s in want]
-
-    output_folder = f"f2llm_{args.instruction_template}"
-    output_dir = os.path.join(args.output_dir, output_folder)
-    print(f"F2LLM mode: {len(sources_to_process)} sources from HF cache")
-    print(f"Output: {output_dir}/<source>/data.parquet")
-    print("(Skipping sources not in NAME_TO_TASK)\n")
-
-    total_rows = 0
-    processed = 0
-    for i, f2llm_source in enumerate(sources_to_process):
-        output_path = os.path.join(output_dir, f2llm_source, "data.parquet")
-        ds_name = _f2llm_source_to_name_to_task(f2llm_source)
-        if ds_name not in NAME_TO_TASK_TYPE:
-            warnings.warn(
-                f"Skipping '{f2llm_source}' (maps to '{ds_name}', not in NAME_TO_TASK)",
-                UserWarning,
-                stacklevel=2,
-            )
-            continue
-        print(f"Processing [{processed + 1}] {f2llm_source} -> {ds_name}")
-        try:
-            n = tokenize_f2llm_dataset(
-                f2llm_source=f2llm_source,
-                output_path=output_path,
-                tokenizer=tokenizer,
-                instruction_template=instruction_template,
-                add_special_tokens=add_special_tokens,
-                num_hard_negatives=args.num_hard_negatives,
-                max_seq_len=args.max_seq_len,
-                num_proc=args.num_workers,
-            )
-            total_rows += n
-            processed += 1
-        except Exception as e:
-            print(f"  ERROR: {e}")
-            raise
-
-    print(f"\nDone. Processed {processed} sources, total rows saved: {total_rows}")
-
-
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(
         description="Tokenize datasets from datasets_negatives into datasets_tokenized."
     )
@@ -737,6 +157,495 @@ def main():
         help="Restrict F2LLM sources to process (e.g. arguana amazon_qa msmarco). If omitted, process all in NAME_TO_TASK.",
     )
     args = parser.parse_args()
+    return args
+
+
+def get_instruction_template(name: str):
+    """Return (template_fn, add_special_tokens) for the given template name."""
+    if name not in INSTRUCTION_TEMPLATES:
+        raise ValueError(
+            f"Unknown instruction_template '{name}'. "
+            f"Choices: {list(INSTRUCTION_TEMPLATES.keys())}"
+        )
+    return INSTRUCTION_TEMPLATES[name]
+
+
+def _compute_and_save_metadata(
+    output_path: str,
+    ds_name: str,
+    n_rows_raw: int,
+    rows_saved: int,
+    query_prompts: list,
+    positive_prompts: list,
+    all_neg_flat: list,
+) -> None:
+    """Compute deduplication statistics and write metadata.json next to the parquet.
+
+    Fields written:
+      total_queries / unique_queries   — rows vs distinct query prompt strings
+      total_positives / unique_positives — same for positive passages
+      total_negatives                  — sum of all negative slots across rows
+      unique_negatives                 — number of distinct negative passages
+      negative_count_distribution      — counts-of-counts: {k: n} means n unique
+                                         negatives each appeared in exactly k rows
+      rows_saved                       — rows written to the output parquet
+
+    Stats are measured on *raw* (pre-filter) data to reflect the underlying
+    dataset independently of the chosen max_seq_len threshold.
+    """
+    neg_counter: Counter = Counter(all_neg_flat)
+    count_of_counts: Counter = Counter(neg_counter.values())
+
+    metadata = {
+        "dataset": ds_name,
+        "total_queries": n_rows_raw,
+        "unique_queries": len(set(query_prompts)),
+        "total_positives": n_rows_raw,
+        "unique_positives": len(set(positive_prompts)),
+        "total_negatives": len(all_neg_flat),
+        "unique_negatives": len(neg_counter),
+        # {"k": n} → n unique negatives each appear as a negative for exactly k queries
+        "negative_count_distribution": {
+            str(k): v for k, v in sorted(count_of_counts.items())
+        },
+        "rows_saved": rows_saved,
+    }
+
+    metadata_path = os.path.join(os.path.dirname(output_path), "metadata.json")
+    with open(metadata_path, "w") as fh:
+        json.dump(metadata, fh, indent=2)
+
+
+def _get_task_metadata(dataset_name: str):
+    """Return task metadata for *dataset_name*, raising ValueError if unknown."""
+    if dataset_name not in NAME_TO_TASK_TYPE:
+        raise ValueError(
+            f"Dataset '{dataset_name}' not in NAME_TO_TASK_TYPE. "
+            "Cannot determine task metadata."
+        )
+    return TASK_TYPE_TO_TASK_METADATA[NAME_TO_TASK_TYPE[dataset_name]]
+
+
+def _build_prompts(
+    ds, tokenizer, instruction_template, task_metadata, num_hard_negatives, num_proc
+):
+    """Add query_prompt, positive_prompt, negative_prompts and total_length columns."""
+    build_fn = partial(
+        _build_prompts_hard_negatives_batch,
+        tokenizer=tokenizer,
+        instruction_template=instruction_template,
+        task_metadata=task_metadata,
+        num_hard_negatives=num_hard_negatives,
+    )
+    return ds.map(build_fn, batched=True, batch_size=10000, num_proc=num_proc)
+
+
+def _tokenize_dedup(
+    tokenizer,
+    add_special_tokens: bool,
+    label: str,
+    q_prompts: list,
+    p_prompts: list,
+    neg_prompts_lists: list,
+) -> tuple:
+    """Deduplicate then tokenize all prompts in one batched call.
+
+    Returns (q_ids, p_ids, n_ids, all_neg_flat) where *all_neg_flat* is the
+    flattened list of all negative prompt strings (useful for metadata).
+    """
+    all_neg_flat = [p for row in neg_prompts_lists for p in row]
+    all_unique = list(dict.fromkeys(list(q_prompts) + list(p_prompts) + all_neg_flat))
+    print(
+        f"  [{label}] tokenizing {len(all_unique):,} unique prompts "
+        f"(from {len(q_prompts):,} rows, {len(all_neg_flat):,} total neg slots)"
+    )
+    all_ids = tokenizer(
+        all_unique,
+        add_special_tokens=add_special_tokens,
+        return_attention_mask=False,
+        truncation=False,
+    )["input_ids"]
+    id_map = dict(zip(all_unique, all_ids))
+    q_ids = [id_map[p] for p in q_prompts]
+    p_ids = [id_map[p] for p in p_prompts]
+    n_ids = [[id_map[p] for p in row] for row in neg_prompts_lists]
+    return q_ids, p_ids, n_ids, all_neg_flat
+
+
+def _apply_seq_len_filter(ds, q_ids, p_ids, n_ids, max_seq_len, label):
+    """Remove rows where any token sequence exceeds *max_seq_len*.
+
+    Returns (ds, q_ids, p_ids, n_ids) with offending rows dropped.
+    No-op when *max_seq_len* is None.
+    """
+    if max_seq_len is None:
+        return ds, q_ids, p_ids, n_ids
+    n_before = len(ds)
+    keep = [
+        i
+        for i in range(n_before)
+        if (
+            len(q_ids[i]) <= max_seq_len
+            and len(p_ids[i]) <= max_seq_len
+            and all(len(t) <= max_seq_len for t in n_ids[i])
+        )
+    ]
+    n_filtered = n_before - len(keep)
+    if n_filtered:
+        print(
+            f"  [{label}] filtered {n_filtered} / {n_before} rows "
+            f"exceeding max_seq_len={max_seq_len}"
+        )
+    ds = ds.select(keep)
+    q_ids = [q_ids[i] for i in keep]
+    p_ids = [p_ids[i] for i in keep]
+    n_ids = [n_ids[i] for i in keep]
+    return ds, q_ids, p_ids, n_ids
+
+
+def _finalize_and_save(
+    ds,
+    output_path: str,
+    ds_name: str,
+    n_rows_raw: int,
+    q_ids,
+    p_ids,
+    n_ids,
+    q_prompts: list,
+    p_prompts: list,
+    neg_flat: list,
+) -> int:
+    """Attach token columns (if absent), sort, strip, save parquet + metadata.json.
+
+    *q_prompts*, *p_prompts*, *neg_flat* should be the **pre-filter** prompt lists
+    so that metadata stats reflect the full raw dataset.
+
+    Token-ID columns are only added when absent, so the batch tokenization path
+    (which already stores them inside *ds*) is handled transparently.
+
+    Returns the number of rows saved.
+    """
+    if "query_token_ids" not in ds.column_names:
+        ds = ds.add_column("query_token_ids", q_ids)
+        ds = ds.add_column("positive_token_ids", p_ids)
+        ds = ds.add_column("negative_token_ids", n_ids)
+    if "dataset_name" not in ds.column_names:
+        ds = ds.add_column("dataset_name", [ds_name] * len(ds))
+    ds = ds.sort("total_length", reverse=True)
+    cols_to_remove = [c for c in ds.column_names if c not in _COLS_TO_KEEP]
+    if cols_to_remove:
+        ds = ds.remove_columns(cols_to_remove)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    ds.to_parquet(output_path)
+    _compute_and_save_metadata(
+        output_path=output_path,
+        ds_name=ds_name,
+        n_rows_raw=n_rows_raw,
+        rows_saved=len(ds),
+        query_prompts=q_prompts,
+        positive_prompts=p_prompts,
+        all_neg_flat=neg_flat,
+    )
+    return len(ds)
+
+
+def _f2llm_source_to_name_to_task(f2llm_source: str) -> str:
+    """Map F2LLM parquet source name to NAME_TO_TASK key."""
+    return F2LLM_SOURCE_TO_NAME_TO_TASK.get(f2llm_source, f2llm_source)
+
+
+def _strip_f2llm_prompt(text: str, prompt: str) -> str:
+    """Remove F2LLM prompt template from the start of text if present."""
+    if not text or not prompt:
+        return text
+    text = text.strip()
+    # Try exact prompt prefix (with optional trailing space/newline/punctuation)
+    for prefix in (
+        prompt.strip(),
+        prompt.strip() + " ",
+        prompt.strip() + "\n",
+        "Instruct: " + prompt.strip() + "\nQuery:",
+        "Instruct: " + prompt.strip() + "\nQuery: ",
+        "Instruct: " + prompt.strip() + "\\nQuery:",
+        "Instruct: " + prompt.strip() + "\\nQuery: ",
+    ):
+        if text.startswith(prefix):
+            rest = text[len(prefix) :].strip()
+            return rest if rest else text
+    return text
+
+
+def _convert_f2llm_batch(batch: dict, f2llm_prompt: str) -> dict:
+    """Convert F2LLM columns to the standard format, stripping prompt prefixes.
+
+    Input columns: query, passage, negative_1 … negative_24.
+    Output columns: query_text, positive_text, negative_text, query_id, positive_id.
+    """
+    queries = batch["query"]
+    passages = batch["passage"]
+    n = len(queries)
+    stripped_queries, stripped_passages, stripped_negs = [], [], []
+    for i in range(n):
+        q = _strip_f2llm_prompt(queries[i] or "", f2llm_prompt)
+        p = _strip_f2llm_prompt(passages[i] or "", f2llm_prompt)
+        stripped_queries.append(q)
+        stripped_passages.append(p)
+        negs = []
+        for j in range(1, 25):
+            col = f"negative_{j}"
+            if col in batch and i < len(batch[col]):
+                n_text = str(batch[col][i] or "").strip()
+                if n_text:
+                    negs.append(_strip_f2llm_prompt(n_text, f2llm_prompt))
+        stripped_negs.append(negs)
+    return {
+        "query_text": stripped_queries,
+        "positive_text": stripped_passages,
+        "negative_text": stripped_negs,
+        "query_id": [str(k) for k in range(n)],
+        "positive_id": [f"pos_{k}" for k in range(n)],
+    }
+
+
+def tokenize_f2llm_dataset(
+    f2llm_source: str,
+    output_path: str,
+    tokenizer,
+    instruction_template,
+    add_special_tokens: bool,
+    num_hard_negatives: int,
+    max_seq_len: Optional[int],
+    num_proc: int = 1,
+) -> int:
+    """Tokenize a single F2LLM dataset source and save to parquet.
+
+    Loads data via the download_data pipeline (codefuse-ai/F2LLM). Only processes
+    sources that map to NAME_TO_TASK (for instruction template support). Strips the
+    F2LLM prompt template (from TASK_TO_PROMPT) from query/passage text before
+    applying the instruction template.
+
+    Returns the number of rows saved, or 0 if the source is skipped.
+    """
+    from datasets import Dataset
+    from download_data import load_f2llm
+
+    ds_name = _f2llm_source_to_name_to_task(f2llm_source)
+    if ds_name not in NAME_TO_TASK_TYPE:
+        warnings.warn(
+            f"F2LLM source '{f2llm_source}' maps to '{ds_name}' which is not in "
+            "NAME_TO_TASK. Skipping (no instruction template available).",
+            UserWarning,
+            stacklevel=2,
+        )
+        return 0
+
+    f2llm_prompt = TASK_TO_PROMPT.get(f2llm_source)
+    if f2llm_prompt is None:
+        warnings.warn(
+            f"F2LLM source '{f2llm_source}' not in TASK_TO_PROMPT; "
+            "cannot strip F2LLM prompt template. Skipping tokenization.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return 0
+
+    task_metadata = _get_task_metadata(ds_name)
+    ds = load_f2llm(sources=[f2llm_source])
+    n_rows_raw = len(ds)
+
+    # Convert F2LLM columns and strip prompt prefixes, then rebuild as HF Dataset.
+    converted = _convert_f2llm_batch(
+        {col: ds[col] for col in ds.column_names}, f2llm_prompt
+    )
+    ds = Dataset.from_dict(converted)
+
+    ds = _build_prompts(
+        ds, tokenizer, instruction_template, task_metadata, num_hard_negatives, num_proc
+    )
+    q_prompts: list = ds["query_prompt"]
+    p_prompts: list = ds["positive_prompt"]
+    neg_lists: list = ds["negative_prompts"]
+
+    q_ids, p_ids, n_ids, neg_flat = _tokenize_dedup(
+        tokenizer, add_special_tokens, ds_name, q_prompts, p_prompts, neg_lists
+    )
+    ds, q_ids, p_ids, n_ids = _apply_seq_len_filter(
+        ds, q_ids, p_ids, n_ids, max_seq_len, ds_name
+    )
+    return _finalize_and_save(
+        ds,
+        output_path,
+        ds_name,
+        n_rows_raw,
+        q_ids,
+        p_ids,
+        n_ids,
+        q_prompts,
+        p_prompts,
+        neg_flat,
+    )
+
+
+def tokenize_and_save_dataset_dedup(
+    input_path: str,
+    output_path: str,
+    ds_name: str,
+    tokenizer,
+    instruction_template,
+    add_special_tokens: bool,
+    num_hard_negatives: int,
+    max_seq_len: Optional[int],
+    num_proc: int = 1,
+) -> int:
+    """Load, tokenize, and save a dataset using a deduplicate-then-tokenize strategy.
+
+    1. Build prompt strings for all rows (parallelised via num_proc).
+    2. Collect all *unique* prompts across queries, positives and negatives.
+    3. Tokenize unique prompts in ONE batched call — passages shared across
+       many queries (e.g. MSMARCO corpus) are tokenized only once.
+    4. Assemble per-row token-ID lists from the lookup dict in O(1).
+    5. Optionally filter rows exceeding max_seq_len, sort, save.
+    """
+    dataset_name = os.path.basename(os.path.dirname(input_path))
+    task_metadata = _get_task_metadata(dataset_name)
+
+    ds = _load_parquet_safe(input_path)
+    n_rows_raw = len(ds)
+
+    ds = _build_prompts(
+        ds, tokenizer, instruction_template, task_metadata, num_hard_negatives, num_proc
+    )
+    q_prompts: list[str] = ds["query_prompt"]
+    p_prompts: list[str] = ds["positive_prompt"]
+    neg_lists: list[list[str]] = ds["negative_prompts"]
+
+    q_ids, p_ids, n_ids, neg_flat = _tokenize_dedup(
+        tokenizer, add_special_tokens, dataset_name, q_prompts, p_prompts, neg_lists
+    )
+    ds, q_ids, p_ids, n_ids = _apply_seq_len_filter(
+        ds, q_ids, p_ids, n_ids, max_seq_len, dataset_name
+    )
+    return _finalize_and_save(
+        ds,
+        output_path,
+        ds_name,
+        n_rows_raw,
+        q_ids,
+        p_ids,
+        n_ids,
+        q_prompts,
+        p_prompts,
+        neg_flat,
+    )
+
+
+def tokenize_and_save_dataset_batch(
+    input_path: str,
+    output_path: str,
+    ds_name: str,
+    tokenizer,
+    instruction_template,
+    add_special_tokens: bool,
+    num_hard_negatives: int,
+    max_seq_len: Optional[int],
+    num_proc: int = 1,
+) -> int:
+    """Load, tokenize, and save a dataset using HF batched map (no deduplication).
+
+    Prompt building and tokenization are merged in a single Dataset.map() call via
+    _build_and_tokenize_hard_negatives_batch.  Best when passage reuse is low (STS,
+    NLI, one-to-one pairs).  For heavy passage reuse (MSMARCO, NQ, …) prefer the
+    dedup variant.
+    """
+    dataset_name = os.path.basename(os.path.dirname(input_path))
+    task_metadata = _get_task_metadata(dataset_name)
+
+    ds = _load_parquet_safe(input_path)
+    n_rows_raw = len(ds)
+
+    build_tok_fn = partial(
+        _build_and_tokenize_hard_negatives_batch,
+        tokenizer=tokenizer,
+        instruction_template=instruction_template,
+        task_metadata=task_metadata,
+        num_hard_negatives=num_hard_negatives,
+        add_special_tokens=add_special_tokens,
+    )
+    ds = ds.map(build_tok_fn, batched=True, batch_size=10000, num_proc=num_proc)
+
+    # Capture pre-filter prompt lists for metadata, then extract token IDs for filtering.
+    q_prompts: list[str] = ds["query_prompt"]
+    p_prompts: list[str] = ds["positive_prompt"]
+    neg_flat: list[str] = [p for row in ds["negative_prompts"] for p in row]
+    q_ids: list = ds["query_token_ids"]
+    p_ids: list = ds["positive_token_ids"]
+    n_ids: list = ds["negative_token_ids"]
+
+    ds, q_ids, p_ids, n_ids = _apply_seq_len_filter(
+        ds, q_ids, p_ids, n_ids, max_seq_len, dataset_name
+    )
+    return _finalize_and_save(
+        ds,
+        output_path,
+        ds_name,
+        n_rows_raw,
+        q_ids,
+        p_ids,
+        n_ids,
+        q_prompts,
+        p_prompts,
+        neg_flat,
+    )
+
+
+def _main_f2llm(args):
+    """Tokenize F2LLM datasets from HF cache."""
+    from download_data import get_f2llm_sources
+
+    instruction_template, add_special_tokens = get_instruction_template(
+        args.instruction_template
+    )
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.tokenizer_path, trust_remote_code=True
+    )
+
+    all_sources = get_f2llm_sources()
+    want = set(args.f2llm_sources) if args.f2llm_sources else None
+    sources_to_process = [s for s in all_sources if want is None or s in want]
+
+    output_dir = os.path.join(args.output_dir, f"f2llm_{args.instruction_template}")
+    print(f"F2LLM mode: {len(sources_to_process)} sources from HF cache")
+    print(f"Output: {output_dir}/<source>/data.parquet")
+    print("(Skipping sources not in NAME_TO_TASK)\n")
+
+    total_rows = 0
+    processed = 0
+    for f2llm_source in sources_to_process:
+        output_path = os.path.join(output_dir, f2llm_source, "data.parquet")
+        print(f"Processing [{processed + 1}] {f2llm_source}")
+        try:
+            n = tokenize_f2llm_dataset(
+                f2llm_source=f2llm_source,
+                output_path=output_path,
+                tokenizer=tokenizer,
+                instruction_template=instruction_template,
+                add_special_tokens=add_special_tokens,
+                num_hard_negatives=args.num_hard_negatives,
+                max_seq_len=args.max_seq_len,
+                num_proc=args.num_workers,
+            )
+            total_rows += n
+            if n > 0:
+                processed += 1
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            raise
+
+    print(f"\nDone. Processed {processed} sources, total rows saved: {total_rows}")
+
+
+def main():
+    args = parse_args()
 
     if args.f2llm:
         _main_f2llm(args)
