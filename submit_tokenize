@@ -1,12 +1,10 @@
 #!/bin/bash
-#SBATCH --partition=H100
-##SBATCH --partition=DGX
+#SBATCH --partition=GENOA
 #SBATCH --account=lade
-##SBATCH --nodelist=dgx002
 #SBATCH --nodes=1
 #SBATCH --time=24:00:00            
 #SBATCH --ntasks-per-node=1       
-#SBATCH --cpus-per-task=28  #32          
+#SBATCH --cpus-per-task=56  #32          
 #SBATCH --mem=100G                   
 #SBATCH --job-name=test
 
@@ -25,7 +23,8 @@ export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
 python tokenize_data.py \
     --f2llm \
     --tokenizer_path google/t5gemma-2-270m-270m \
-    --output_dir datasets_tokenized
+    --output_dir results/datasets_tokenized \
+    --f2llm_sources arguana \
 
 # # Limit to specific sources
 # python tokenize_data_script.py --f2llm \

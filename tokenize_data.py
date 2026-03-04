@@ -74,6 +74,94 @@ _COLS_TO_KEEP = {
     "negative_token_ids",
 }
 
+from datasets import Dataset
+from download_data import load_f2llm, get_f2llm_sources
+
+
+def parse_args():
+        parser = argparse.ArgumentParser(
+        description="Tokenize datasets from datasets_negatives into datasets_tokenized."
+    )
+    parser.add_argument(
+        "--input_dir",
+        type=str,
+        default="datasets_negatives",
+        help="Root directory containing hard-negative datasets (e.g. datasets_negatives)",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="datasets_tokenized",
+        help="Root directory for tokenized output (e.g. datasets_tokenized)",
+    )
+    parser.add_argument(
+        "--instruction_template",
+        type=str,
+        default="embeddinggemma",
+        choices=list(INSTRUCTION_TEMPLATES.keys()),
+        help="Instruction template: qwen3, embeddinggemma",
+    )
+    parser.add_argument(
+        "--tokenizer_path",
+        type=str,
+        required=True,
+        help="HuggingFace model path for the tokenizer (e.g. google/t5gemma-2-270m-270m)",
+    )
+    parser.add_argument(
+        "--num_hard_negatives",
+        type=int,
+        default=8,
+        help="Number of hard negatives per example",
+    )
+    parser.add_argument(
+        "--max_seq_len",
+        type=int,
+        default=None,
+        help="Filter out rows where any component exceeds this token length. If None, no filtering.",
+    )
+    parser.add_argument(
+        "--datasets_subset",
+        type=str,
+        nargs="*",
+        default=None,
+        help="Optional list of dataset paths to restrict (e.g. retrieval/general_retrieval/arguana). If omitted, process all.",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=1,
+        help="Number of parallel workers for dataset map/filter (passed as num_proc to HF datasets). "
+        "Use os.cpu_count() for maximum parallelism. Values > 1 set TOKENIZERS_PARALLELISM=false "
+        "to avoid forking conflicts with Rust tokenizers.",
+    )
+    parser.add_argument(
+        "--implementation",
+        type=str,
+        default="dedup",
+        choices=["dedup", "batch"],
+        help=(
+            "Tokenization strategy. "
+            "'dedup': build prompts first, deduplicate across the dataset, tokenize unique "
+            "strings once — best for datasets with heavy passage reuse (MSMARCO, NQ, …). "
+            "'batch': combined build+tokenize HF map — simpler, best when passage reuse is low."
+        ),
+    )
+    parser.add_argument(
+        "--f2llm",
+        action="store_true",
+        help="Tokenize F2LLM data (codefuse-ai/F2LLM) from HF cache. Uses download_data pipeline. "
+        "Only sources in NAME_TO_TASK are processed. Strips TASK_TO_PROMPT template before applying instruction template.",
+    )
+    parser.add_argument(
+        "--f2llm_sources",
+        type=str,
+        nargs="*",
+        default=None,
+        help="Restrict F2LLM sources to process (e.g. arguana amazon_qa msmarco). If omitted, process all in NAME_TO_TASK.",
+    )
+    args = parser.parse_args()
+    return args
+
 
 def get_instruction_template(name: str):
     """Return (template_fn, add_special_tokens) for the given template name."""
@@ -190,8 +278,7 @@ def tokenize_f2llm_dataset(
     Raises:
         Nothing; logs warning and returns 0 if source not in NAME_TO_TASK.
     """
-    from datasets import Dataset
-    from download_data import load_f2llm
+
 
     ds_name = _f2llm_source_to_name_to_task(f2llm_source)
     if ds_name not in NAME_TO_TASK_TYPE:
@@ -597,8 +684,7 @@ def tokenize_and_save_dataset_batch(
 
 
 def _main_f2llm(args):
-    """Tokenize F2LLM datasets from HF cache."""
-    from download_data import get_f2llm_sources
+
 
     instruction_template, add_special_tokens = get_instruction_template(
         args.instruction_template
@@ -616,7 +702,6 @@ def _main_f2llm(args):
     output_folder = f"f2llm_{args.instruction_template}"
     output_dir = os.path.join(args.output_dir, output_folder)
     print(f"F2LLM mode: {len(sources_to_process)} sources from HF cache")
-    print(f"Output: {output_dir}/<source>/data.parquet")
     print("(Skipping sources not in NAME_TO_TASK)\n")
 
     total_rows = 0
@@ -653,87 +738,7 @@ def _main_f2llm(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Tokenize datasets from datasets_negatives into datasets_tokenized."
-    )
-    parser.add_argument(
-        "--input_dir",
-        type=str,
-        default="datasets_negatives",
-        help="Root directory containing hard-negative datasets (e.g. datasets_negatives)",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="datasets_tokenized",
-        help="Root directory for tokenized output (e.g. datasets_tokenized)",
-    )
-    parser.add_argument(
-        "--instruction_template",
-        type=str,
-        default="embeddinggemma",
-        choices=list(INSTRUCTION_TEMPLATES.keys()),
-        help="Instruction template: qwen3, embeddinggemma",
-    )
-    parser.add_argument(
-        "--tokenizer_path",
-        type=str,
-        required=True,
-        help="HuggingFace model path for the tokenizer (e.g. google/t5gemma-2-270m-270m)",
-    )
-    parser.add_argument(
-        "--num_hard_negatives",
-        type=int,
-        default=8,
-        help="Number of hard negatives per example",
-    )
-    parser.add_argument(
-        "--max_seq_len",
-        type=int,
-        default=None,
-        help="Filter out rows where any component exceeds this token length. If None, no filtering.",
-    )
-    parser.add_argument(
-        "--datasets_subset",
-        type=str,
-        nargs="*",
-        default=None,
-        help="Optional list of dataset paths to restrict (e.g. retrieval/general_retrieval/arguana). If omitted, process all.",
-    )
-    parser.add_argument(
-        "--num_workers",
-        type=int,
-        default=1,
-        help="Number of parallel workers for dataset map/filter (passed as num_proc to HF datasets). "
-        "Use os.cpu_count() for maximum parallelism. Values > 1 set TOKENIZERS_PARALLELISM=false "
-        "to avoid forking conflicts with Rust tokenizers.",
-    )
-    parser.add_argument(
-        "--implementation",
-        type=str,
-        default="dedup",
-        choices=["dedup", "batch"],
-        help=(
-            "Tokenization strategy. "
-            "'dedup': build prompts first, deduplicate across the dataset, tokenize unique "
-            "strings once — best for datasets with heavy passage reuse (MSMARCO, NQ, …). "
-            "'batch': combined build+tokenize HF map — simpler, best when passage reuse is low."
-        ),
-    )
-    parser.add_argument(
-        "--f2llm",
-        action="store_true",
-        help="Tokenize F2LLM data (codefuse-ai/F2LLM) from HF cache. Uses download_data pipeline. "
-        "Only sources in NAME_TO_TASK are processed. Strips TASK_TO_PROMPT template before applying instruction template.",
-    )
-    parser.add_argument(
-        "--f2llm_sources",
-        type=str,
-        nargs="*",
-        default=None,
-        help="Restrict F2LLM sources to process (e.g. arguana amazon_qa msmarco). If omitted, process all in NAME_TO_TASK.",
-    )
-    args = parser.parse_args()
+    args = parse_args()
 
     if args.f2llm:
         _main_f2llm(args)
