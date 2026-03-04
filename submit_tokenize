@@ -1,0 +1,43 @@
+#!/bin/bash
+#SBATCH --partition=H100
+##SBATCH --partition=DGX
+#SBATCH --account=lade
+##SBATCH --nodelist=dgx002
+#SBATCH --nodes=1
+#SBATCH --time=24:00:00            
+#SBATCH --ntasks-per-node=1       
+#SBATCH --cpus-per-task=28  #32          
+#SBATCH --mem=100G                   
+#SBATCH --job-name=test
+
+source /u/area/ddoimo/anaconda3/bin/activate ./env_a100
+# module load cuda/12.8 
+# export CUDA_HOME=$CUDA_PATH
+
+# source /u/area/ddoimo/anaconda3/bin/activate ./env_h100 
+
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export PYTHONUNBUFFERED=1
+export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
+
+
+# Tokenize all F2LLM sources that are in NAME_TO_TASK
+python tokenize_data.py \
+    --f2llm \
+    --tokenizer_path google/t5gemma-2-270m-270m \
+    --output_dir datasets_tokenized
+
+# # Limit to specific sources
+# python tokenize_data_script.py --f2llm \
+#     --tokenizer_path google/t5gemma-2-270m-270m \
+#     --f2llm_sources arguana amazon_qa msmarco
+
+# # With extra options
+# python tokenize_data_script.py \
+#     --f2llm \
+#     --tokenizer_path google/t5gemma-2-270m-270m \
+#     --instruction_template gemma3_prompt \
+#     --num_hard_negatives 8 \
+#     --max_seq_len 1024 \
+#     --f2llm_sources arguana squad
+

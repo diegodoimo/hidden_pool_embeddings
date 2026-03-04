@@ -55,8 +55,7 @@ F2LLM_SOURCE_TO_NAME_TO_TASK = {
 
 INSTRUCTION_TEMPLATES = {
     "qwen3": (instruction_template_qwen3, False),
-    "embeddinggemma": (instruction_template_embeddinggemma, True),
-    "gemma3_prompt": (instruction_template_embeddinggemma, True),
+    "embeddinggemma": (instruction_template_embeddinggemma, True)
 }
 
 # Columns that the training dataloader actually consumes.  Stripping the raw
@@ -672,9 +671,9 @@ def main():
     parser.add_argument(
         "--instruction_template",
         type=str,
-        default="gemma3_prompt",
+        default="embeddinggemma",
         choices=list(INSTRUCTION_TEMPLATES.keys()),
-        help="Instruction template: qwen3, embeddinggemma, or gemma3_prompt",
+        help="Instruction template: qwen3, embeddinggemma",
     )
     parser.add_argument(
         "--tokenizer_path",
