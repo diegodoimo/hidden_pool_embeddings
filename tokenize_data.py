@@ -609,12 +609,15 @@ def main():
         if args.f2llm:
             f2llm_prompt = TASK_TO_PROMPT.get(ds_name)
             ds = load_f2llm(sources=[f2llm_source])
+
+            #SHOULD BE PARALLELIZED 
             converted = _convert_f2llm_batch(
                 {col: ds[col] for col in ds.column_names}, f2llm_prompt
             )
             ds = Dataset.from_dict(converted)
         else:
             ds = _load_parquet_safe(input_path)
+
         print(f"dataset loaded in {time.time()-start}")
         start = time.time()
         # ------------------------------------------------------------------
@@ -642,6 +645,8 @@ def main():
         neg_lists: list = ds["negative_prompts"]
         print(f"prompt constructed in {time.time()-start}")
         start = time.time()
+
+            SHOULD BE PARALLELIZED
         q_ids, p_ids, n_ids, neg_flat = _tokenize_dedup(
             tokenizer, add_special_tokens, ds_name, q_prompts, p_prompts, neg_lists
         )
