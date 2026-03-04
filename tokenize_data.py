@@ -27,7 +27,7 @@ from typing import Optional
 
 from transformers import AutoTokenizer
 
-from tasks import NAME_TO_TASK_TYPE
+from tasks import NAME_TO_TASK_TYPE, TRANSLATE_F2LLM_NAME
 from tasks.f2llm_prompts import TASK_TO_PROMPT
 from utils.create_datasets import (
     FULL_TRAIN_DATA,
@@ -39,6 +39,11 @@ from utils.create_datasets import (
     _load_parquet_safe,
 )
 
+"""Tokenize F2LLM datasets from HF cache."""
+from download_data import get_f2llm_sources, load_f2llm
+from datasets import Dataset
+
+
 # Build a per-dataset-name → canonical inner path lookup from the full training
 # data manifest.  Keys are leaf dataset names (e.g. "arguana"); values are the
 # full inner path including task type and retrieval subtype when applicable
@@ -48,24 +53,6 @@ _DATASET_TO_INNER_PATH: dict[str, str] = {
     p.rstrip("/").split("/")[-1]: p.rstrip("/") for p in FULL_TRAIN_DATA
 }
 
-"""Tokenize F2LLM datasets from HF cache."""
-from download_data import get_f2llm_sources, load_f2llm
-from datasets import Dataset
-
-# Map F2LLM parquet source names (TASK_TO_PROMPT keys) to NAME_TO_TASK keys.
-# Only entries that differ are listed; others match by identity.
-F2LLM_SOURCE_TO_NAME_TO_TASK = {
-    "amazon_qa": "amazonqa",
-    "natural_questions": "naturalquestions",
-    "mr_tydi": "mrtydi",
-    "cnn_dm": "cnndm",
-    "stackexchange_dup_questions_s2s": "stackexchange_dup_s2s",
-    "stackexchange_dup_questions_p2p": "stackexchange_dup_p2p",
-    "stackoverflow_dup_questions": "stackoverflow_dup",
-    "sts_benchmark": "stsbenchmark",
-    "tweet_sentiment_extraction": "tweet_sentiment",
-    "twenty_newsgroups": "twentynewsgroups",
-}
 
 INSTRUCTION_TEMPLATES = {
     "qwen3": (instruction_template_qwen3, False),
@@ -475,7 +462,7 @@ def get_f2llm_paths(subset_list):
     all_sources = get_f2llm_sources()
 
     # Check that our naming convention matches the dataset's known source names.
-    set_all_f2llm = set(F2LLM_SOURCE_TO_NAME_TO_TASK.get(task, task) for task in all_sources)
+    set_all_f2llm = set(TRANSLATE_F2LLM_NAME[task] for task in all_sources)
     set_known_f2llm_prompts = set(TASK_TO_PROMPT.keys())
 
     assert set_all_f2llm == set_known_f2llm_prompts, set_all_f2llm.symmetric_difference(
@@ -490,7 +477,9 @@ def get_f2llm_paths(subset_list):
     # Filter out sources with no instruction-template mapping; warn instead of crash.
     skipped = []
     for f2llm_source in all_sources:
-        ds_name = F2LLM_SOURCE_TO_NAME_TO_TASK.get(f2llm_source, f2llm_source)
+        ds_name = TRANSLATE_F2LLM_NAME[
+            f2llm_source
+        ]  # F2LLM_SOURCE_TO_NAME_TO_TASK.get(f2llm_source, f2llm_source)
         if ds_name not in NAME_TO_TASK_TYPE:
             skipped.append(f2llm_source)
             print(
@@ -588,7 +577,7 @@ def main():
         # ------------------------------------------------------------------
         if args.f2llm:
             f2llm_source: str = item
-            ds_name = F2LLM_SOURCE_TO_NAME_TO_TASK.get(f2llm_source, f2llm_source)
+            ds_name = TRANSLATE_F2LLM_NAME[f2llm_source]
             # inner_path is the dataset directory, e.g.
             # "retrieval/general_retrieval/arguana"
             # inner_path = _inner_path_for_ds(ds_name)
@@ -622,7 +611,7 @@ def main():
         # Load raw dataset.
         # ------------------------------------------------------------------
         if args.f2llm:
-            f2llm_prompt = TASK_TO_PROMPT.get(f2llm_source)
+            f2llm_prompt = TASK_TO_PROMPT.get(ds_name)
             ds = load_f2llm(sources=[f2llm_source])
             converted = _convert_f2llm_batch(
                 {col: ds[col] for col in ds.column_names}, f2llm_prompt

@@ -85,6 +85,69 @@ NAME_TO_TASK = {
 }
 
 
+TRANSLATE_F2LLM_NAME = {
+    # identical names
+    "amazon_counterfactual": "amazon_counterfactual",
+    "amazon_polarity": "amazon_polarity",
+    "amazon_reviews": "amazon_reviews",
+    "anli": "anli",
+    "arguana": "arguana",
+    "arxiv_clustering_p2p": "arxiv_clustering_p2p",
+    "arxiv_clustering_s2s": "arxiv_clustering_s2s",
+    "banking77": "banking77",
+    "bioasq": "bioasq",
+    "biorxiv_clustering_p2p": "biorxiv_clustering_p2p",
+    "biorxiv_clustering_s2s": "biorxiv_clustering_s2s",
+    "cola": "cola",
+    "coliee": "coliee",
+    "eli5": "eli5",
+    "emotion": "emotion",
+    "fever": "fever",
+    "hotpotqa": "hotpotqa",
+    "imdb": "imdb",
+    "massive_intent": "massive_intent",
+    "massive_scenario": "massive_scenario",
+    "medrxiv_clustering_p2p": "medrxiv_clustering_p2p",
+    "medrxiv_clustering_s2s": "medrxiv_clustering_s2s",
+    "miracl": "miracl",
+    "mnli": "mnli",
+    "msmarco": "msmarco",
+    "mtop_domain": "mtop_domain",
+    "mtop_intent": "mtop_intent",
+    "nfcorpus": "nfcorpus",
+    "pubmedqa": "pubmedqa",
+    "qqp": "qqp",
+    "reddit_clustering_p2p": "reddit_clustering_p2p",
+    "reddit_clustering_s2s": "reddit_clustering_s2s",
+    "s2orc_abstract_citation": "s2orc_abstract_citation",
+    "s2orc_title_abstract": "s2orc_title_abstract",
+    "s2orc_title_citation": "s2orc_title_citation",
+    "scifact": "scifact",
+    "sentence_compression": "sentence_compression",
+    "snli": "snli",
+    "specter": "specter",
+    "squad": "squad",
+    "stackexchange_clustering_p2p": "stackexchange_clustering_p2p",
+    "stackexchange_clustering_s2s": "stackexchange_clustering_s2s",
+    "sts12": "sts12",
+    "sts22": "sts22",
+    "stsbenchmark": "stsbenchmark",
+    "toxic_conversations": "toxic_conversations",
+    "triviaqa": "triviaqa",
+    "twentynewsgroups": "twentynewsgroups",
+    # different names
+    "amazon_qa": "amazonqa",
+    "cnn_dm": "cnndm",
+    "fiqa": "fiqa2018",
+    "mrtidy": "mrtydi",
+    "natural_questions": "naturalquestions",
+    "paq_part2": "paq",
+    "stackexchangedupquestions_p2p": "stackexchange_dup_p2p",
+    "stackexchangedupquestions_s2s": "stackexchange_dup_s2s",
+    "stackoverflowdupquestions": "stackoverflow_dup",
+    "tweet_sentiment_extraction": "tweet_sentiment",
+}
+
 
 NAME_TO_TASK_TYPE = {
     # Retrieval tasks
@@ -162,7 +225,7 @@ NAME_TO_TASK_TYPE = {
 
 assert set(NAME_TO_TASK.keys()) == set(NAME_TO_TASK_TYPE.keys())
 
-# NLI tasks 
+# NLI tasks
 NLI_TASKS = [
     "snli",
     "mnli",
@@ -246,7 +309,7 @@ DATASETS_BY_SIZE = [
     "fever",  #  5,533,044
     "xnli",  #  7,253,838
     "msmarco",  #  9,351,742
-    "stackexchange",  #  9,500,045   
+    "stackexchange",  #  9,500,045
     # "bioasq",  # 27,284,021
     # "s2orc_abstract_citation",  # 56,386,121
     # "s2orc_title_citation",  # 65,572,442
