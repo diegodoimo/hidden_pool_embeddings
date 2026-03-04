@@ -475,8 +475,9 @@ def get_f2llm_paths(subset_list):
     all_sources = get_f2llm_sources()
 
     # Check that our naming convention matches the dataset's known source names.
-    set_all_f2llm = set(all_sources)
+    set_all_f2llm = set(F2LLM_SOURCE_TO_NAME_TO_TASK.get(task, task) for task in all_sources)
     set_known_f2llm_prompts = set(TASK_TO_PROMPT.keys())
+
     assert set_all_f2llm == set_known_f2llm_prompts, set_all_f2llm.symmetric_difference(
         set_known_f2llm_prompts
     )
