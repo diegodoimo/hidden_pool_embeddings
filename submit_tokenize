@@ -23,7 +23,7 @@ export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
 python tokenize_data.py \
     --f2llm \
     --tokenizer_path google/t5gemma-2-270m-270m \
-    --data_subsets arguana \
+    --data_subsets fever \
 
 # # Limit to specific sources
 # python tokenize_data_script.py --f2llm \

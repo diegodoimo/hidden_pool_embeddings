@@ -41,12 +41,9 @@ from utils.create_datasets import (
 
 """Tokenize F2LLM datasets from HF cache."""
 from download_data import get_f2llm_sources, load_f2llm
-from datasets import Datase
+from datasets import Dataset
 import time 
 
-
-
-datasets = get_f2llm_sources()
 
 # Build a per-dataset-name → canonical inner path lookup from the full training
 # data manifest.  Keys are leaf dataset names (e.g. "arguana"); values are the
@@ -122,7 +119,7 @@ def parse_args():
         help="Filter out rows where any component exceeds this token length. If None, no filtering.",
     )
     parser.add_argument(
-        "--datasets_subset",
+        "--data_subset",
         type=str,
         nargs="*",
         default=None,
@@ -153,13 +150,6 @@ def parse_args():
         action="store_true",
         help="Tokenize F2LLM data (codefuse-ai/F2LLM) from HF cache. Uses download_data pipeline. "
         "Only sources in NAME_TO_TASK are processed. Strips TASK_TO_PROMPT template before applying instruction template.",
-    )
-    parser.add_argument(
-        "--f2llm_sources",
-        type=str,
-        nargs="*",
-        default=None,
-        help="Restrict F2LLM sources to process (e.g. arguana amazon_qa msmarco). If omitted, process all in NAME_TO_TASK.",
     )
     parser.add_argument(
         "--teacher_model",
