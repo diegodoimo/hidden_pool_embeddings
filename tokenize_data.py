@@ -40,7 +40,7 @@ from utils.create_datasets import (
 
 """Tokenize F2LLM datasets from HF cache."""
 from download_data import get_f2llm_sources, load_f2llm
-
+from datasets import Dataset
 
 # Map F2LLM parquet source names (TASK_TO_PROMPT keys) to NAME_TO_TASK keys.
 # Only entries that differ are listed; others match by identity.
@@ -138,7 +138,7 @@ def parse_args():
     parser.add_argument(
         "--implementation",
         type=str,
-        default="dedup",
+        default="batch",
         choices=["dedup", "batch"],
         help=(
             "Tokenization strategy. "
