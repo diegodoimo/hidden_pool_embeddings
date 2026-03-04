@@ -38,6 +38,10 @@ from utils.create_datasets import (
     _load_parquet_safe,
 )
 
+"""Tokenize F2LLM datasets from HF cache."""
+from download_data import get_f2llm_sources, load_f2llm
+
+
 # Map F2LLM parquet source names (TASK_TO_PROMPT keys) to NAME_TO_TASK keys.
 # Only entries that differ are listed; others match by identity.
 F2LLM_SOURCE_TO_NAME_TO_TASK = {
@@ -426,8 +430,6 @@ def tokenize_f2llm_dataset(
 
     Returns the number of rows saved, or 0 if the source is skipped.
     """
-    from datasets import Dataset
-    from download_data import load_f2llm
 
     ds_name = _f2llm_source_to_name_to_task(f2llm_source)
     if ds_name not in NAME_TO_TASK_TYPE:
@@ -599,8 +601,6 @@ def tokenize_and_save_dataset_batch(
 
 
 def _main_f2llm(args):
-    """Tokenize F2LLM datasets from HF cache."""
-    from download_data import get_f2llm_sources
 
     instruction_template, add_special_tokens = get_instruction_template(
         args.instruction_template
