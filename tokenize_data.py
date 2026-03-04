@@ -13,7 +13,7 @@ Usage:
         --tokenizer_path google/t5gemma-2-270m-270m \
         [--num_hard_negatives 8] \
         [--max_seq_len 1024] \
-        [--datasets_subset retrieval/general_retrieval/arguana]
+        [--data_subset retrieval/general_retrieval/arguana]
 """
 
 import argparse
@@ -41,13 +41,13 @@ from utils.create_datasets import (
 
 """Tokenize F2LLM datasets from HF cache."""
 from download_data import get_f2llm_sources, load_f2llm
-from datasets import Datase
-import time 
-
+from datasets import Dataset
 
 
 datasets = get_f2llm_sources()
 
+
+datasets
 # Build a per-dataset-name → canonical inner path lookup from the full training
 # data manifest.  Keys are leaf dataset names (e.g. "arguana"); values are the
 # full inner path including task type and retrieval subtype when applicable
@@ -122,11 +122,12 @@ def parse_args():
         help="Filter out rows where any component exceeds this token length. If None, no filtering.",
     )
     parser.add_argument(
-        "--datasets_subset",
+        "--data_subset",
         type=str,
         nargs="*",
         default=None,
-        help="Optional list of dataset paths to restrict (e.g. retrieval/general_retrieval/arguana). If omitted, process all.",
+        help="Optional list of datasets to restrict. For --f2llm: source names (e.g. arguana amazon_qa). "
+        "For hard-negative datasets: inner paths (e.g. retrieval/general_retrieval/arguana). If omitted, process all.",
     )
     parser.add_argument(
         "--num_workers",
@@ -153,13 +154,6 @@ def parse_args():
         action="store_true",
         help="Tokenize F2LLM data (codefuse-ai/F2LLM) from HF cache. Uses download_data pipeline. "
         "Only sources in NAME_TO_TASK are processed. Strips TASK_TO_PROMPT template before applying instruction template.",
-    )
-    parser.add_argument(
-        "--f2llm_sources",
-        type=str,
-        nargs="*",
-        default=None,
-        help="Restrict F2LLM sources to process (e.g. arguana amazon_qa msmarco). If omitted, process all in NAME_TO_TASK.",
     )
     parser.add_argument(
         "--teacher_model",
@@ -464,6 +458,7 @@ def get_f2llm_paths(subset_list):
     receive an instruction template and are silently skipped).
     """
     all_sources = get_f2llm_sources()
+
     # Check that our naming convention matches the dataset's known source names.
     set_all_f2llm = set(TRANSLATE_F2LLM_NAME[task] for task in all_sources)
     set_known_f2llm_prompts = set(TASK_TO_PROMPT.keys())
@@ -549,14 +544,14 @@ def main():
 
     if args.f2llm:
         # items: list of F2LLM source-name strings (e.g. "arguana", "amazon_qa")
-        items = get_f2llm_paths(subset_list=args.f2llm_sources)
+        items = get_f2llm_paths(subset_list=args.data_subset)
         output_folder = os.path.join(args.output_dir, "f2llm")
         middle_folder = f"qwen3_600m-data_{args.instruction_template}-prompt"
     else:
         # items: list of absolute paths to data.parquet files
         items = get_data_paths(
             root_folder=args.input_dir,
-            subset_list=args.datasets_subset,
+            subset_list=args.data_subset,
             teacher_model=args.teacher_model,
         )
         output_folder = os.path.join(args.output_dir, "hiddengemma")
@@ -574,7 +569,6 @@ def main():
     total_rows = 0
     processed = 0
     for i, item in enumerate(items):
-
         # ------------------------------------------------------------------
         # Resolve ds_name (leaf, e.g. "arguana") and inner_path
         # (e.g. "retrieval/general_retrieval/arguana/data.parquet").
@@ -610,10 +604,10 @@ def main():
             output_folder, middle_folder, inner_path, "data.parquet"
         )
         print(f"Processing [{i + 1}/{len(items)}] {inner_path}")
+
         # ------------------------------------------------------------------
         # Load raw dataset.
         # ------------------------------------------------------------------
-        start0 = time.time()
         if args.f2llm:
             f2llm_prompt = TASK_TO_PROMPT.get(ds_name)
             ds = load_f2llm(sources=[f2llm_source])
@@ -624,8 +618,6 @@ def main():
         else:
             ds = _load_parquet_safe(input_path)
 
-        print(f"dataset loaded in: {(time.time()-start0)/60} min")
-        start = time.time()
         # ------------------------------------------------------------------
         # Prompt building, tokenization, filtering, save.
         # ds_name is the *leaf* name used for task-type lookup and metadata.
@@ -650,18 +642,12 @@ def main():
         p_prompts: list = ds["positive_prompt"]
         neg_lists: list = ds["negative_prompts"]
 
-        print(f"prompt constructed loaded in: {(time.time()-start)/60} min")
-        start = time.time()
         q_ids, p_ids, n_ids, neg_flat = _tokenize_dedup(
             tokenizer, add_special_tokens, ds_name, q_prompts, p_prompts, neg_lists
         )
-        print(f"prompt tokenized in: {(time.time()-start)/60} min")
-        start = time.time()
         ds, q_ids, p_ids, n_ids = _apply_seq_len_filter(
             ds, q_ids, p_ids, n_ids, args.max_seq_len, ds_name
         )
-        print(f"long sentences pruned in: {(time.time()-start)/60} min")
-
         n = _finalize_and_save(
             ds,
             output_path,
@@ -681,7 +667,6 @@ def main():
     print(
         f"\nDone. Processed {processed}/{len(items)} datasets, "
         f"total rows saved: {total_rows:,}"
-        f"time spent {(time.time()-start)/60} min"
     )
 
 
