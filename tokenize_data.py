@@ -460,7 +460,7 @@ def get_f2llm_paths(subset_list):
     receive an instruction template and are silently skipped).
     """
     all_sources = get_f2llm_sources()
-
+    print(all_sources)
     # Check that our naming convention matches the dataset's known source names.
     set_all_f2llm = set(TRANSLATE_F2LLM_NAME[task] for task in all_sources)
     set_known_f2llm_prompts = set(TASK_TO_PROMPT.keys())
