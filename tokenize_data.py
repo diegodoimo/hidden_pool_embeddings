@@ -55,7 +55,7 @@ F2LLM_SOURCE_TO_NAME_TO_TASK = {
 
 INSTRUCTION_TEMPLATES = {
     "qwen3": (instruction_template_qwen3, False),
-    "embeddinggemma": (instruction_template_embeddinggemma, True)
+    "embeddinggemma": (instruction_template_embeddinggemma, True),
 }
 
 # Columns that the training dataloader actually consumes.  Stripping the raw
@@ -542,7 +542,12 @@ def tokenize_and_save_dataset_batch(
         num_hard_negatives=num_hard_negatives,
         add_special_tokens=add_special_tokens,
     )
-    ds = ds.map(build_tok_fn, batched=True, batch_size=10000, num_proc=num_proc)
+    ds = ds.map(
+        build_tok_fn,
+        batched=True,
+        batch_size=10000,
+        num_proc=num_proc,
+    )
 
     # Collect raw prompt lists for metadata before any filtering.
     query_prompts: list[str] = ds["query_prompt"]
@@ -609,9 +614,7 @@ def _main_f2llm(args):
 
     all_sources = get_f2llm_sources()
     want = set(args.f2llm_sources) if args.f2llm_sources else None
-    sources_to_process = (
-        [s for s in all_sources if want is None or s in want]
-    )
+    sources_to_process = [s for s in all_sources if want is None or s in want]
 
     output_folder = f"f2llm_{args.instruction_template}"
     output_dir = os.path.join(args.output_dir, output_folder)
@@ -803,22 +806,18 @@ def main():
             if args.implementation == "dedup"
             else tokenize_and_save_dataset_batch
         )
-        try:
-            n = tokenize_fn(
-                input_path=input_path,
-                output_path=output_path,
-                ds_name=ds_name,
-                tokenizer=tokenizer,
-                instruction_template=instruction_template,
-                add_special_tokens=add_special_tokens,
-                num_hard_negatives=args.num_hard_negatives,
-                max_seq_len=args.max_seq_len,
-                num_proc=args.num_workers,
-            )
-            total_rows += n
-        except Exception as e:
-            print(f"  ERROR: {e}")
-            raise
+        n = tokenize_fn(
+            input_path=input_path,
+            output_path=output_path,
+            ds_name=ds_name,
+            tokenizer=tokenizer,
+            instruction_template=instruction_template,
+            add_special_tokens=add_special_tokens,
+            num_hard_negatives=args.num_hard_negatives,
+            max_seq_len=args.max_seq_len,
+            num_proc=args.num_workers,
+        )
+        total_rows += n
 
     print(f"\nDone. Total rows saved: {total_rows}")
 

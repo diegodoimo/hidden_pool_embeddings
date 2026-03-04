@@ -34,6 +34,7 @@ from utils.dataloader_helpers import (
 )
 from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLossHardNegatives
 from typing import Callable
+import torch.nn.functional as TF
 from functools import partial
 
 from huggingface_hub import login as hf_login
@@ -143,9 +144,17 @@ class Trainer:
 
         # 3. Move your model to the device
         self.model = self.model.to(self.device)
-        self.model = DDP(self.model, device_ids=[self.local_rank])
-        self.model = torch.compile(self.model)
-        # self.model.compile(mode="reduce-overhead")
+        self.model = DDP(
+            self.model,
+            device_ids=[self.local_rank],
+            static_graph=True,  # cache allreduce schedule (graph never changes)
+            gradient_as_bucket_view=True,  # avoid gradient-to-bucket copy
+        )
+        # NOTE: model is NOT compiled here individually.  Instead, the
+        # entire model-forward + loss is compiled as a single graph in
+        # Trainer.train() so torch.compile can fuse kernels across the
+        # model → loss boundary and compile one unified backward.
+        # self.model = torch.compile(self.model, mode="max-autotune")
         print_memory_consumed(message="memory consumed after loading model")
 
         self.optimizer, self.lr_scheduler = get_scheduler_optimizer(
@@ -232,6 +241,65 @@ class Trainer:
 
         use_hard_negatives = isinstance(loss_fn, EmbeddingGemmaLossHardNegatives)
 
+        # -----------------------------------------------------------------
+        # Compile model + loss as ONE graph so torch.compile can fuse
+        # kernels across the model-output → loss boundary and produce a
+        # single optimised backward.  Two variants are defined (with /
+        # without hard negatives) so no Python-level branching appears
+        # inside the compiled region.
+        # -----------------------------------------------------------------
+        model = self.model  # captured by the closures below
+
+        if use_hard_negatives:
+
+            def _step(
+                query_inputs,
+                query_mask,
+                all_doc_inputs,
+                all_doc_mask,
+                doc_ids,
+                query_ids,
+                num_neg,
+            ):
+                B = query_inputs.shape[0]
+                query_emb = model(input_ids=query_inputs, attention_mask=query_mask)
+                all_doc_emb = model(
+                    input_ids=all_doc_inputs, attention_mask=all_doc_mask
+                )
+                doc_emb = all_doc_emb[:B]
+                neg_emb = all_doc_emb[B:].view(B, num_neg, -1)
+                return loss_fn(
+                    query_embeddings=query_emb,
+                    doc_embeddings=doc_emb,
+                    hard_neg_embeddings=neg_emb,
+                    doc_ids=doc_ids,
+                    query_ids=query_ids,
+                )
+
+        else:
+
+            def _step(
+                query_inputs,
+                query_mask,
+                all_doc_inputs,
+                all_doc_mask,
+                doc_ids,
+                query_ids,
+                num_neg,
+            ):
+                B = query_inputs.shape[0]
+                query_emb = model(input_ids=query_inputs, attention_mask=query_mask)
+                doc_emb = model(
+                    input_ids=all_doc_inputs[:B], attention_mask=all_doc_mask[:B]
+                )
+                return loss_fn(
+                    query_embeddings=query_emb,
+                    doc_embeddings=doc_emb,
+                    doc_ids=doc_ids,
+                )
+
+        compiled_step = torch.compile(_step, mode="max-autotune")
+
         start = time.time()
         for epoch in range(args.num_train_epochs):
 
@@ -243,13 +311,17 @@ class Trainer:
             if hasattr(train_loader.sampler, "set_epoch"):
                 train_loader.sampler.set_epoch(epoch)
 
-            # --- OLD: synchronous iteration with blocking .to(device) ---
+            # --- Non-blocking H2D transfer (overlaps with previous step's compute) ---
             for index, batch in enumerate(train_loader):
                 batch = {
-                    key: val.to(self.device) if isinstance(val, torch.Tensor) else val
+                    key: (
+                        val.to(self.device, non_blocking=True)
+                        if isinstance(val, torch.Tensor)
+                        else val
+                    )
                     for key, val in batch.items()
                 }
-                # --- END OLD ---
+                # --- END H2D ---
 
                 # prefetcher = CudaDataPrefetcher(train_loader, self.device)
                 # batch = prefetcher.next()
@@ -264,38 +336,45 @@ class Trainer:
                 query_ids = batch["query_ids"]
                 num_neg = batch["num_hard_negatives"]
 
-                B = query_inputs.shape[0]
-
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-
-                    query_embeddings = self.model(
-                        input_ids=query_inputs, attention_mask=query_mask
+                    loss = compiled_step(
+                        query_inputs,
+                        query_mask,
+                        all_doc_inputs,
+                        all_doc_mask,
+                        doc_ids,
+                        query_ids,
+                        num_neg,
                     )
 
-                    if use_hard_negatives:
-                        all_doc_embeddings = self.model(
-                            input_ids=all_doc_inputs, attention_mask=all_doc_mask
-                        )
-                        doc_embeddings = all_doc_embeddings[:B]
-                        neg_embeddings = all_doc_embeddings[B:].view(B, num_neg, -1)
-
-                        loss = loss_fn(
-                            query_embeddings=query_embeddings,
-                            doc_embeddings=doc_embeddings,
-                            hard_neg_embeddings=neg_embeddings,
-                            doc_ids=doc_ids,
-                            query_ids=query_ids,
-                        )
-                    else:
-                        doc_embeddings = self.model(
-                            input_ids=all_doc_inputs[:B],
-                            attention_mask=all_doc_mask[:B],
-                        )
-                        loss = loss_fn(
-                            query_embeddings=query_embeddings,
-                            doc_embeddings=doc_embeddings,
-                            doc_ids=doc_ids,
-                        )
+                    # # --- OLD: separate model forward + eager loss ---
+                    # B = query_inputs.shape[0]
+                    # query_embeddings = self.model(
+                    #     input_ids=query_inputs, attention_mask=query_mask
+                    # )
+                    # if use_hard_negatives:
+                    #     all_doc_embeddings = self.model(
+                    #         input_ids=all_doc_inputs, attention_mask=all_doc_mask
+                    #     )
+                    #     doc_embeddings = all_doc_embeddings[:B]
+                    #     neg_embeddings = all_doc_embeddings[B:].view(B, num_neg, -1)
+                    #     loss = loss_fn(
+                    #         query_embeddings=query_embeddings,
+                    #         doc_embeddings=doc_embeddings,
+                    #         hard_neg_embeddings=neg_embeddings,
+                    #         doc_ids=doc_ids,
+                    #         query_ids=query_ids,
+                    #     )
+                    # else:
+                    #     doc_embeddings = self.model(
+                    #         input_ids=all_doc_inputs[:B],
+                    #         attention_mask=all_doc_mask[:B],
+                    #     )
+                    #     loss = loss_fn(
+                    #         query_embeddings=query_embeddings,
+                    #         doc_embeddings=doc_embeddings,
+                    #         doc_ids=doc_ids,
+                    #     )
 
                 loss.backward()
                 total_loss += loss.detach().float()
@@ -596,12 +675,16 @@ def main():
         max_samples=1_000_000,
     )
 
-    # Initialize loss and optimizer
+    # Initialize loss (not compiled here; model+loss are compiled as one
+    # graph inside Trainer.train()).
     loss_fn = EmbeddingGemmaLossHardNegatives(
         temperature=0.07, num_hard_negatives=args.num_hard_negatives
     )
     if WORLD_SIZE > 1 and args.distributed_loss:
         loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
+
+    # Compile loss standalone (alternative to unified model+loss compilation):
+    # loss_fn = torch.compile(loss_fn, mode="max-autotune")
 
     dist.barrier()
 

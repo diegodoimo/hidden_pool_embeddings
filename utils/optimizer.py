@@ -53,6 +53,7 @@ def get_scheduler_optimizer(
         optimizer_grouped_parameters,
         lr=args.learning_rate,
         betas=(0.9, 0.999),
+        fused=True,  # single multi-tensor CUDA kernel instead of per-param launches
     )
 
     num_update_steps_per_epoch = math.ceil(total_steps / args.gradient_accumulation_steps)
