@@ -44,6 +44,8 @@ from download_data import get_f2llm_sources, load_f2llm
 from datasets import Dataset
 
 
+datasets = get_f2llm_sources()
+
 # Build a per-dataset-name → canonical inner path lookup from the full training
 # data manifest.  Keys are leaf dataset names (e.g. "arguana"); values are the
 # full inner path including task type and retrieval subtype when applicable
