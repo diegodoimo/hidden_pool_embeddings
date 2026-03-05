@@ -303,7 +303,7 @@ def from_one_hf_dataset(
 
     assert set(positive_ids).issubset(
         set(unique_positive_ids)
-    ), "filtered qrels contain positive IDs not in corpus"
+    ), "filtered qrels contain positive IDs  in corpus"
 
     dist.barrier()
     if rank == 0 and verbose:

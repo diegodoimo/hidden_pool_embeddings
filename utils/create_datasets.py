@@ -20,6 +20,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
 
+
 # taken from embeddinggemma
 # https://github.com/huggingface/transformers/blob/bdee0889714e9cb3e53d3b1b2a626919479d356c/src/transformers/models/gemma3/convert_gemma3_weights.py#L700C1-L715C10
 # TASK_PROMPTS = {
@@ -240,7 +241,7 @@ def instruction_template_qwen3(prompt_type, task_metadata, text, title="") -> st
         else:
             prompt = f"Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:{text.strip()}"
 
-    elif prompt_type == PromptType.document
+    elif prompt_type == PromptType.document:
 
         if len(title) > 0:
             prompt = f"{title} {text.strip()}"
@@ -454,7 +455,6 @@ def _build_prompt_text(
             for text in rows["text"]
         ]
 
-
     # we use the dafault add_special_tokens = True, tokenizer.encode do not add the special token
     # tokens = [tokenizer.encode(prompt) + [eot_id] for prompt in text_prompts]
 
@@ -472,6 +472,7 @@ def _build_prompt_text(
         "text": rows["text"],
     }
     return new_rows
+
 
 def _build_prompts_hard_negatives_batch(
     examples,
@@ -727,7 +728,6 @@ def _build_and_tokenize_hard_negatives_batch(
     negative_token_ids) that the fast-path in collate_fn_with_hard_negatives
     consumes directly.
     """
-    from mteb.types import PromptType
 
     batch_size = len(examples["query_text"])
     eot_id = tokenizer.pad_token_id

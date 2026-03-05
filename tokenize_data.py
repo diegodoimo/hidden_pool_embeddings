@@ -720,7 +720,7 @@ def main():
         if args.f2llm:
             f2llm_prompt = TASK_TO_PROMPT.get(ds_name)
             ds = load_f2llm(sources=[f2llm_source])
-
+            start0 = time.time()
             # Step 1: strip F2LLM instruct-prefix from queries via parallel map.
             convert_fn = partial(
                 _convert_f2llm_batch, f2llm_prompt, args.num_hard_negatives
@@ -732,11 +732,14 @@ def main():
                 num_proc=args.num_workers,
                 remove_columns=ds.column_names,
             )
+            print("converting f2llm", (time.time() - start0) / 60)
+            start0 = time.time()
 
             # Step 2: assign query_id / positive_id via fast pandas deduplication.
             # Same-text queries / positives across the whole source receive the
             # same ID, consistent with the hard-negative parquet convention.
             ds = _assign_dedup_ids(ds)
+            print("assign ids", (time.time() - start0) / 60)
         else:
             ds = _load_parquet_safe(input_path)
 
