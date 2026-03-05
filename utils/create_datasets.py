@@ -19,6 +19,7 @@ from tasks import NAME_TO_TASK_TYPE
 import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
+from mteb.types import PromptType
 
 
 # taken from embeddinggemma
@@ -432,11 +433,9 @@ def _remove_long_sequences(rows, tokenizer, max_length):
 
 def _build_prompt_text(
     rows,
-    tokenizer,
     instruction_template,
     prompt_type,
     task_metadata,
-    eot_id,
 ):
 
     # at this stage we have {"id": [id1, id2, id3, ...], "text": [text1, text2, text3, ...], }
@@ -480,7 +479,6 @@ def _build_prompts_hard_negatives_batch(
     instruction_template,
     task_metadata,
     num_hard_negatives,
-    build_prompt=_build_prompt_text,
 ):
     """Build prompts for (query, positive, negatives) using create_datasets._build_prompt.
 
@@ -494,13 +492,11 @@ def _build_prompts_hard_negatives_batch(
         "text": examples["query_text"],
         "id": examples.get("query_id", [str(i) for i in range(batch_size)]),
     }
-    query_result = build_prompt(
+    query_result = _build_prompt_text(
         q_rows,
-        tokenizer,
         instruction_template,
         PromptType.query,
         task_metadata,
-        eot_id,
     )
     query_prompts = query_result["prompt"]
     total_length = [len(q) for q in query_prompts]
@@ -514,13 +510,11 @@ def _build_prompts_hard_negatives_batch(
         "id": examples["positive_id"],
         "title": pos_titles,
     }
-    pos_result = build_prompt(
+    pos_result = _build_prompt_text(
         p_rows,
-        tokenizer,
         instruction_template,
         PromptType.document,
         task_metadata,
-        eot_id,
     )
     positive_prompts = pos_result["prompt"]
 
@@ -542,13 +536,11 @@ def _build_prompts_hard_negatives_batch(
         all_neg_titles.extend(neg_titles)
 
     n_rows = {"text": all_neg_texts, "id": all_neg_ids, "title": all_neg_titles}
-    neg_result = build_prompt(
+    neg_result = _build_prompt_text(
         n_rows,
-        tokenizer,
         instruction_template,
         PromptType.document,
         task_metadata,
-        eot_id,
     )
     neg_prompts_flat = neg_result["prompt"]
     # Unflatten
@@ -739,11 +731,9 @@ def _build_and_tokenize_hard_negatives_batch(
     }
     query_result = _build_prompt_text(
         q_rows,
-        tokenizer,
         instruction_template,
         PromptType.query,
         task_metadata,
-        eot_id,
     )
     query_prompts = query_result["prompt"]
     total_length = [len(q) for q in query_prompts]
@@ -758,11 +748,9 @@ def _build_and_tokenize_hard_negatives_batch(
     }
     pos_result = _build_prompt_text(
         p_rows,
-        tokenizer,
         instruction_template,
         PromptType.document,
         task_metadata,
-        eot_id,
     )
     positive_prompts = pos_result["prompt"]
     total_length = [len(p) + l for p, l in zip(positive_prompts, total_length)]
@@ -782,11 +770,9 @@ def _build_and_tokenize_hard_negatives_batch(
     n_rows = {"text": all_neg_texts, "id": all_neg_ids, "title": all_neg_titles}
     neg_result = _build_prompt_text(
         n_rows,
-        tokenizer,
         instruction_template,
         PromptType.document,
         task_metadata,
-        eot_id,
     )
     neg_prompts_flat = neg_result["prompt"]
 
@@ -824,6 +810,138 @@ def _build_and_tokenize_hard_negatives_batch(
     )
 
     # Unflatten negative token IDs
+    neg_token_ids: list[list[list[int]]] = []
+    idx = 0
+    for neg_list in negative_prompts:
+        count = len(neg_list)
+        neg_token_ids.append(flat_neg_token_ids[idx : idx + count])
+        idx += count
+
+    return {
+        "query_prompt": query_prompts,
+        "positive_prompt": positive_prompts,
+        "negative_prompts": negative_prompts,
+        "total_length": total_length,
+        "query_token_ids": query_token_ids,
+        "positive_token_ids": pos_token_ids,
+        "negative_token_ids": neg_token_ids,
+    }
+
+
+def _build_and_tokenize_hard_negatives_batch_fast(
+    examples,
+    tokenizer,
+    instruction_template,
+    task_metadata,
+    num_hard_negatives,
+    add_special_tokens=True,
+):
+    """Optimised drop-in replacement for _build_and_tokenize_hard_negatives_batch.
+
+    Identical inputs / outputs; faster due to four targeted changes:
+
+    PROMPT BUILDING
+    ---------------
+    OPT-1  Inlined _build_prompt_text (×3 call sites eliminated).
+           The helper created an intermediate dict, did a ``rows.get("title")``
+           branch, and returned another dict — all just to run a list
+           comprehension.  Inlining removes that overhead entirely.
+
+    OPT-2  neg_titles_col hoisted out of the negative loop.
+           The original called ``examples.get("negative_title", None)`` on every
+           iteration of the batch loop (batch_size times).  Hoisted once before
+           the loop.
+
+    OPT-3  Single pass over negatives (flattenˆ+ˆnested+ˆlength).
+           The original required two separate passes:
+             pass 1 — flatten text/ids/titles, call _build_prompt_text, get flat prompts
+             pass 2 — un-flatten prompts back into nested list, compute neg_length
+           Now one loop builds negative_prompts (nested), neg_prompts_flat, and
+           neg_length simultaneously, avoiding all intermediate lists.
+
+    OPT-4  total_length computed in one comprehension (was three incremental steps).
+
+    TOKENIZATION
+    ------------
+    OPT-5  Single tokenizer call instead of three separate calls.
+           The original called tokenizer() once each for queries, positives, and
+           negatives.  Each call pays the Python↔Rust bridge crossing, thread-pool
+           initialization, and BatchEncoding allocation overhead.  Concatenating all
+           prompts into one list pays that overhead once.
+
+    OPT-6  Direct Rust encode_batch instead of PreTrainedTokenizerFast.__call__.
+           tokenizer._tokenizer.encode_batch() bypasses the Python-level
+           BatchEncoding wrapper, padding / attention-mask construction, and all
+           other __call__ machinery that is redundant here (padding is done later
+           by _fast_pad in the collate_fn).  It also releases the GIL and uses
+           the Rust rayon thread pool to distribute work across all CPU cores.
+    """
+
+    batch_size = len(examples["query_text"])
+
+    # OPT-1: build query prompts inline — no intermediate dict, no helper call
+    query_prompts: list[str] = [
+        instruction_template(PromptType.query, task_metadata, text)
+        for text in examples["query_text"]
+    ]
+
+    # OPT-1: build positive prompts inline
+    pos_titles = examples.get("positive_title")
+    if pos_titles and any(pos_titles):
+        positive_prompts: list[str] = [
+            instruction_template(PromptType.document, task_metadata, text, title)
+            for text, title in zip(examples["positive_text"], pos_titles)
+        ]
+    else:
+        positive_prompts = [
+            instruction_template(PromptType.document, task_metadata, text)
+            for text in examples["positive_text"]
+        ]
+
+    # OPT-2 + OPT-3: hoist neg_titles_col; build nested + flat + lengths in one pass
+    neg_titles_col = examples.get("negative_title")
+    negative_prompts: list[list[str]] = []
+    neg_prompts_flat: list[str] = []
+    neg_length: list[int] = []
+    for i in range(batch_size):
+        neg_texts = examples["negative_text"][i][:num_hard_negatives]
+        if neg_titles_col and neg_titles_col[i]:
+            row_prompts = [
+                instruction_template(PromptType.document, task_metadata, t, ti)
+                for t, ti in zip(neg_texts, neg_titles_col[i][:num_hard_negatives])
+            ]
+        else:
+            row_prompts = [
+                instruction_template(PromptType.document, task_metadata, t)
+                for t in neg_texts
+            ]
+        negative_prompts.append(row_prompts)
+        neg_prompts_flat.extend(row_prompts)
+        neg_length.append(sum(len(p) for p in row_prompts))
+
+    # OPT-4: total_length in one comprehension instead of three incremental steps
+    total_length = [
+        len(q) + len(p) + nl
+        for q, p, nl in zip(query_prompts, positive_prompts, neg_length)
+    ]
+
+    # OPT-5 + OPT-6: one encode_batch call via the low-level Rust tokenizer.
+    # All prompts (queries + positives + flat negatives) are concatenated so the
+    # Rust rayon pool distributes work optimally; the Python/BatchEncoding wrapper
+    # overhead is paid only once instead of three times.
+    n_queries = len(query_prompts)
+    n_positives = len(positive_prompts)
+    all_prompts = query_prompts + positive_prompts + neg_prompts_flat
+    encodings = tokenizer._tokenizer.encode_batch(
+        all_prompts, add_special_tokens=add_special_tokens
+    )
+    all_token_ids = [enc.ids for enc in encodings]
+
+    query_token_ids = all_token_ids[:n_queries]
+    pos_token_ids = all_token_ids[n_queries : n_queries + n_positives]
+    flat_neg_token_ids = all_token_ids[n_queries + n_positives :]
+
+    # Unflatten negative token IDs (mirrors the nested structure of negative_prompts)
     neg_token_ids: list[list[list[int]]] = []
     idx = 0
     for neg_list in negative_prompts:

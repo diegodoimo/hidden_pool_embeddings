@@ -351,7 +351,7 @@ def _strip_f2llm_prompt(text: str, prompt: str) -> str:
 
 
 def _convert_f2llm_batch(
-    batch: dict, f2llm_prompt: str, num_hard_negatives: int
+    f2llm_prompt: str, num_hard_negatives: int, batch: dict,
 ) -> dict:
     """Step 1 for F2LLM: strip the instruct-prefix from queries, reshape negatives.
 
