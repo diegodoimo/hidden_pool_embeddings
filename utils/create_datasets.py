@@ -17,7 +17,8 @@ import mteb
 from tasks import NAME_TO_TASK_TYPE
 
 import pandas as pd
-
+import pyarrow as pa
+import pyarrow.compute as pc
 
 # taken from embeddinggemma
 # https://github.com/huggingface/transformers/blob/bdee0889714e9cb3e53d3b1b2a626919479d356c/src/transformers/models/gemma3/convert_gemma3_weights.py#L700C1-L715C10
@@ -239,14 +240,12 @@ def instruction_template_qwen3(prompt_type, task_metadata, text, title="") -> st
         else:
             prompt = f"Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:{text.strip()}"
 
-    elif prompt_type == PromptType.document:
-
-        # title = row.get("title") or ""  # Use .get and default to empty string
+    elif prompt_type == PromptType.document
 
         if len(title) > 0:
             prompt = f"{title} {text.strip()}"
         else:
-            prompt = text.strip()  # Just return the text if no title
+            prompt = text.strip()
 
     return prompt
 
@@ -349,8 +348,6 @@ def filter_qrels_by_length(
 
     # Use PyArrow compute to filter entirely in C++ — no Python string
     # materialisation for 14M rows.
-    import pyarrow as pa
-    import pyarrow.compute as pc
 
     arrow_table = qrels_dataset.data.table
 
@@ -432,7 +429,7 @@ def _remove_long_sequences(rows, tokenizer, max_length):
     return keep_mask.tolist(), removed_long_ids, removed_empty_ids
 
 
-def _build_prompt(
+def _build_prompt_text(
     rows,
     tokenizer,
     instruction_template,
@@ -456,6 +453,8 @@ def _build_prompt(
             instruction_template(prompt_type, task_metadata, text)
             for text in rows["text"]
         ]
+
+
     # we use the dafault add_special_tokens = True, tokenizer.encode do not add the special token
     # tokens = [tokenizer.encode(prompt) + [eot_id] for prompt in text_prompts]
 
@@ -474,13 +473,13 @@ def _build_prompt(
     }
     return new_rows
 
-
 def _build_prompts_hard_negatives_batch(
     examples,
     tokenizer,
     instruction_template,
     task_metadata,
     num_hard_negatives,
+    build_prompt=_build_prompt_text,
 ):
     """Build prompts for (query, positive, negatives) using create_datasets._build_prompt.
 
@@ -494,7 +493,7 @@ def _build_prompts_hard_negatives_batch(
         "text": examples["query_text"],
         "id": examples.get("query_id", [str(i) for i in range(batch_size)]),
     }
-    query_result = _build_prompt(
+    query_result = build_prompt(
         q_rows,
         tokenizer,
         instruction_template,
@@ -514,7 +513,7 @@ def _build_prompts_hard_negatives_batch(
         "id": examples["positive_id"],
         "title": pos_titles,
     }
-    pos_result = _build_prompt(
+    pos_result = build_prompt(
         p_rows,
         tokenizer,
         instruction_template,
@@ -542,7 +541,7 @@ def _build_prompts_hard_negatives_batch(
         all_neg_titles.extend(neg_titles)
 
     n_rows = {"text": all_neg_texts, "id": all_neg_ids, "title": all_neg_titles}
-    neg_result = _build_prompt(
+    neg_result = build_prompt(
         n_rows,
         tokenizer,
         instruction_template,
@@ -609,7 +608,7 @@ def create_dataset(
     start = time.time()
 
     input_to_dict = partial(
-        _build_prompt,
+        _build_prompt_text,
         tokenizer=tokenizer,
         instruction_template=instruction_template,
         prompt_type=prompt_type,
@@ -738,7 +737,7 @@ def _build_and_tokenize_hard_negatives_batch(
         "text": examples["query_text"],
         "id": examples.get("query_id", [str(i) for i in range(batch_size)]),
     }
-    query_result = _build_prompt(
+    query_result = _build_prompt_text(
         q_rows,
         tokenizer,
         instruction_template,
@@ -757,7 +756,7 @@ def _build_and_tokenize_hard_negatives_batch(
         "id": examples["positive_id"],
         "title": pos_titles,
     }
-    pos_result = _build_prompt(
+    pos_result = _build_prompt_text(
         p_rows,
         tokenizer,
         instruction_template,
@@ -781,7 +780,7 @@ def _build_and_tokenize_hard_negatives_batch(
         all_neg_titles.extend(neg_titles)
 
     n_rows = {"text": all_neg_texts, "id": all_neg_ids, "title": all_neg_titles}
-    neg_result = _build_prompt(
+    neg_result = _build_prompt_text(
         n_rows,
         tokenizer,
         instruction_template,
@@ -1060,7 +1059,6 @@ def create_pretokenized_hard_negatives_datasets(
     start = time.time()
     for i, path in enumerate(parquet_files):
 
-
         dataset_name = _dataset_name_from_path(path)
         task_metadata = TASK_TYPE_TO_TASK_METADATA[NAME_TO_TASK_TYPE[dataset_name]]
         ds_name = os.path.relpath(os.path.dirname(path), base_dir)
@@ -1127,7 +1125,6 @@ def create_pretokenized_hard_negatives_datasets(
         if rank == 0:
             print(f"time required: {time.time() - start}")
         start = time.time()
-
 
     combined = concatenate_datasets(all_datasets)
 

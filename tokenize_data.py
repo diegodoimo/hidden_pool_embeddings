@@ -25,10 +25,12 @@ from collections import Counter
 from functools import partial
 from typing import Optional
 
+import pandas as pd
 from transformers import AutoTokenizer
 
 from tasks import NAME_TO_TASK_TYPE, TRANSLATE_F2LLM_NAME
 from tasks.f2llm_prompts import TASK_TO_PROMPT
+from tasks.retrieval_loaders import deduplicate
 from utils.create_datasets import (
     FULL_TRAIN_DATA,
     TASK_TYPE_TO_TASK_METADATA,
@@ -40,9 +42,14 @@ from utils.create_datasets import (
 )
 
 """Tokenize F2LLM datasets from HF cache."""
-from download_data import get_f2llm_sources, load_f2llm
+from utils.load_f2llm_data import get_f2llm_sources, load_f2llm
 from datasets import Dataset
-import time 
+import time
+
+data = load_f2llm()
+
+data[1000000]
+
 
 # Build a per-dataset-name → canonical inner path lookup from the full training
 # data manifest.  Keys are leaf dataset names (e.g. "arguana"); values are the
@@ -337,54 +344,153 @@ def _finalize_and_save(
 def _strip_f2llm_prompt(text: str, prompt: str) -> str:
     """Remove F2LLM prompt template from the start of text if present."""
     if not text or not prompt:
-        return text
+        assert False
     text = text.strip()
     # Try exact prompt prefix (with optional trailing space/newline/punctuation)
-    for prefix in (
-        prompt.strip(),
-        prompt.strip() + " ",
-        prompt.strip() + "\n",
-        "Instruct: " + prompt.strip() + "\nQuery:",
-        "Instruct: " + prompt.strip() + "\nQuery: ",
-        "Instruct: " + prompt.strip() + "\\nQuery:",
-        "Instruct: " + prompt.strip() + "\\nQuery: ",
-    ):
-        if text.startswith(prefix):
-            rest = text[len(prefix) :].strip()
-            return rest if rest else text
-    return text
+    prefix = "Instruct: " + prompt.strip() + "\nQuery:"
+    if text.startswith(prefix):
+        rest = text[len(prefix) :].strip()
+        return rest
+    else:
+        assert False, text
 
 
-def _convert_f2llm_batch(batch: dict, f2llm_prompt: str) -> dict:
-    """Convert F2LLM columns to the standard format, stripping prompt prefixes.
+# def tokenize_batch_f2llm(
+#     batch, prompt, instruction_template, tokenizer, max_num_negatives
+# ):
 
-    Input columns: query, passage, negative_1 … negative_24.
-    Output columns: query_text, positive_text, negative_text, query_id, positive_id.
+#     # Try exact prompt prefix (with optional trailing space/newline/punctuation)
+#     prefix = "Instruct: " + prompt.strip() + "\nQuery:"
+
+#     query_prompts = [
+#         instruction_template(prompt_type, task_metadata, query[len(prefix) :].strip())
+#         for query in batch["query"]
+#     ]
+#     query_tokens = tokenizer(
+#         query_prompts,
+#         add_special_tokens=False,
+#         return_attention_mask=False,
+#     )["input_ids"]
+
+#     positive_prompts = [
+#         instruction_template(prompt_type, task_metadata, positive.strip())
+#         for positive in batch["passage"]
+#     ]
+#     positive_tokens = tokenizer(
+#         positive_tokens,
+#         add_special_tokens=False,
+#         return_attention_mask=False,
+#     )["input_ids"]
+
+#     negative_prompts = [
+#         instruction_template(prompt_type, task_metadata, positive.strip())
+#         for negatives in batch[f"negative_{i}"]
+#         for i in range(max_num_negatives)
+#     ]
+#     negative_tokens = tokenizer(
+#         negative_prompts,
+#         add_special_tokens=False,
+#         return_attention_mask=False,
+#     )["input_ids"]
+
+#     return {
+#         "query_prompt": query_prompts,
+#         "query_token_ids": query_tokens,
+#         "positive_prompt": positive_prompts,
+#         "positive_token_ids": positive_tokens,
+#         "negative_prompts": negative_prompts,
+#         "negative_token_ids": negative_tokens,
+#     }
+
+
+def _convert_f2llm_batch(
+    batch: dict, f2llm_prompt: str, num_hard_negatives: int
+) -> dict:
+    """Step 1 for F2LLM: strip the instruct-prefix from queries, reshape negatives.
+
+    Input columns : query, passage, negative_1 … negative_<N>  (1-indexed).
+    Output columns: query_text, positive_text, negative_text
+                    (negative_text is [batch_size][num_hard_negatives]).
+
+    query_id / positive_id are NOT set here; call _assign_dedup_ids afterwards.
     """
     queries = batch["query"]
     passages = batch["passage"]
-    n = len(queries)
-    stripped_queries, stripped_passages, stripped_negs = [], [], []
-    for i in range(n):
-        q = _strip_f2llm_prompt(queries[i] or "", f2llm_prompt)
-        p = _strip_f2llm_prompt(passages[i] or "", f2llm_prompt)
-        stripped_queries.append(q)
-        stripped_passages.append(p)
-        negs = []
-        for j in range(1, 25):
-            col = f"negative_{j}"
-            if col in batch and i < len(batch[col]):
-                n_text = str(batch[col][i] or "").strip()
-                if n_text:
-                    negs.append(_strip_f2llm_prompt(n_text, f2llm_prompt))
-        stripped_negs.append(negs)
+    batch_size = len(queries)
+
+    prefix = "Instruct: " + f2llm_prompt.strip() + "\nQuery:"
+
+    stripped_queries = [query[len(prefix) :].strip() for query in queries]
+    stripped_passages = list(passages)
+
+    # Outer loop = example index, inner loop = negative slot (1-indexed columns).
+    stripped_negs = [
+        [
+            str(batch[f"negative_{j + 1}"][i] or "").strip()
+            for j in range(num_hard_negatives)
+        ]
+        for i in range(batch_size)
+    ]
+
     return {
         "query_text": stripped_queries,
         "positive_text": stripped_passages,
         "negative_text": stripped_negs,
-        "query_id": [str(k) for k in range(n)],
-        "positive_id": [f"pos_{k}" for k in range(n)],
     }
+
+
+# def _convert_f2llm_batch(
+#     batch: dict, f2llm_prompt: str, num_hard_negatives: int
+# ) -> dict:
+#     """Convert F2LLM columns to the standard format, stripping prompt prefixes.
+
+#     Input columns: query, passage, negative_1 … negative_24.
+#     Output columns: query_text, positive_text, negative_text, query_id, positive_id.
+#     """
+#     queries = batch["query"]
+#     passages = batch["passage"]
+
+#     n = len(queries)
+#     stripped_queries, stripped_passages, stripped_negs = [], [], []
+#     for i in range(n):
+#         q = _strip_f2llm_prompt(queries[i] or "", f2llm_prompt)
+#         p = _strip_f2llm_prompt(passages[i] or "", f2llm_prompt)
+#         stripped_queries.append(q)
+#         stripped_passages.append(p)
+#         negs = []
+#         for j in range(1, num_hard_negatives + 1):
+#             col = f"negative_{j}"
+#             if col in batch and i < len(batch[col]):
+#                 n_text = str(batch[col][i] or "").strip()
+#                 if n_text:
+#                     negs.append(_strip_f2llm_prompt(n_text, f2llm_prompt))
+#         stripped_negs.append(negs)
+#     return {
+#         "query_text": stripped_queries,
+#         "positive_text": stripped_passages,
+#         "negative_text": stripped_negs,
+#         "query_id": [str(k) for k in range(n)],
+#         "positive_id": [f"pos_{k}" for k in range(n)],
+#     }
+
+
+def _assign_dedup_ids(ds) -> "Dataset":
+    """Step 2 for F2LLM: assign query_id and positive_id via fast pandas deduplication.
+
+    Same-text queries/positives receive the same ID (matching the logic used
+    when building hard-negative parquets for the non-F2LLM path).
+    Uses ``tasks.retrieval_loaders.deduplicate`` which is backed by C-optimised
+    pandas hash tables and is significantly faster than a Python loop.
+    """
+    q_series = pd.Series(ds["query_text"])
+    p_series = pd.Series(ds["positive_text"])
+
+    query_ids, *_ = deduplicate(q_series, prefix="query")
+    positive_ids, *_ = deduplicate(p_series, prefix="positive")
+
+    ds = ds.add_column("query_id", query_ids)
+    ds = ds.add_column("positive_id", positive_ids)
+    return ds
 
 
 def tokenize_and_save_dataset_batch(
@@ -419,7 +525,12 @@ def tokenize_and_save_dataset_batch(
         num_hard_negatives=num_hard_negatives,
         add_special_tokens=add_special_tokens,
     )
-    ds = ds.map(build_tok_fn, batched=True, batch_size=10000, num_proc=num_proc)
+    ds = ds.map(
+        build_tok_fn,
+        batched=True,
+        batch_size=10000,
+        num_proc=num_proc,
+    )
 
     # Capture pre-filter prompt lists for metadata, then extract token IDs for filtering.
     q_prompts: list[str] = ds["query_prompt"]
@@ -610,54 +721,61 @@ def main():
             f2llm_prompt = TASK_TO_PROMPT.get(ds_name)
             ds = load_f2llm(sources=[f2llm_source])
 
-            #SHOULD BE PARALLELIZED 
-            converted = _convert_f2llm_batch(
-                {col: ds[col] for col in ds.column_names}, f2llm_prompt
+            # Step 1: strip F2LLM instruct-prefix from queries via parallel map.
+            convert_fn = partial(
+                _convert_f2llm_batch, f2llm_prompt, args.num_hard_negatives
             )
-            ds = Dataset.from_dict(converted)
+            ds = ds.map(
+                convert_fn,
+                batched=True,
+                batch_size=10000,
+                num_proc=args.num_workers,
+                remove_columns=ds.column_names,
+            )
+
+            # Step 2: assign query_id / positive_id via fast pandas deduplication.
+            # Same-text queries / positives across the whole source receive the
+            # same ID, consistent with the hard-negative parquet convention.
+            ds = _assign_dedup_ids(ds)
         else:
             ds = _load_parquet_safe(input_path)
 
-        print(f"dataset loaded in {time.time()-start}")
+        print(f"dataset loaded in {time.time()-start:.1f}s")
         start = time.time()
+
         # ------------------------------------------------------------------
-        # Prompt building, tokenization, filtering, save.
-        # ds_name is the *leaf* name used for task-type lookup and metadata.
+        # Step 3: build prompts AND tokenize in a single Dataset.map() pass.
+        # _build_and_tokenize_hard_negatives_batch combines prompt construction
+        # (formerly _build_prompts_hard_negatives_batch) with tokenization
+        # (formerly the data-collator).  The collate_fn then only needs to pad.
         # ------------------------------------------------------------------
         task_metadata = _get_task_metadata(ds_name)
         n_rows_raw = len(ds)
-        build_fn = partial(
-            _build_prompts_hard_negatives_batch,
+        build_tok_fn = partial(
+            _build_and_tokenize_hard_negatives_batch,
             tokenizer=tokenizer,
             instruction_template=instruction_template,
             task_metadata=task_metadata,
             num_hard_negatives=args.num_hard_negatives,
+            add_special_tokens=add_special_tokens,
         )
         ds = ds.map(
-            build_fn,
+            build_tok_fn,
             batched=True,
             batch_size=10000,
             num_proc=args.num_workers,
         )
+        print(f"prompts built and tokenized in {time.time()-start:.1f}s")
+        start = time.time()
 
+        # Capture pre-filter lists for metadata stats (full dataset, no filtering).
         q_prompts: list = ds["query_prompt"]
         p_prompts: list = ds["positive_prompt"]
-        neg_lists: list = ds["negative_prompts"]
-        print(f"prompt constructed in {time.time()-start}")
-        start = time.time()
+        neg_flat: list = [p for row in ds["negative_prompts"] for p in row]
+        q_ids: list = ds["query_token_ids"]
+        p_ids: list = ds["positive_token_ids"]
+        n_ids: list = ds["negative_token_ids"]
 
-            SHOULD BE PARALLELIZED
-        q_ids, p_ids, n_ids, neg_flat = _tokenize_dedup(
-            tokenizer, add_special_tokens, ds_name, q_prompts, p_prompts, neg_lists
-        )
-        print(f"dataset tokenized in {time.time()-start}")
-        start = time.time()
-        ds, q_ids, p_ids, n_ids = _apply_seq_len_filter(
-            ds, q_ids, p_ids, n_ids, args.max_seq_len, ds_name
-        )
-        print(f"dataset filtered in {time.time()-start}")
-        start = time.time()
-        
         n = _finalize_and_save(
             ds,
             output_path,

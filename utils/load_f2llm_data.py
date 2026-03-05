@@ -65,7 +65,9 @@ def get_f2llm_sources():
     """Return list of F2LLM source names (parquet stems) available in cache."""
     snapshot = _get_f2llm_snapshot_path()
     return sorted(
-        f.replace(".parquet", "") for f in os.listdir(snapshot) if f.endswith(".parquet")
+        f.replace(".parquet", "")
+        for f in os.listdir(snapshot)
+        if f.endswith(".parquet")
     )
 
 
