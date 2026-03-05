@@ -351,7 +351,9 @@ def _strip_f2llm_prompt(text: str, prompt: str) -> str:
 
 
 def _convert_f2llm_batch(
-    f2llm_prompt: str, num_hard_negatives: int, batch: dict,
+    f2llm_prompt: str,
+    num_hard_negatives: int,
+    batch: dict,
 ) -> dict:
     """Step 1 for F2LLM: strip the instruct-prefix from queries, reshape negatives.
 
@@ -405,68 +407,68 @@ def _assign_dedup_ids(ds) -> "Dataset":
     return ds
 
 
-def tokenize_and_save_dataset_batch(
-    input_path: str,
-    output_path: str,
-    ds_name: str,
-    tokenizer,
-    instruction_template,
-    add_special_tokens: bool,
-    num_hard_negatives: int,
-    max_seq_len: Optional[int],
-    num_proc: int = 1,
-) -> int:
-    """Load, tokenize, and save a dataset using HF batched map (no deduplication).
+# def tokenize_and_save_dataset_batch(
+#     input_path: str,
+#     output_path: str,
+#     ds_name: str,
+#     tokenizer,
+#     instruction_template,
+#     add_special_tokens: bool,
+#     num_hard_negatives: int,
+#     max_seq_len: Optional[int],
+#     num_proc: int = 1,
+# ) -> int:
+#     """Load, tokenize, and save a dataset using HF batched map (no deduplication).
 
-    Prompt building and tokenization are merged in a single Dataset.map() call via
-    _build_and_tokenize_hard_negatives_batch.  Best when passage reuse is low (STS,
-    NLI, one-to-one pairs).  For heavy passage reuse (MSMARCO, NQ, …) prefer the
-    dedup variant.
-    """
-    dataset_name = os.path.basename(os.path.dirname(input_path))
-    task_metadata = _get_task_metadata(dataset_name)
+#     Prompt building and tokenization are merged in a single Dataset.map() call via
+#     _build_and_tokenize_hard_negatives_batch.  Best when passage reuse is low (STS,
+#     NLI, one-to-one pairs).  For heavy passage reuse (MSMARCO, NQ, …) prefer the
+#     dedup variant.
+#     """
+#     dataset_name = os.path.basename(os.path.dirname(input_path))
+#     task_metadata = _get_task_metadata(dataset_name)
 
-    ds = _load_parquet_safe(input_path)
-    n_rows_raw = len(ds)
+#     ds = _load_parquet_safe(input_path)
+#     n_rows_raw = len(ds)
 
-    build_tok_fn = partial(
-        _build_and_tokenize_hard_negatives_batch,
-        tokenizer=tokenizer,
-        instruction_template=instruction_template,
-        task_metadata=task_metadata,
-        num_hard_negatives=num_hard_negatives,
-        add_special_tokens=add_special_tokens,
-    )
-    ds = ds.map(
-        build_tok_fn,
-        batched=True,
-        batch_size=10000,
-        num_proc=num_proc,
-    )
+#     build_tok_fn = partial(
+#         _build_and_tokenize_hard_negatives_batch,
+#         tokenizer=tokenizer,
+#         instruction_template=instruction_template,
+#         task_metadata=task_metadata,
+#         num_hard_negatives=num_hard_negatives,
+#         add_special_tokens=add_special_tokens,
+#     )
+#     ds = ds.map(
+#         build_tok_fn,
+#         batched=True,
+#         batch_size=10000,
+#         num_proc=num_proc,
+#     )
 
-    # Capture pre-filter prompt lists for metadata, then extract token IDs for filtering.
-    q_prompts: list[str] = ds["query_prompt"]
-    p_prompts: list[str] = ds["positive_prompt"]
-    neg_flat: list[str] = [p for row in ds["negative_prompts"] for p in row]
-    q_ids: list = ds["query_token_ids"]
-    p_ids: list = ds["positive_token_ids"]
-    n_ids: list = ds["negative_token_ids"]
+#     # Capture pre-filter prompt lists for metadata, then extract token IDs for filtering.
+#     q_prompts: list[str] = ds["query_prompt"]
+#     p_prompts: list[str] = ds["positive_prompt"]
+#     neg_flat: list[str] = [p for row in ds["negative_prompts"] for p in row]
+#     q_ids: list = ds["query_token_ids"]
+#     p_ids: list = ds["positive_token_ids"]
+#     n_ids: list = ds["negative_token_ids"]
 
-    ds, q_ids, p_ids, n_ids = _apply_seq_len_filter(
-        ds, q_ids, p_ids, n_ids, max_seq_len, dataset_name
-    )
-    return _finalize_and_save(
-        ds,
-        output_path,
-        ds_name,
-        n_rows_raw,
-        q_ids,
-        p_ids,
-        n_ids,
-        q_prompts,
-        p_prompts,
-        neg_flat,
-    )
+#     ds, q_ids, p_ids, n_ids = _apply_seq_len_filter(
+#         ds, q_ids, p_ids, n_ids, max_seq_len, dataset_name
+#     )
+#     return _finalize_and_save(
+#         ds,
+#         output_path,
+#         ds_name,
+#         n_rows_raw,
+#         q_ids,
+#         p_ids,
+#         n_ids,
+#         q_prompts,
+#         p_prompts,
+#         neg_flat,
+#     )
 
 
 def get_f2llm_paths(subset_list):
@@ -637,6 +639,7 @@ def main():
             convert_fn = partial(
                 _convert_f2llm_batch, f2llm_prompt, args.num_hard_negatives
             )
+
             ds = ds.map(
                 convert_fn,
                 batched=True,
