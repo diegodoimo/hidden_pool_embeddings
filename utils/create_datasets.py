@@ -240,7 +240,7 @@ def instruction_template_qwen3(prompt_type, task_metadata, text, title="") -> st
         else:
             prompt = f"Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:{text.strip()}"
 
-    elif prompt_type == PromptType.document
+    elif prompt_type == PromptType.document:
 
         if len(title) > 0:
             prompt = f"{title} {text.strip()}"
