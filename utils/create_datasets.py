@@ -19,6 +19,7 @@ from tasks import NAME_TO_TASK_TYPE
 import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
+from mteb.types import PromptType
 
 # taken from embeddinggemma
 # https://github.com/huggingface/transformers/blob/bdee0889714e9cb3e53d3b1b2a626919479d356c/src/transformers/models/gemma3/convert_gemma3_weights.py#L700C1-L715C10
@@ -727,7 +728,7 @@ def _build_and_tokenize_hard_negatives_batch(
     negative_token_ids) that the fast-path in collate_fn_with_hard_negatives
     consumes directly.
     """
-    from mteb.types import PromptType
+    
 
     batch_size = len(examples["query_text"])
     eot_id = tokenizer.pad_token_id
