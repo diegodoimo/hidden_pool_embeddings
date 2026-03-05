@@ -46,11 +46,6 @@ from utils.load_f2llm_data import get_f2llm_sources, load_f2llm
 from datasets import Dataset
 import time
 
-data = load_f2llm()
-
-data[1000000]
-
-
 # Build a per-dataset-name → canonical inner path lookup from the full training
 # data manifest.  Keys are leaf dataset names (e.g. "arguana"); values are the
 # full inner path including task type and retrieval subtype when applicable
@@ -355,54 +350,6 @@ def _strip_f2llm_prompt(text: str, prompt: str) -> str:
         assert False, text
 
 
-# def tokenize_batch_f2llm(
-#     batch, prompt, instruction_template, tokenizer, max_num_negatives
-# ):
-
-#     # Try exact prompt prefix (with optional trailing space/newline/punctuation)
-#     prefix = "Instruct: " + prompt.strip() + "\nQuery:"
-
-#     query_prompts = [
-#         instruction_template(prompt_type, task_metadata, query[len(prefix) :].strip())
-#         for query in batch["query"]
-#     ]
-#     query_tokens = tokenizer(
-#         query_prompts,
-#         add_special_tokens=False,
-#         return_attention_mask=False,
-#     )["input_ids"]
-
-#     positive_prompts = [
-#         instruction_template(prompt_type, task_metadata, positive.strip())
-#         for positive in batch["passage"]
-#     ]
-#     positive_tokens = tokenizer(
-#         positive_tokens,
-#         add_special_tokens=False,
-#         return_attention_mask=False,
-#     )["input_ids"]
-
-#     negative_prompts = [
-#         instruction_template(prompt_type, task_metadata, positive.strip())
-#         for negatives in batch[f"negative_{i}"]
-#         for i in range(max_num_negatives)
-#     ]
-#     negative_tokens = tokenizer(
-#         negative_prompts,
-#         add_special_tokens=False,
-#         return_attention_mask=False,
-#     )["input_ids"]
-
-#     return {
-#         "query_prompt": query_prompts,
-#         "query_token_ids": query_tokens,
-#         "positive_prompt": positive_prompts,
-#         "positive_token_ids": positive_tokens,
-#         "negative_prompts": negative_prompts,
-#         "negative_token_ids": negative_tokens,
-#     }
-
-
 def _convert_f2llm_batch(
     batch: dict, f2llm_prompt: str, num_hard_negatives: int
 ) -> dict:
@@ -437,41 +384,6 @@ def _convert_f2llm_batch(
         "positive_text": stripped_passages,
         "negative_text": stripped_negs,
     }
-
-
-# def _convert_f2llm_batch(
-#     batch: dict, f2llm_prompt: str, num_hard_negatives: int
-# ) -> dict:
-#     """Convert F2LLM columns to the standard format, stripping prompt prefixes.
-
-#     Input columns: query, passage, negative_1 … negative_24.
-#     Output columns: query_text, positive_text, negative_text, query_id, positive_id.
-#     """
-#     queries = batch["query"]
-#     passages = batch["passage"]
-
-#     n = len(queries)
-#     stripped_queries, stripped_passages, stripped_negs = [], [], []
-#     for i in range(n):
-#         q = _strip_f2llm_prompt(queries[i] or "", f2llm_prompt)
-#         p = _strip_f2llm_prompt(passages[i] or "", f2llm_prompt)
-#         stripped_queries.append(q)
-#         stripped_passages.append(p)
-#         negs = []
-#         for j in range(1, num_hard_negatives + 1):
-#             col = f"negative_{j}"
-#             if col in batch and i < len(batch[col]):
-#                 n_text = str(batch[col][i] or "").strip()
-#                 if n_text:
-#                     negs.append(_strip_f2llm_prompt(n_text, f2llm_prompt))
-#         stripped_negs.append(negs)
-#     return {
-#         "query_text": stripped_queries,
-#         "positive_text": stripped_passages,
-#         "negative_text": stripped_negs,
-#         "query_id": [str(k) for k in range(n)],
-#         "positive_id": [f"pos_{k}" for k in range(n)],
-#     }
 
 
 def _assign_dedup_ids(ds) -> "Dataset":
