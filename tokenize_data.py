@@ -37,6 +37,7 @@ from utils.create_datasets import (
     instruction_template_embeddinggemma,
     instruction_template_qwen3,
     _build_and_tokenize_hard_negatives_batch,
+    _build_and_tokenize_hard_negatives_batch_fast,
     _build_prompts_hard_negatives_batch,
     _load_parquet_safe,
 )
@@ -670,7 +671,7 @@ def main():
         task_metadata = _get_task_metadata(ds_name)
         n_rows_raw = len(ds)
         build_tok_fn = partial(
-            _build_and_tokenize_hard_negatives_batch,
+            _build_and_tokenize_hard_negatives_batch_fast,
             tokenizer=tokenizer,
             instruction_template=instruction_template,
             task_metadata=task_metadata,
