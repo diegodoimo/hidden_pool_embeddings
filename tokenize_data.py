@@ -267,8 +267,13 @@ def _apply_seq_len_filter(ds, q_ids, p_ids, n_ids, max_seq_len, label):
     Returns (ds, q_ids, p_ids, n_ids) with offending rows dropped.
     No-op when *max_seq_len* is None.
     """
+    total_length = [
+        len(q) + len(p) + sum(len(n) for n in n_list)
+        for q, p, n_list in zip(q_ids, p_ids, n_ids)
+    ]
+
     if max_seq_len is None:
-        return ds, q_ids, p_ids, n_ids
+        return ds, q_ids, p_ids, n_ids, total_length
 
     n_before = len(ds)
     keep = [
@@ -290,8 +295,7 @@ def _apply_seq_len_filter(ds, q_ids, p_ids, n_ids, max_seq_len, label):
     q_ids = [q_ids[i] for i in keep]
     p_ids = [p_ids[i] for i in keep]
     n_ids = [n_ids[i] for i in keep]
-    
-    total_length = [len(q) + len(p) + sum(len(n) for n in n_list) for q, p, n_list in zip(q_ids, p_ids, n_ids)]
+    total_length = [total_length[i] for i in keep]
 
     return ds, q_ids, p_ids, n_ids, total_length
 
@@ -325,7 +329,13 @@ def _finalize_and_save(
         ds = ds.add_column("negative_token_ids", n_ids)
     if "dataset_name" not in ds.column_names:
         ds = ds.add_column("dataset_name", [ds_name] * len(ds))
-    ds = ds.sort(total_length, reverse=True)
+    # Overwrite any character-based total_length (from _build_prompts_hard_negatives_batch)
+    # with the token-based value computed in _apply_seq_len_filter.
+    if "total_length" in ds.column_names:
+        ds = ds.remove_columns(["total_length"])
+
+    ds = ds.add_column("total_length", total_length)
+    ds = ds.sort("total_length", reverse=True)
     cols_to_remove = [c for c in ds.column_names if c not in _COLS_TO_KEEP]
     if cols_to_remove:
         ds = ds.remove_columns(cols_to_remove)
@@ -506,7 +516,7 @@ def main():
     if "t5gemma-2" in args.tokenizer_path.lower():
         tokenizer_name = "t5gemma-2"
     else:
-        raise ValueError("wrong model name")        
+        raise ValueError("wrong model name")
     if args.num_workers > 1:
         # Prevent Rust tokenizer threads from being forked inside worker processes.
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
