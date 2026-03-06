@@ -1,4 +1,14 @@
-from mteb.types import PromptType
+from enum import Enum
+
+
+# same as mteb
+class PromptType(str, Enum):
+    """Mirrors mteb.types.PromptType – defined locally to avoid the slow mteb import at startup."""
+
+    query = "query"
+    document = "document"
+
+
 from functools import partial
 from datasets import Dataset, concatenate_datasets
 import torch.distributed as dist
@@ -9,17 +19,12 @@ from datasets import disable_progress_bars
 import os
 import glob
 import hashlib
-from typing import List, Dict, Tuple, Optional
+from typing import List, Optional
 from dataclasses import dataclass
 
-from functools import partial
-import mteb
 from tasks import NAME_TO_TASK_TYPE
-
-import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
-from mteb.types import PromptType
 
 
 # taken from embeddinggemma
@@ -194,6 +199,8 @@ def get_eval_tasks(eval_set, task_types=None):
             Valid types: Retrieval, Reranking, Classification, PairClassification, Clustering,
             MultilabelClassification, BitextMining, STS, Summarization, InstructionRetrieval.
     """
+    import mteb  # lazy import: mteb is slow to load; only needed here
+
     if eval_set == "mteb_multilingual_v2":
         benchmark = mteb.get_benchmark("MTEB(Multilingual, v2)")
         tasks = list(benchmark.tasks)
