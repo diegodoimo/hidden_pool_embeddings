@@ -252,6 +252,7 @@ def _tokenize_dedup(
         return_attention_mask=False,
         truncation=False,
     )["input_ids"]
+
     id_map = dict(zip(all_unique, all_ids))
     q_ids = [id_map[p] for p in q_prompts]
     p_ids = [id_map[p] for p in p_prompts]
@@ -595,7 +596,7 @@ def main():
         else:
             ds = _load_parquet_safe(input_path)
 
-        print(f"dataset loaded in {time.time()-start:.1f}s")
+        print(f"dataset loaded in {(time.time()-start)/60:.1f}min")
         start = time.time()
 
         # ------------------------------------------------------------------
@@ -611,73 +612,45 @@ def main():
         task_metadata = _get_task_metadata(ds_name)
         n_rows_raw = len(ds)
 
-        if args.implementation == "dedup":
-            # --- Step 3a: build prompts only (no tokenization) ---
-            build_fn = partial(
-                _build_prompts_hard_negatives_batch,
-                tokenizer=tokenizer,
-                instruction_template=instruction_template,
-                task_metadata=task_metadata,
-                num_hard_negatives=args.num_hard_negatives,
-            )
-            ds = ds.map(
-                build_fn,
-                batched=True,
-                batch_size=10000,
-                num_proc=args.num_workers,
-            )
-            print(f"prompts built in {time.time()-start:.1f}s")
-            start = time.time()
+        # --- Step 3a: build prompts only (no tokenization) ---
+        build_fn = partial(
+            _build_prompts_hard_negatives_batch,
+            tokenizer=tokenizer,
+            instruction_template=instruction_template,
+            task_metadata=task_metadata,
+            num_hard_negatives=args.num_hard_negatives,
+        )
+        ds = ds.map(
+            build_fn,
+            batched=True,
+            batch_size=10000,
+            num_proc=args.num_workers,
+        )
+        print(f"prompts built in {(time.time()-start)/60:.1f}min")
+        start = time.time()
 
-            # Capture pre-filter prompt lists (used for metadata stats).
-            q_prompts: list = ds["query_prompt"]
-            p_prompts: list = ds["positive_prompt"]
-            neg_prompts_lists: list = ds["negative_prompts"]
-            neg_flat: list = [p for row in neg_prompts_lists for p in row]
+        # Capture pre-filter prompt lists (used for metadata stats).
+        q_prompts: list = ds["query_prompt"]
+        p_prompts: list = ds["positive_prompt"]
+        neg_prompts_lists: list = ds["negative_prompts"]
+        neg_flat: list = [p for row in neg_prompts_lists for p in row]
 
-            # --- Step 3b: dedup across the full dataset, tokenize once ---
-            q_ids, p_ids, n_ids, _ = _tokenize_dedup(
-                tokenizer,
-                add_special_tokens,
-                ds_name,
-                q_prompts,
-                p_prompts,
-                neg_prompts_lists,
-            )
-            print(f"dedup tokenization done in {time.time()-start:.1f}s")
-            start = time.time()
+        # --- Step 3b: dedup across the full dataset, tokenize once ---
+        q_ids, p_ids, n_ids, _ = _tokenize_dedup(
+            tokenizer,
+            add_special_tokens,
+            ds_name,
+            q_prompts,
+            p_prompts,
+            neg_prompts_lists,
+        )
+        print(f"dedup tokenization done in {(time.time()-start)/60:.1f}min")
+        start = time.time()
 
-            # Apply optional seq-len filter before saving.
-            ds, q_ids, p_ids, n_ids = _apply_seq_len_filter(
-                ds, q_ids, p_ids, n_ids, args.max_seq_len, ds_name
-            )
-
-        else:
-            # 'batch': build + tokenize in one map pass.
-            build_tok_fn = partial(
-                _build_and_tokenize_hard_negatives_batch_fast,
-                tokenizer=tokenizer,
-                instruction_template=instruction_template,
-                task_metadata=task_metadata,
-                num_hard_negatives=args.num_hard_negatives,
-                add_special_tokens=add_special_tokens,
-            )
-            ds = ds.map(
-                build_tok_fn,
-                batched=True,
-                batch_size=10000,
-                num_proc=args.num_workers,
-            )
-            print(f"prompts built and tokenized in {time.time()-start:.1f}s")
-            start = time.time()
-
-            # Capture pre-filter lists for metadata stats (full dataset, no filtering).
-            q_prompts: list = ds["query_prompt"]
-            p_prompts: list = ds["positive_prompt"]
-            neg_flat: list = [p for row in ds["negative_prompts"] for p in row]
-            q_ids: list = ds["query_token_ids"]
-            p_ids: list = ds["positive_token_ids"]
-            n_ids: list = ds["negative_token_ids"]
+        # Apply optional seq-len filter before saving.
+        ds, q_ids, p_ids, n_ids = _apply_seq_len_filter(
+            ds, q_ids, p_ids, n_ids, args.max_seq_len, ds_name
+        )
 
         n = _finalize_and_save(
             ds,
