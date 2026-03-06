@@ -497,6 +497,9 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(
         args.tokenizer_path, trust_remote_code=True
     )
+
+    if "t5-gemma2" in args.tokenizer_path:
+        tokenizer_name = "t5-gemma2"
     if args.num_workers > 1:
         # Prevent Rust tokenizer threads from being forked inside worker processes.
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -505,7 +508,7 @@ def main():
         # items: list of F2LLM source-name strings (e.g. "arguana", "amazon_qa")
         items = get_f2llm_paths(subset_list=args.data_subset)
         output_folder = os.path.join(args.output_dir, "f2llm")
-        middle_folder = f"qwen3_600m-data_{args.instruction_template}-prompt"
+        middle_folder = f"qwen3_600m-teacher_{args.instruction_template}-prompt-{tokenizer_name}-tok"
     else:
         # items: list of absolute paths to data.parquet files
         items = get_data_paths(
@@ -514,7 +517,7 @@ def main():
             teacher_model=args.teacher_model,
         )
         output_folder = os.path.join(args.output_dir, "hiddengemma")
-        middle_folder = f"{args.teacher_model}-data_{args.instruction_template}-prompt"
+        middle_folder = f"{args.teacher_model}-teacher_{args.instruction_template}-prompt-{tokenizer_name}-tok"
 
     if not items:
         print("No datasets to process. Exiting.")
