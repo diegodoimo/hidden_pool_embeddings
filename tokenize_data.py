@@ -160,6 +160,11 @@ def parse_args():
         default="qwen3_600m",
         help="Name of the teacher-model subfolder inside --input_dir (e.g. qwen3_600m).",
     )
+    parser.add_argument(
+        "--force_recompute",
+        action="store_true",
+        help="Recompute tokenization even when the output file already exists.",
+    )
     args = parser.parse_args()
     return args
 
@@ -582,6 +587,10 @@ def main():
         output_path = os.path.join(
             output_folder, middle_folder, inner_path, "data.parquet"
         )
+        if os.path.isfile(output_path) and not args.force_recompute:
+            print(f"Skipping [{i + 1}/{len(items)}] {inner_path} (output exists)")
+            continue
+
         print(f"Processing [{i + 1}/{len(items)}] {inner_path}")
 
         start = time.time()
@@ -684,6 +693,8 @@ def main():
         total_rows += n
         if n > 0:
             processed += 1
+            
+        print(f"saving done in {(time.time()-start)/60:.1f}min")
 
     print(
         f"\nDone. Processed {processed}/{len(items)} datasets, "

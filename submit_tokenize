@@ -23,7 +23,8 @@ export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
 # Tokenize all F2LLM sources that are in NAME_TO_TASK
 python tokenize_data.py \
     --tokenizer_path google/t5gemma-2-270m-270m \
-    # --f2llm \
+    --f2llm \
+    --force_recompute
     # --data_subset fever \
     # --implementation dedup
 
