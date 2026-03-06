@@ -328,6 +328,8 @@ def _finalize_and_save(
 
     Returns the number of rows saved.
     """
+
+    start = time.time()
     if "query_token_ids" not in ds.column_names:
         ds = ds.add_column("query_token_ids", q_ids)
         ds = ds.add_column("positive_token_ids", p_ids)
@@ -338,14 +340,25 @@ def _finalize_and_save(
     # with the token-based value computed in _apply_seq_len_filter.
     if "total_length" in ds.column_names:
         ds = ds.remove_columns(["total_length"])
-
     ds = ds.add_column("total_length", total_length)
+
+    print(f"building columns: {(time.time() - start)}")
+    start = time.time()
+
     ds = ds.sort("total_length", reverse=True)
+
+    print(f"sorting: {(time.time() - start)}")
+    start = time.time()
+
     cols_to_remove = [c for c in ds.column_names if c not in _COLS_TO_KEEP]
     if cols_to_remove:
         ds = ds.remove_columns(cols_to_remove)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
     ds.to_parquet(output_path)
+
+    print(f"finalizing: {(time.time() - start)}")
+    start = time.time()
     _compute_and_save_metadata(
         output_path=output_path,
         ds_name=ds_name,
@@ -355,6 +368,7 @@ def _finalize_and_save(
         positive_prompts=p_prompts,
         all_neg_flat=neg_flat,
     )
+    print(f"metadata: {(time.time() - start)}")
     return len(ds)
 
 
@@ -692,7 +706,7 @@ def main():
         total_rows += n
         if n > 0:
             processed += 1
-            
+
         print(f"saving done in {(time.time()-start)/60:.1f}min")
 
     print(
