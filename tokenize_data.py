@@ -644,7 +644,7 @@ def main():
             p_prompts,
             neg_prompts_lists,
         )
-        print(f"dedup tokenization done in {(time.time()-start)/60:.1f}min")
+        print(f"tokenization done in {(time.time()-start)/60:.1f}min")
         start = time.time()
 
         # Apply optional seq-len filter before saving.
