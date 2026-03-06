@@ -590,6 +590,7 @@ def main():
 
     total_rows = 0
     processed = 0
+    start0 = time.time()
     for i, item in enumerate(items):
         # ------------------------------------------------------------------
         # Resolve ds_name (leaf, e.g. "arguana") and inner_path
@@ -629,9 +630,8 @@ def main():
             print(f"Skipping [{i + 1}/{len(items)}] {inner_path} (output exists)")
             continue
 
-        print(f"Processing [{i + 1}/{len(items)}] {inner_path}")
-
-        start = time.time()
+        print(f"\nProcessing [{i + 1}/{len(items)}] {inner_path}")
+        t0 = time.time()
         # ------------------------------------------------------------------
         # Load raw dataset.
         # ------------------------------------------------------------------
@@ -657,8 +657,9 @@ def main():
         else:
             ds = _load_parquet_safe(input_path)
 
-        print(f"dataset loaded in {(time.time()-start)/60:.1f}min")
-        start = time.time()
+        t1 = time.time()
+        print(f"dataset loaded in {(t1-t0)/60:.1f}min")
+        
 
         # ------------------------------------------------------------------
         # Step 3: build prompts and tokenize.
@@ -688,8 +689,8 @@ def main():
             num_proc=args.num_workers,
         )
 
-        print(f"prompts built in {(time.time()-start)/60:.1f}min")
-        start = time.time()
+        t2 = time.time()
+        print(f"prompts built in {(t2-t1)/60:.1f}min")
 
         # Capture pre-filter prompt lists (used for metadata stats).
         q_prompts: list = ds["query_prompt"]
@@ -706,8 +707,9 @@ def main():
             p_prompts,
             neg_prompts_lists,
         )
-        print(f"tokenization done in {(time.time()-start)/60:.1f}min")
-        start = time.time()
+
+        t3 = time.time()
+        print(f"tokenization done in {(t3-t2)/60:.1f}min")
 
         # Apply optional seq-len filter before saving.
         ds, q_ids, p_ids, n_ids, total_length = _apply_seq_len_filter(
@@ -731,7 +733,10 @@ def main():
         if n > 0:
             processed += 1
 
-        print(f"saving done in {(time.time()-start)/60:.1f}min")
+        t4 = time.time()
+        print(f"saving done in {(t4-t3)/60:.1f}min")
+        print(f"dataset time {(t4-t0)/60:.1f}min")
+        print(f"total time: {(t4-start0)/60:.1f}min")
 
     print(
         f"\nDone. Processed {processed}/{len(items)} datasets, "
