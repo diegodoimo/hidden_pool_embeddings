@@ -505,7 +505,7 @@ def main():
         # items: list of F2LLM source-name strings (e.g. "arguana", "amazon_qa")
         items = get_f2llm_paths(subset_list=args.data_subset)
         output_folder = os.path.join(args.output_dir, "f2llm")
-        middle_folder = f"qwen3_600m-data_{args.instruction_template}-prompt"
+        middle_folder = f"qwen3_600m-teacher_{args.instruction_template}-prompt-"
     else:
         # items: list of absolute paths to data.parquet files
         items = get_data_paths(

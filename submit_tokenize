@@ -24,6 +24,7 @@ python tokenize_data.py \
     --f2llm \
     --tokenizer_path google/t5gemma-2-270m-270m \
     --data_subset fever \
+    --implementation dedup
 
 # # Limit to specific sources
 # python tokenize_data_script.py --f2llm \
@@ -38,4 +39,3 @@ python tokenize_data.py \
 #     --num_hard_negatives 8 \
 #     --max_seq_len 1024 \
 #     --f2llm_sources arguana squad
-
