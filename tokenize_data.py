@@ -359,7 +359,19 @@ def _finalize_and_save(
             "total_length",
         }
     ]
-    table: pa.Table = ds.data.table.select(base_cols).take(sort_idx)
+    table: pa.Table = ds.data.table.select(base_cols)
+    # Cast string / list<string> cols to large_string variants to avoid
+    # 32-bit offset overflow on large datasets (e.g. bioasq) during take().
+    new_schema_fields = []
+    for field in table.schema:
+        if field.type == pa.utf8():
+            new_schema_fields.append(field.with_type(pa.large_utf8()))
+        elif field.type == pa.list_(pa.utf8()):
+            new_schema_fields.append(field.with_type(pa.list_(pa.large_utf8())))
+        else:
+            new_schema_fields.append(field)
+    table = table.cast(pa.schema(new_schema_fields))
+    table = table.take(sort_idx)
 
     if not has_token_cols:
         table = table.append_column("query_token_ids", pa.array(q_ids))
@@ -392,7 +404,7 @@ def _finalize_and_save(
         positive_prompts=p_prompts,
         all_neg_flat=neg_flat,
     )
-    #print(f"metadata: {(time.time() - start)}")
+    # print(f"metadata: {(time.time() - start)}")
     return n_rows
 
 
@@ -659,7 +671,6 @@ def main():
 
         t1 = time.time()
         print(f"dataset loaded in {(t1-t0)/60:.1f}min")
-        
 
         # ------------------------------------------------------------------
         # Step 3: build prompts and tokenize.
