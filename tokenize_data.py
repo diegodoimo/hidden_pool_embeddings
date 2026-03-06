@@ -303,6 +303,7 @@ def _finalize_and_save(
     q_prompts: list,
     p_prompts: list,
     neg_flat: list,
+    total_length: list,
 ) -> int:
     """Attach token columns (if absent), sort, strip, save parquet + metadata.json.
 
@@ -320,7 +321,7 @@ def _finalize_and_save(
         ds = ds.add_column("negative_token_ids", n_ids)
     if "dataset_name" not in ds.column_names:
         ds = ds.add_column("dataset_name", [ds_name] * len(ds))
-    ds = ds.sort("total_length", reverse=True)
+    ds = ds.sort(total_length, reverse=True)
     cols_to_remove = [c for c in ds.column_names if c not in _COLS_TO_KEEP]
     if cols_to_remove:
         ds = ds.remove_columns(cols_to_remove)
@@ -666,6 +667,7 @@ def main():
             q_prompts,
             p_prompts,
             neg_flat,
+            total_length,
         )
         total_rows += n
         if n > 0:
