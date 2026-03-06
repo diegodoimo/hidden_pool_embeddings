@@ -25,6 +25,8 @@ from collections import Counter
 from functools import partial
 from typing import Optional
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pandas as pd
 from transformers import AutoTokenizer
 
@@ -329,47 +331,69 @@ def _finalize_and_save(
     Returns the number of rows saved.
     """
 
+    n_rows = len(total_length)
+
+    # --- 1. Sort indices once; reorder Python lists ---------------------------
+    # Avoids a separate ds.sort() pass (which copies the whole Arrow table).
     start = time.time()
-    if "query_token_ids" not in ds.column_names:
-        ds = ds.add_column("query_token_ids", q_ids)
-        ds = ds.add_column("positive_token_ids", p_ids)
-        ds = ds.add_column("negative_token_ids", n_ids)
+    sort_idx = sorted(range(n_rows), key=total_length.__getitem__, reverse=True)
+    q_ids = [q_ids[i] for i in sort_idx]
+    p_ids = [p_ids[i] for i in sort_idx]
+    n_ids = [n_ids[i] for i in sort_idx]
+    total_length = [total_length[i] for i in sort_idx]
+
+    # --- 2. Build pyarrow table — O(1) per column append ----------------------
+    # HF add_column/remove_columns each rebuild the full Arrow table; instead
+    # we work on the raw pa.Table directly.  Select + take() is the only copy.
+    has_token_cols = "query_token_ids" in ds.column_names
+    base_cols = [
+        c
+        for c in ds.column_names
+        if c in _COLS_TO_KEEP
+        and c
+        not in {
+            "query_token_ids",
+            "positive_token_ids",
+            "negative_token_ids",
+            "dataset_name",
+            "total_length",
+        }
+    ]
+    table: pa.Table = ds.data.table.select(base_cols).take(sort_idx)
+
+    if not has_token_cols:
+        table = table.append_column("query_token_ids", pa.array(q_ids))
+        table = table.append_column("positive_token_ids", pa.array(p_ids))
+        table = table.append_column("negative_token_ids", pa.array(n_ids))
     if "dataset_name" not in ds.column_names:
-        ds = ds.add_column("dataset_name", [ds_name] * len(ds))
-    # Overwrite any character-based total_length (from _build_prompts_hard_negatives_batch)
-    # with the token-based value computed in _apply_seq_len_filter.
-    if "total_length" in ds.column_names:
-        ds = ds.remove_columns(["total_length"])
-    ds = ds.add_column("total_length", total_length)
+        table = table.append_column(
+            "dataset_name", pa.array([ds_name] * n_rows, type=pa.large_utf8())
+        )
+    # Always use token-based total_length (overrides any char-based column from
+    # _build_prompts_hard_negatives_batch).
+    table = table.append_column("total_length", pa.array(total_length, type=pa.int32()))
 
     print(f"building columns: {(time.time() - start)}")
     start = time.time()
 
-    ds = ds.sort("total_length", reverse=True)
-
-    print(f"sorting: {(time.time() - start)}")
-    start = time.time()
-
-    cols_to_remove = [c for c in ds.column_names if c not in _COLS_TO_KEEP]
-    if cols_to_remove:
-        ds = ds.remove_columns(cols_to_remove)
+    # --- 3. Write to parquet --------------------------------------------------
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-    ds.to_parquet(output_path)
+    pq.write_table(table, output_path, compression="snappy")
 
     print(f"finalizing: {(time.time() - start)}")
     start = time.time()
+
     _compute_and_save_metadata(
         output_path=output_path,
         ds_name=ds_name,
         n_rows_raw=n_rows_raw,
-        rows_saved=len(ds),
+        rows_saved=n_rows,
         query_prompts=q_prompts,
         positive_prompts=p_prompts,
         all_neg_flat=neg_flat,
     )
     print(f"metadata: {(time.time() - start)}")
-    return len(ds)
+    return n_rows
 
 
 def _strip_f2llm_prompt(text: str, prompt: str) -> str:
