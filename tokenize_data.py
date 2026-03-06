@@ -373,15 +373,15 @@ def _finalize_and_save(
     # _build_prompts_hard_negatives_batch).
     table = table.append_column("total_length", pa.array(total_length, type=pa.int32()))
 
-    print(f"building columns: {(time.time() - start)}")
-    start = time.time()
+    # print(f"building columns: {(time.time() - start)}")
+    # start = time.time()
 
     # --- 3. Write to parquet --------------------------------------------------
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     pq.write_table(table, output_path, compression="snappy")
 
-    print(f"finalizing: {(time.time() - start)}")
-    start = time.time()
+    # print(f"finalizing: {(time.time() - start)}")
+    # start = time.time()
 
     _compute_and_save_metadata(
         output_path=output_path,
@@ -392,7 +392,7 @@ def _finalize_and_save(
         positive_prompts=p_prompts,
         all_neg_flat=neg_flat,
     )
-    print(f"metadata: {(time.time() - start)}")
+    #print(f"metadata: {(time.time() - start)}")
     return n_rows
 
 
