@@ -257,6 +257,7 @@ def _tokenize_dedup(
     q_ids = [id_map[p] for p in q_prompts]
     p_ids = [id_map[p] for p in p_prompts]
     n_ids = [[id_map[p] for p in row] for row in neg_prompts_lists]
+
     return q_ids, p_ids, n_ids, all_neg_flat
 
 
@@ -289,7 +290,10 @@ def _apply_seq_len_filter(ds, q_ids, p_ids, n_ids, max_seq_len, label):
     q_ids = [q_ids[i] for i in keep]
     p_ids = [p_ids[i] for i in keep]
     n_ids = [n_ids[i] for i in keep]
-    return ds, q_ids, p_ids, n_ids
+    
+    total_length = [len(q) + len(p) + sum(len(n) for n in n_list) for q, p, n_list in zip(q_ids, p_ids, n_ids)]
+
+    return ds, q_ids, p_ids, n_ids, total_length
 
 
 def _finalize_and_save(
@@ -499,8 +503,10 @@ def main():
         args.tokenizer_path, trust_remote_code=True
     )
 
-    if "t5-gemma2" in args.tokenizer_path:
-        tokenizer_name = "t5-gemma2"
+    if "t5gemma-2" in args.tokenizer_path.lower():
+        tokenizer_name = "t5gemma-2"
+    else:
+        raise ValueError("wrong model name")        
     if args.num_workers > 1:
         # Prevent Rust tokenizer threads from being forked inside worker processes.
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -509,7 +515,7 @@ def main():
         # items: list of F2LLM source-name strings (e.g. "arguana", "amazon_qa")
         items = get_f2llm_paths(subset_list=args.data_subset)
         output_folder = os.path.join(args.output_dir, "f2llm")
-        middle_folder = f"qwen3_600m-teacher_{args.instruction_template}-prompt-{tokenizer_name}-tok"
+        middle_folder = f"qwen3_600m-teacher_{args.instruction_template}-prompt_{tokenizer_name}-tok"
     else:
         # items: list of absolute paths to data.parquet files
         items = get_data_paths(
@@ -576,7 +582,6 @@ def main():
         if args.f2llm:
             f2llm_prompt = TASK_TO_PROMPT.get(ds_name)
             ds = load_f2llm(sources=[f2llm_source])
-            start0 = time.time()
             # Step 1: strip F2LLM instruct-prefix from queries via parallel map.
             convert_fn = partial(
                 _convert_f2llm_batch, f2llm_prompt, args.num_hard_negatives
@@ -589,14 +594,10 @@ def main():
                 num_proc=args.num_workers,
                 remove_columns=ds.column_names,
             )
-            print("converting f2llm", (time.time() - start0) / 60)
-            start0 = time.time()
-
             # Step 2: assign query_id / positive_id via fast pandas deduplication.
             # Same-text queries / positives across the whole source receive the
             # same ID, consistent with the hard-negative parquet convention.
             ds = _assign_dedup_ids(ds)
-            print("assign ids", (time.time() - start0) / 60)
         else:
             ds = _load_parquet_safe(input_path)
 
@@ -630,6 +631,7 @@ def main():
             batch_size=10000,
             num_proc=args.num_workers,
         )
+
         print(f"prompts built in {(time.time()-start)/60:.1f}min")
         start = time.time()
 
@@ -652,7 +654,7 @@ def main():
         start = time.time()
 
         # Apply optional seq-len filter before saving.
-        ds, q_ids, p_ids, n_ids = _apply_seq_len_filter(
+        ds, q_ids, p_ids, n_ids, total_length = _apply_seq_len_filter(
             ds, q_ids, p_ids, n_ids, args.max_seq_len, ds_name
         )
 
