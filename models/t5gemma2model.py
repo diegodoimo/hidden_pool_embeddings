@@ -118,6 +118,7 @@ def load_t5gemma2_encoder(
     cache_dir: str | None = None,
     torch_dtype: torch.dtype | None = None,
     device: str = "cpu",
+    attn_implementation: str = "sdpa",
 ) -> T5Gemma2Encoder:
     """
     Build a ``T5Gemma2Encoder`` and load pretrained text-encoder weights from
@@ -146,6 +147,11 @@ def load_t5gemma2_encoder(
     )
     encoder_config = full_config.encoder  # T5Gemma2EncoderConfig
     eoi_token_index = getattr(full_config, "eoi_token_index", 256_000)
+
+    # Override attention implementation before instantiation so that
+    # T5Gemma2Encoder.__init__ propagates it to text_config.
+    # Default is "sdpa" (fused QKV kernel, no O(L²) HBM materialisation).
+    encoder_config._attn_implementation = attn_implementation
 
     # 2. Instantiate the encoder (random weights).
     encoder = T5Gemma2Encoder(encoder_config, eoi_token_index=eoi_token_index)
@@ -197,6 +203,7 @@ def get_model_t5gemma2_model(
     attention_pooling,
     cls_query_pooling,
     attention_dim,
+    attn_implementation: str = "sdpa",
 ):
     """
     Build a T5Gemma2-based embedding model, mirroring the interface of
@@ -205,6 +212,7 @@ def get_model_t5gemma2_model(
     encoder = load_t5gemma2_encoder(
         model_name_or_path=model_name_or_path,
         torch_dtype=torch.bfloat16,
+        attn_implementation=attn_implementation,
     )
 
     if activation_checkpointing:

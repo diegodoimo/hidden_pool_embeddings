@@ -194,13 +194,15 @@ class LenghtSortedSampler(Sampler[_T_co]):
     ) -> None:
 
         if num_replicas is None:
-            if not dist.is_available():
-                raise RuntimeError("Requires distributed package to be available")
-            num_replicas = dist.get_world_size()
+            if not dist.is_available() or not dist.is_initialized():
+                num_replicas = 1
+            else:
+                num_replicas = dist.get_world_size()
         if rank is None:
-            if not dist.is_available():
-                raise RuntimeError("Requires distributed package to be available")
-            rank = dist.get_rank()
+            if not dist.is_available() or not dist.is_initialized():
+                rank = 0
+            else:
+                rank = dist.get_rank()
         if rank >= num_replicas or rank < 0:
             raise ValueError(
                 f"Invalid rank {rank}, rank should be in the interval [0, {num_replicas - 1}]"
@@ -297,13 +299,15 @@ class DatasetAwareSampler(Sampler[_T_co]):
         seed: int = 0,
     ) -> None:
         if num_replicas is None:
-            if not dist.is_available():
-                raise RuntimeError("Requires distributed package to be available")
-            num_replicas = dist.get_world_size()
+            if not dist.is_available() or not dist.is_initialized():
+                num_replicas = 1
+            else:
+                num_replicas = dist.get_world_size()
         if rank is None:
-            if not dist.is_available():
-                raise RuntimeError("Requires distributed package to be available")
-            rank = dist.get_rank()
+            if not dist.is_available() or not dist.is_initialized():
+                rank = 0
+            else:
+                rank = dist.get_rank()
         if rank >= num_replicas or rank < 0:
             raise ValueError(
                 f"Invalid rank {rank}, rank should be in the interval "

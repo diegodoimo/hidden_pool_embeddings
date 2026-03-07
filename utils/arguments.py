@@ -62,6 +62,15 @@ def parse_args():
     parser.add_argument("--attention_pooling", action="store_true")
     parser.add_argument("--attention_dim", type=int, default=None)
     parser.add_argument("--cls_query_pooling", action="store_true")
+    parser.add_argument(
+        "--attn_implementation",
+        type=str,
+        default="sdpa",
+        choices=["eager", "sdpa", "flash_attention_2"],
+        help="Attention kernel: 'eager' (full O(L^2) materialisation), "
+             "'sdpa' (fused PyTorch SDPA), 'flash_attention_2' (FlashAttn2). "
+             "Default: 'sdpa'.",
+    )
 
     parser.add_argument(
         "--negatives_dir",

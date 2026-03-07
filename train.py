@@ -508,6 +508,7 @@ def main():
             attention_pooling=args.attention_pooling,
             cls_query_pooling=args.cls_query_pooling,
             attention_dim=args.attention_dim,
+            attn_implementation=args.attn_implementation,
         )
 
         model_name = "t5gemma2"
