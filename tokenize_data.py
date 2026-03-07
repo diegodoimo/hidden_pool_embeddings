@@ -49,6 +49,7 @@ from datasets import Dataset
 import time
 import warnings
 
+
 def _inner_path_for_dataset(ds_name: str) -> str:
     """Build canonical inner path from NAME_TO_TASK_SUBTASK_PATH.
 
@@ -65,6 +66,7 @@ def _inner_path_for_dataset(ds_name: str) -> str:
 INSTRUCTION_TEMPLATES = {
     "qwen3": (instruction_template_qwen3, False),
     "embeddinggemma": (instruction_template_embeddinggemma, True),
+    "f2llm": (instruction_template_qwen3, False),
 }
 
 # Columns that the training dataloader actually consumes.  Stripping the raw
