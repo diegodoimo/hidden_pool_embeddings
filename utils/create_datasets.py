@@ -1116,7 +1116,7 @@ def create_hard_negatives_datasets(
     return combined
 
 
-def create_pretokenized_hard_negatives_datasets(
+def create_and_tokenize_hard_negatives_datasets(
     base_dir: str,
     num_hard_negatives: int,
     tokenizer,
@@ -1250,6 +1250,69 @@ def create_pretokenized_hard_negatives_datasets(
         if rank == 0:
             print(f"time required: {time.time() - start}")
         start = time.time()
+
+    combined = concatenate_datasets(all_datasets)
+
+    if rank == 0:
+        total_tokens = np.sum(combined["total_length"])
+        print(f"Total training examples: {len(combined)/10**6:.2f}M")
+        print(f"Total tokens: {total_tokens/10**9:.2f}B")
+
+    return combined
+
+
+def create_hard_negatives_datasets_from_pretokenized(
+    base_dir,
+    rank=0,
+    datasets_subset: Optional[List[str]] = None,
+):
+
+    parquet_files = sorted(
+        glob.glob(os.path.join(base_dir, "**", "data.parquet"), recursive=True)
+    )
+
+    if datasets_subset is not None:
+        subset_set = set(datasets_subset)
+        parquet_files = [
+            p
+            for p in parquet_files
+            if os.path.relpath(os.path.dirname(p), base_dir) in subset_set
+        ]
+        if rank == 0:
+            print(
+                f"Restricted to {len(parquet_files)} datasets (subset of {len(datasets_subset)} requested)"
+            )
+
+    # dataset_name = leaf dir (e.g. msmarco), not filename (data.parquet)
+    def _dataset_name_from_path(p):
+        return os.path.basename(os.path.dirname(p))
+
+    assert all(
+        [_dataset_name_from_path(p) in NAME_TO_TASK_TYPE for p in parquet_files]
+    ), "mapping dataset name dataset task not found"
+
+    if rank == 0:
+        print(f"Found {len(parquet_files)} datasets under {base_dir}")
+
+    all_datasets = []
+    midpoint = len(parquet_files) // 2
+    for i, path in enumerate(parquet_files):
+
+        dataset_name = _dataset_name_from_path(path)
+        task_metadata = TASK_TYPE_TO_TASK_METADATA[NAME_TO_TASK_TYPE[dataset_name]]
+
+        ds_name = os.path.relpath(os.path.dirname(path), base_dir)
+
+        if rank == 0:
+            print(f"  Loading {ds_name} {i}/{len(parquet_files)}...")
+
+        if i == midpoint and dist.is_initialized():
+            dist.barrier()
+            if rank == 0:
+                print("  [barrier] ranks synced at dataset midpoint")
+
+        ds = _load_parquet_safe(path)
+        all_datasets.append(ds)
 
     combined = concatenate_datasets(all_datasets)
 

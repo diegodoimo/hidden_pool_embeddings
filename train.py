@@ -23,7 +23,8 @@ from models.t5gemma2model import get_model_t5gemma2_model
 from utils.optimizer import get_scheduler_optimizer
 from utils.create_datasets import (
     create_hard_negatives_datasets,
-    create_pretokenized_hard_negatives_datasets,
+    create_and_tokenize_hard_negatives_datasets,
+    create_hard_negatives_datasets_from_pretokenized,
     QWEN3_600M_DATASET_SUBSET,
     get_eval_tasks,
 )
@@ -566,27 +567,33 @@ def main():
         train_list = QWEN3_600M_DATASET_SUBSET
 
     teacher_model = args.negatives_dir.split("/")[-1]
-    if args.tokenize_dataset:
-        train_dataset = create_pretokenized_hard_negatives_datasets(
-            base_dir=args.negatives_dir,
-            num_hard_negatives=args.num_hard_negatives,
-            tokenizer=tokenizer,
-            instruction_template=instruction_template,
-            add_special_tokens=add_special_tokens,
-            rank=RANK,
-            datasets_subset=train_list,
-            max_seq_len=args.max_seq_len if args.length_strategy == "filter" else None,
-        )
-    else:
-        train_dataset = create_hard_negatives_datasets(
-            base_dir=args.negatives_dir,
-            num_hard_negatives=args.num_hard_negatives,
-            tokenizer=tokenizer,
-            instruction_template=instruction_template,
-            rank=RANK,
-            datasets_subset=train_list,
-            max_seq_len=args.max_seq_len if args.length_strategy == "filter" else None,
-        )
+
+    # if args.tokenize_dataset:
+    #     train_dataset = create_and_tokenize_hard_negatives_datasets(
+    #         base_dir=args.negatives_dir,
+    #         num_hard_negatives=args.num_hard_negatives,
+    #         tokenizer=tokenizer,
+    #         instruction_template=instruction_template,
+    #         add_special_tokens=add_special_tokens,
+    #         rank=RANK,
+    #         datasets_subset=train_list,
+    #         max_seq_len=args.max_seq_len if args.length_strategy == "filter" else None,
+    #     )
+    # else:
+    #     train_dataset = create_hard_negatives_datasets(
+    #         base_dir=args.negatives_dir,
+    #         num_hard_negatives=args.num_hard_negatives,
+    #         tokenizer=tokenizer,
+    #         instruction_template=instruction_template,
+    #         rank=RANK,
+    #         datasets_subset=train_list,
+    #         max_seq_len=args.max_seq_len if args.length_strategy == "filter" else None,
+    #     )
+    train_dataset = create_hard_negatives_datasets_from_pretokenized(
+        base_dir=args.negatives_dir,
+        rank=RANK,
+        datasets_subset=train_list,
+    )
 
     dist.barrier()
     if RANK == 0:
@@ -613,30 +620,27 @@ def main():
             seed=42,
         )
 
-    if args.tokenize_dataset:
-        collate_fn = partial(
-            collate_fn_pretokenized,
-            pad_token_id=tokenizer.pad_token_id,
-            num_hard_negatives=args.num_hard_negatives,
-            padding_side="right",
-            eot_id=eot_id,
-            max_seq_len=(
-                args.max_seq_len if args.length_strategy == "truncate" else None
-            ),
-        )
-    else:
-        collate_fn = partial(
-            collate_fn_with_hard_negatives,
-            pad_token_id=tokenizer.pad_token_id,
-            num_hard_negatives=args.num_hard_negatives,
-            padding_side="right",
-            tokenizer=tokenizer,
-            eot_id=eot_id,
-            add_special_tokens=add_special_tokens,
-            max_seq_len=(
-                args.max_seq_len if args.length_strategy == "truncate" else None
-            ),
-        )
+    # if args.tokenize_dataset:
+    collate_fn = partial(
+        collate_fn_pretokenized,
+        pad_token_id=tokenizer.pad_token_id,
+        num_hard_negatives=args.num_hard_negatives,
+        padding_side="right",
+        eot_id=eot_id,
+    )
+    # else:
+    #     collate_fn = partial(
+    #         collate_fn_with_hard_negatives,
+    #         pad_token_id=tokenizer.pad_token_id,
+    #         num_hard_negatives=args.num_hard_negatives,
+    #         padding_side="right",
+    #         tokenizer=tokenizer,
+    #         eot_id=eot_id,
+    #         add_special_tokens=add_special_tokens,
+    #         max_seq_len=(
+    #             args.max_seq_len if args.length_strategy == "truncate" else None
+    #         ),
+    #     )
 
     # OLD: DataLoader without persistent workers / spawn
     # train_loader = DataLoader(

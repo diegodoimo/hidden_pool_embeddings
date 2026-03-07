@@ -40,7 +40,7 @@ torchrun \
     --tokenize_dataset \
     --out_filename test_speedup_improved_loss \
     --num_hard_negatives 7 \
-    --negatives_dir results/datasets_negatives/qwen3_600m \
+    --negatives_dir results/datasets_tokenized/f2llm/qwen3_600m-teacher_embeddinggemma-prompt_t5gemma-2-tok \
     --model_name_or_path google/t5gemma-2-270m-270m  \
     --length_strategy truncate \
     --batch_strategy grouped \
@@ -59,6 +59,7 @@ torchrun \
     --logging_steps 50 \
     --eval_steps 5 \
     --output_dir "./results/train" \
+    #--negatives_dir results/datasets_negatives/qwen3_600m \
     #--train_subset reduced \
     #--measure_baselines \
     # --eval_only \
