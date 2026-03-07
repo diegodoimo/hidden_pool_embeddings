@@ -1,10 +1,12 @@
 import math
+import random
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor as _ThreadPoolExecutor
 from typing import TypeVar
 
 import torch
 import torch.distributed as dist
+from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Dataset
 from torch.utils.data.sampler import Sampler
 import numpy as np
@@ -19,168 +21,6 @@ _T_co = TypeVar("_T_co", covariant=True)
 # With spawn workers the module is re-imported in each worker, so each worker
 # gets its own 2-thread pool – that is intentional and correct.
 _COLLATE_TOKEN_POOL = _ThreadPoolExecutor(max_workers=2)
-
-# ---------------------------------------------------------------------------
-# Characters-per-token safety factor for pre-text truncation.  A generous
-# factor (8) ensures we never cut too aggressively – worst-case BPE tokens
-# are 1-2 chars (CJK), so 8 covers all scripts with ample margin.
-# ---------------------------------------------------------------------------
-_CHARS_PER_TOKEN_BUDGET = 8
-
-
-def _encode_batch_fast(
-    tokenizer,
-    texts: list[str],
-    add_special_tokens: bool,
-    max_token_len: int | None,
-) -> list[list[int]]:
-    """Tokenise *texts* via the low-level Rust ``encode_batch``.
-
-    Three combined optimisations over ``PreTrainedTokenizerFast.__call__``:
-
-    1. **Pre-truncate text** to ``max_token_len * 8`` characters so the
-       tokeniser never processes throwaway trailing text for very long
-       documents.
-    2. **Direct ``encode_batch``** – bypasses the Python-level
-       ``BatchEncoding`` wrapper, padding / attention-mask construction,
-       and other overhead that is redundant here (padding is handled later
-       by ``_fast_pad``).
-    3. **Single batched call** for all texts (queries + positives +
-       negatives) lets the Rust rayon pool distribute work optimally across
-       all CPU cores, instead of splitting into two thread-pool futures
-       with imbalanced load.
-    """
-    # --- (1) character pre-truncation ---
-    if max_token_len is not None:
-        budget = max_token_len * _CHARS_PER_TOKEN_BUDGET
-        texts = [t[:budget] if len(t) > budget else t for t in texts]
-
-    # --- (2) Rust encode_batch (releases GIL, uses rayon) ---
-    encodings = tokenizer._tokenizer.encode_batch(
-        texts,
-        add_special_tokens=add_special_tokens,
-    )
-
-    # --- (3) extract IDs + token-level truncation ---
-    if max_token_len is not None:
-        return [enc.ids[:max_token_len] for enc in encodings]
-    return [enc.ids for enc in encodings]
-
-
-def _fast_pad(
-    token_lists: list[list[int]],
-    pad_id: int,
-    eot_id: int | None = None,
-    padding_side: str = "right",
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Pad a list of token-id lists into (N, L) tensors without creating N
-    intermediate 1-D torch.Tensors.
-
-    Why numpy instead of pure torch:
-        ``torch.tensor(python_list)`` must traverse Python objects element by
-        element.  NumPy's C layer unpacks a ``list[int]`` directly into a
-        pre-allocated contiguous buffer in one shot, and ``torch.from_numpy``
-        is a zero-copy view — no allocation, no data copy.
-
-    Build the mask positionally (not value-based) so it is correct even when
-    ``pad_id == eot_id``:  a value-based ``padded != pad_id`` would
-    incorrectly mark the EOT token as padding in that case.
-
-    Returns:
-        padded  – LongTensor of shape (N, max_len)
-        mask    – LongTensor of shape (N, max_len), 1 for real tokens, 0 for pad
-    """
-    n = len(token_lists)
-    extra = 1 if eot_id is not None else 0
-    max_len = max(len(s) for s in token_lists) + extra
-    arr = np.full((n, max_len), pad_id, dtype=np.int64)
-    mask_arr = np.zeros((n, max_len), dtype=np.int64)
-    if padding_side == "right":
-        for i, s in enumerate(token_lists):
-            L = len(s)
-            arr[i, :L] = s
-            mask_arr[i, : L + extra] = 1
-            if eot_id is not None:
-                arr[i, L] = eot_id
-    else:  # left padding
-        for i, s in enumerate(token_lists):
-            L = len(s)
-            start = max_len - L - extra
-            arr[i, start : start + L] = s
-            mask_arr[i, start : start + L + extra] = 1
-            if eot_id is not None:
-                arr[i, start + L] = eot_id
-    padded = torch.from_numpy(arr)
-    mask = torch.from_numpy(mask_arr)
-    return padded, mask
-
-
-def _fast_pad_v2(
-    token_lists: list[list[int]],
-    pad_id: int,
-    eot_id: int | None = None,
-    padding_side: str = "right",
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Optimised drop-in replacement for ``_fast_pad``.
-
-    Two additional improvements over ``_fast_pad``:
-
-    1. **``np.ones`` + zero the padding tail** – initialising to ones and
-       then zeroing only the trailing (or leading) padding writes
-       ``max_len - L`` elements per row instead of ``L`` elements.  For
-       length-sorted batches (the common training case) the tail is nearly
-       empty, so mask construction costs almost nothing.
-
-    2. **``eot_id`` branch hoisted outside the loop** – the conditional is
-       evaluated once per call rather than once per sequence.
-
-    Correctness guarantee (``pad_id == eot_id``) is inherited from
-    ``_fast_pad``: the mask is positional, not value-based.
-
-    Returns:
-        padded  – LongTensor of shape (N, max_len)
-        mask    – LongTensor of shape (N, max_len), 1 for real tokens, 0 for pad
-    """
-    n = len(token_lists)
-    extra = 1 if eot_id is not None else 0
-    max_len = max(len(s) for s in token_lists) + extra
-    arr = np.full((n, max_len), pad_id, dtype=np.int64)
-    mask_arr = np.ones((n, max_len), dtype=np.int64)
-
-    if padding_side == "right":
-        if eot_id is not None:
-            for i, s in enumerate(token_lists):
-                L = len(s)
-                arr[i, :L] = s
-                arr[i, L] = eot_id
-                if L + extra < max_len:
-                    mask_arr[i, L + extra :] = 0
-        else:
-            for i, s in enumerate(token_lists):
-                L = len(s)
-                arr[i, :L] = s
-                if L < max_len:
-                    mask_arr[i, L:] = 0
-    else:  # left padding
-        if eot_id is not None:
-            for i, s in enumerate(token_lists):
-                L = len(s)
-                start = max_len - L - extra
-                arr[i, start : start + L] = s
-                arr[i, start + L] = eot_id
-                if start:
-                    mask_arr[i, :start] = 0
-        else:
-            for i, s in enumerate(token_lists):
-                L = len(s)
-                start = max_len - L
-                arr[i, start:] = s
-                if start:
-                    mask_arr[i, :start] = 0
-
-    padded = torch.from_numpy(arr)
-    mask = torch.from_numpy(mask_arr)
-    return padded, mask
 
 
 class LenghtSortedSampler(Sampler[_T_co]):
@@ -404,6 +244,163 @@ class DatasetAwareSampler(Sampler[_T_co]):
         self.epoch = epoch
 
 
+# ---------------------------------------------------------------------------
+# MultiDatasetLoader – faithful reimplementation of the ``MultiLoader``
+# from CodeFuse-Embeddings/F2LLM/run.py, adapted for PyTorch DDP.
+#
+# Each dataset gets its own DataLoader (with its own DistributedSampler if
+# running multi-GPU).  At every epoch a new random order is created; a
+# dataset is selected with probability proportional to its remaining
+# batches.  The epoch ends when every DataLoader is exhausted.
+# ---------------------------------------------------------------------------
+
+
+class MultiDatasetLoader:
+    """Weighted-random multi-dataset batch iterator (F2LLM ``MultiLoader``).
+
+    Wraps a ``{name: DataLoader}`` dict and at each iteration randomly
+    selects a dataset weighted by the number of remaining batches,
+    yielding one batch at a time.  The epoch ends when every DataLoader
+    has been exhausted.
+
+    Compatible with the ``train.py`` training loop:
+
+    * ``len(loader)`` returns the total number of batches across all datasets.
+    * ``loader.sampler.set_epoch(e)`` propagates the epoch to every
+      underlying ``DistributedSampler`` (if present) and seeds the
+      random selection order.
+    * Iterating (``for batch in loader``) creates fresh iterators for each
+      underlying DataLoader every time.
+
+    Usage example::
+
+        from torch.utils.data import DataLoader
+        from torch.utils.data.distributed import DistributedSampler
+
+        loaders = {}
+        for name, ds in dataset_dict.items():
+            sampler = DistributedSampler(ds, shuffle=True, seed=42)
+            loaders[name] = DataLoader(ds, batch_size=bs,
+                                       sampler=sampler, collate_fn=collate_fn)
+
+        multi_loader = MultiDatasetLoader(loaders)
+
+        for epoch in range(num_epochs):
+            multi_loader.sampler.set_epoch(epoch)
+            for batch in multi_loader:
+                ...
+    """
+
+    # ------------------------------------------------------------------
+    # Lightweight proxy so ``loader.sampler.set_epoch(e)`` works, which
+    # is what train.py calls at the top of each epoch.
+    # ------------------------------------------------------------------
+    class _EpochProxy:
+        """Proxy object exposing a ``set_epoch`` method on ``MultiDatasetLoader``."""
+
+        def __init__(self, parent: "MultiDatasetLoader"):
+            self._parent = parent
+
+        def set_epoch(self, epoch: int) -> None:
+            self._parent._epoch = epoch
+            # Propagate to every underlying sampler that supports set_epoch
+            for loader in self._parent.loader_dict.values():
+                if hasattr(loader.sampler, "set_epoch"):
+                    loader.sampler.set_epoch(epoch)
+
+    def __init__(self, loader_dict: dict[str, DataLoader]):
+        self.loader_dict = loader_dict
+        self.sampler = self._EpochProxy(self)
+        self._epoch = 0
+
+    def __len__(self) -> int:
+        return sum(len(v) for v in self.loader_dict.values())
+
+    def __iter__(self):
+        rng = random.Random(self._epoch)
+        iters: dict[str, Iterator] = {k: iter(v) for k, v in self.loader_dict.items()}
+        names = list(iters.keys())
+        weights = [len(self.loader_dict[k]) for k in names]
+
+        while names:
+            name = rng.choices(names, weights=weights)[0]
+            try:
+                batch = next(iters[name])
+                yield batch
+            except StopIteration:
+                idx = names.index(name)
+                names.pop(idx)
+                weights.pop(idx)
+
+
+def _fast_pad_v2(
+    token_lists: list[list[int]],
+    pad_id: int,
+    eot_id: int | None = None,
+    padding_side: str = "right",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Optimised drop-in replacement for ``_fast_pad``.
+
+    Two additional improvements over ``_fast_pad``:
+
+    1. **``np.ones`` + zero the padding tail** – initialising to ones and
+       then zeroing only the trailing (or leading) padding writes
+       ``max_len - L`` elements per row instead of ``L`` elements.  For
+       length-sorted batches (the common training case) the tail is nearly
+       empty, so mask construction costs almost nothing.
+
+    2. **``eot_id`` branch hoisted outside the loop** – the conditional is
+       evaluated once per call rather than once per sequence.
+
+    Correctness guarantee (``pad_id == eot_id``) is inherited from
+    ``_fast_pad``: the mask is positional, not value-based.
+
+    Returns:
+        padded  – LongTensor of shape (N, max_len)
+        mask    – LongTensor of shape (N, max_len), 1 for real tokens, 0 for pad
+    """
+    n = len(token_lists)
+    extra = 1 if eot_id is not None else 0
+    max_len = max(len(s) for s in token_lists) + extra
+    arr = np.full((n, max_len), pad_id, dtype=np.int64)
+    mask_arr = np.ones((n, max_len), dtype=np.int64)
+
+    if padding_side == "right":
+        if eot_id is not None:
+            for i, s in enumerate(token_lists):
+                L = len(s)
+                arr[i, :L] = s
+                arr[i, L] = eot_id
+                if L + extra < max_len:
+                    mask_arr[i, L + extra :] = 0
+        else:
+            for i, s in enumerate(token_lists):
+                L = len(s)
+                arr[i, :L] = s
+                if L < max_len:
+                    mask_arr[i, L:] = 0
+    else:  # left padding
+        if eot_id is not None:
+            for i, s in enumerate(token_lists):
+                L = len(s)
+                start = max_len - L - extra
+                arr[i, start : start + L] = s
+                arr[i, start + L] = eot_id
+                if start:
+                    mask_arr[i, :start] = 0
+        else:
+            for i, s in enumerate(token_lists):
+                L = len(s)
+                start = max_len - L
+                arr[i, start:] = s
+                if start:
+                    mask_arr[i, :start] = 0
+
+    padded = torch.from_numpy(arr)
+    mask = torch.from_numpy(mask_arr)
+    return padded, mask
+
+
 def collate_fn_with_padding(
     batch,
     pad_token_id=0,
@@ -456,358 +453,6 @@ def _str_to_int_id(s: str) -> int:
     return int(hashlib.md5(s.encode()).hexdigest()[:15], 16)
 
 
-# def collate_fn_with_hard_negatives_v0(
-#     batch,
-#     pad_token_id=0,
-#     num_hard_negatives=7,
-#     padding_side="right",
-#     tokenizer=None,
-#     eot_id=None,
-#     add_special_tokens=False,
-#     max_seq_len=None,
-#     timing_stats=None,
-# ):
-#     """Collate function for batches that include hard negatives.
-
-#     Tokenizes prompts in the collate (like collate_fn_with_padding), then returns
-#     padded tensors for queries and all docs (positives + negatives concatenated)
-#     for a single forward pass.
-
-#     When max_seq_len is set (option 1 / truncation strategy), every tokenizer call
-#     uses truncation=True so that no sequence exceeds max_seq_len tokens.  When
-#     eot_id is also appended the effective content budget is max_seq_len-1 tokens
-#     so that the final sequence (content + eot) stays within the limit.
-#     """
-#     import time as _time
-
-#     _bench = timing_stats is not None
-
-#     def _tick() -> float:
-#         return _time.perf_counter() if _bench else 0.0
-
-#     def _record(key: str, t0: float) -> None:
-#         if _bench:
-#             timing_stats[key] = timing_stats.get(key, 0.0) + (_time.perf_counter() - t0)
-
-#     t_total = _tick()
-
-#     # Reserve one slot for eot_id when it is appended after tokenisation.
-#     _max_content = (
-#         (max_seq_len - 1)
-#         if (max_seq_len is not None and eot_id is not None)
-#         else max_seq_len
-#     )
-#     _trunc_kwargs = (
-#         {"truncation": True, "max_length": _max_content}
-#         if max_seq_len is not None
-#         else {}
-#     )
-
-#     # --- Extract prompts ---
-#     t0 = _tick()
-#     query_prompts = [item["query_prompt"] for item in batch]
-#     pos_prompts = [item["positive_prompt"] for item in batch]
-#     _record("prompt_extract", t0)
-
-#     # --- Tokenize queries ---
-#     t0 = _tick()
-#     query_encs = tokenizer(
-#         query_prompts,
-#         add_special_tokens=add_special_tokens,
-#         return_attention_mask=False,
-#         **_trunc_kwargs,
-#     )["input_ids"]
-
-#     if eot_id is not None:
-#         query_token_ids = [torch.tensor(tok + [eot_id]) for tok in query_encs]
-#     else:
-#         query_token_ids = [torch.tensor(tok) for tok in query_encs]
-
-#     # Tokenize positives
-#     pos_encs = tokenizer(
-#         pos_prompts,
-#         add_special_tokens=add_special_tokens,
-#         return_attention_mask=False,
-#         **_trunc_kwargs,
-#     )["input_ids"]
-#     if eot_id is not None:
-#         pos_token_ids = [torch.tensor(tok + [eot_id]) for tok in pos_encs]
-#     else:
-#         pos_token_ids = [torch.tensor(tok) for tok in pos_encs]
-
-#     # Tokenize negatives per item (one tokenizer call per sample)
-#     all_neg_token_ids = []
-#     for item in batch:
-#         neg_prompts = item["negative_prompts"][:num_hard_negatives]
-
-#         neg_encs = tokenizer(
-#             neg_prompts,
-#             add_special_tokens=add_special_tokens,
-#             return_attention_mask=False,
-#             **_trunc_kwargs,
-#         )["input_ids"]
-
-#         if eot_id is not None:
-#             neg_ids = [tok + [eot_id] for tok in neg_encs]
-#         else:
-#             neg_ids = neg_encs
-
-#         all_neg_token_ids.extend([torch.tensor(n) for n in neg_ids])
-#     _record("tokenize_parallel", t0)
-
-#     # --- Build sample-ID tensors ---
-#     t0 = _tick()
-#     pos_ids = torch.tensor(
-#         [
-#             _str_to_int_id(f"{item['dataset_name']}/{item['positive_id']}")
-#             for item in batch
-#         ],
-#         dtype=torch.long,
-#     )
-#     q_ids = torch.tensor(
-#         [
-#             _str_to_int_id(f"{item['dataset_name']}/{item['query_id']}")
-#             for item in batch
-#         ],
-#         dtype=torch.long,
-#     )
-#     _record("id_build", t0)
-
-#     # --- Pad queries ---
-#     t0 = _tick()
-#     query_attention_mask = [torch.ones_like(ids) for ids in query_token_ids]
-#     query_padded = pad_sequence(
-#         query_token_ids,
-#         batch_first=True,
-#         padding_value=pad_token_id,
-#         padding_side=padding_side,
-#     )
-#     query_mask = pad_sequence(
-#         query_attention_mask,
-#         batch_first=True,
-#         padding_value=0,
-#         padding_side=padding_side,
-#     )
-#     _record("query_pad", t0)
-
-#     # --- Pad docs ---
-#     t0 = _tick()
-#     all_doc_seqs = pos_token_ids + all_neg_token_ids
-#     all_doc_attention_mask = [torch.ones_like(ids) for ids in all_doc_seqs]
-
-#     all_doc_padded = pad_sequence(
-#         all_doc_seqs,
-#         batch_first=True,
-#         padding_value=pad_token_id,
-#         padding_side=padding_side,
-#     )
-#     all_doc_mask = pad_sequence(
-#         all_doc_attention_mask,
-#         batch_first=True,
-#         padding_value=0,
-#         padding_side=padding_side,
-#     )
-#     _record("doc_pad", t0)
-
-#     _record("total", t_total)
-#     if _bench:
-#         timing_stats["_calls"] = timing_stats.get("_calls", 0) + 1
-
-#     return {
-#         "query_token_ids": query_padded,
-#         "query_attention_mask": query_mask,
-#         "all_doc_token_ids": all_doc_padded,
-#         "all_doc_attention_mask": all_doc_mask,
-#         "pos_ids": pos_ids,
-#         "query_ids": q_ids,
-#         "num_hard_negatives": num_hard_negatives,
-#     }
-
-
-# def collate_fn_with_hard_negatives_v01(
-#     batch,
-#     pad_token_id=0,
-#     num_hard_negatives=7,
-#     padding_side="right",
-#     tokenizer=None,
-#     eot_id=None,
-#     add_special_tokens=False,
-#     max_seq_len=None,
-#     timing_stats=None,
-# ):
-#     """Collate function for batches that include hard negatives.
-
-#     Tokenizes prompts in the collate (like collate_fn_with_padding), then returns
-#     padded tensors for queries and all docs (positives + negatives concatenated)
-#     for a single forward pass.
-
-#     When max_seq_len is set (option 1 / truncation strategy), every tokenizer call
-#     uses truncation=True so that no sequence exceeds max_seq_len tokens.  When
-#     eot_id is also appended the effective content budget is max_seq_len-1 tokens
-#     so that the final sequence (content + eot) stays within the limit.
-#     """
-#     import time as _time
-
-#     _bench = timing_stats is not None
-
-#     def _tick() -> float:
-#         return _time.perf_counter() if _bench else 0.0
-
-#     def _record(key: str, t0: float) -> None:
-#         if _bench:
-#             timing_stats[key] = timing_stats.get(key, 0.0) + (_time.perf_counter() - t0)
-
-#     t_total = _tick()
-
-#     # Reserve one slot for eot_id when it is appended after tokenisation.
-#     _max_content = (
-#         (max_seq_len - 1)
-#         if (max_seq_len is not None and eot_id is not None)
-#         else max_seq_len
-#     )
-#     _trunc_kwargs = (
-#         {"truncation": True, "max_length": _max_content}
-#         if max_seq_len is not None
-#         else {}
-#     )
-
-#     # --- Extract prompts ---
-#     t0 = _tick()
-#     query_prompts = [item["query_prompt"] for item in batch]
-#     pos_prompts = [item["positive_prompt"] for item in batch]
-#     flat_neg_prompts: list[str] = []
-#     for item in batch:
-#         flat_neg_prompts.extend(item["negative_prompts"][:num_hard_negatives])
-#     _record("prompt_extract", t0)
-
-#     # --- Tokenize: 3 separate batched calls (query, pos, all negatives) ---
-#     t0 = _tick()
-#     query_encs = tokenizer(
-#         query_prompts,
-#         add_special_tokens=add_special_tokens,
-#         return_attention_mask=False,
-#         **_trunc_kwargs,
-#     )["input_ids"]
-
-#     if eot_id is not None:
-#         query_token_ids = [torch.tensor(tok + [eot_id]) for tok in query_encs]
-#     else:
-#         query_token_ids = [torch.tensor(tok) for tok in query_encs]
-
-#     pos_encs = tokenizer(
-#         pos_prompts,
-#         add_special_tokens=add_special_tokens,
-#         return_attention_mask=False,
-#         **_trunc_kwargs,
-#     )["input_ids"]
-#     if eot_id is not None:
-#         pos_token_ids = [torch.tensor(tok + [eot_id]) for tok in pos_encs]
-#     else:
-#         pos_token_ids = [torch.tensor(tok) for tok in pos_encs]
-
-#     # --- OLD: Tokenize negatives per item (one tokenizer call per sample) ---
-#     # all_neg_token_ids = []
-#     # for i, item in enumerate(batch):
-#     #     neg_prompts = item["negative_prompts"][:num_hard_negatives]
-#     #
-#     #     neg_encs = tokenizer(
-#     #         neg_prompts,
-#     #         add_special_tokens=add_special_tokens,
-#     #         return_attention_mask=False,
-#     #         **_trunc_kwargs,
-#     #     )["input_ids"]
-#     #
-#     #     if eot_id is not None:
-#     #         neg_ids = [tok + [eot_id] for tok in neg_encs]
-#     #     else:
-#     #         neg_ids = neg_encs
-#     #
-#     #     all_neg_token_ids.extend([torch.tensor(n) for n in neg_ids])
-#     # --- END OLD ---
-
-#     # Tokenize negatives – batched across the entire batch for one tokenizer call
-#     flat_neg_encs = tokenizer(
-#         flat_neg_prompts,
-#         add_special_tokens=add_special_tokens,
-#         return_attention_mask=False,
-#         **_trunc_kwargs,
-#     )["input_ids"]
-
-#     if eot_id is not None:
-#         all_neg_token_ids = [torch.tensor(tok + [eot_id]) for tok in flat_neg_encs]
-#     else:
-#         all_neg_token_ids = [torch.tensor(tok) for tok in flat_neg_encs]
-#     _record("tokenize_parallel", t0)
-
-#     # --- Build sample-ID tensors ---
-#     t0 = _tick()
-#     pos_ids = torch.tensor(
-#         [
-#             _str_to_int_id(f"{item['dataset_name']}/{item['positive_id']}")
-#             for item in batch
-#         ],
-#         dtype=torch.long,
-#     )
-#     q_ids = torch.tensor(
-#         [
-#             _str_to_int_id(f"{item['dataset_name']}/{item['query_id']}")
-#             for item in batch
-#         ],
-#         dtype=torch.long,
-#     )
-#     _record("id_build", t0)
-
-#     # --- Pad queries ---
-#     t0 = _tick()
-#     query_attention_mask = [torch.ones_like(ids) for ids in query_token_ids]
-#     query_padded = pad_sequence(
-#         query_token_ids,
-#         batch_first=True,
-#         padding_value=pad_token_id,
-#         padding_side=padding_side,
-#     )
-#     query_mask = pad_sequence(
-#         query_attention_mask,
-#         batch_first=True,
-#         padding_value=0,
-#         padding_side=padding_side,
-#     )
-#     _record("query_pad", t0)
-
-#     # --- Pad docs ---
-#     t0 = _tick()
-#     all_doc_seqs = pos_token_ids + all_neg_token_ids
-#     all_doc_attention_mask = [torch.ones_like(ids) for ids in all_doc_seqs]
-
-#     all_doc_padded = pad_sequence(
-#         all_doc_seqs,
-#         batch_first=True,
-#         padding_value=pad_token_id,
-#         padding_side=padding_side,
-#     )
-#     all_doc_mask = pad_sequence(
-#         all_doc_attention_mask,
-#         batch_first=True,
-#         padding_value=0,
-#         padding_side=padding_side,
-#     )
-#     _record("doc_pad", t0)
-
-#     _record("total", t_total)
-#     if _bench:
-#         timing_stats["_calls"] = timing_stats.get("_calls", 0) + 1
-
-#     return {
-#         "query_token_ids": query_padded,
-#         "query_attention_mask": query_mask,
-#         "all_doc_token_ids": all_doc_padded,
-#         "all_doc_attention_mask": all_doc_mask,
-#         "pos_ids": pos_ids,
-#         "query_ids": q_ids,
-#         "num_hard_negatives": num_hard_negatives,
-#     }
-
-
 def collate_fn_with_hard_negatives(
     batch,
     pad_token_id=0,
@@ -836,18 +481,6 @@ def collate_fn_with_hard_negatives(
             invocations so the caller can compute per-batch averages.  Only works
             with ``num_workers=0`` in the DataLoader (workers are separate processes).
     """
-    # import time as _time
-
-    # _bench = timing_stats is not None
-
-    # def _tick() -> float:
-    #     return _time.perf_counter() if _bench else 0.0
-
-    # def _record(key: str, t0: float) -> None:
-    #     if _bench:
-    #         timing_stats[key] = timing_stats.get(key, 0.0) + (_time.perf_counter() - t0)
-
-    # t_total = _tick()
 
     # Reserve one slot for eot_id when it is appended after tokenisation.
     _max_content = (
@@ -870,9 +503,6 @@ def collate_fn_with_hard_negatives(
     # --- Parallel tokenisation ---
     # HF fast tokenisers (Rust/rayon) release the GIL, so two Python threads
     # give genuine CPU overlap:
-    #   Thread 0 tokenises query + pos in one batched call  (~10 ms)
-    #   Thread 1 tokenises all negatives                    (~59 ms)
-    # Wall time ≈ max(10, 59) instead of 10 + 59.
     _trunc_kwargs = (
         {"truncation": True, "max_length": _max_content}
         if max_seq_len is not None
@@ -887,18 +517,14 @@ def collate_fn_with_hard_negatives(
             **_trunc_kwargs,
         )["input_ids"]
 
-    # t0 = _tick()
     f_qpos = _COLLATE_TOKEN_POOL.submit(_tok, query_prompts + pos_prompts)
     f_neg = _COLLATE_TOKEN_POOL.submit(_tok, flat_neg_prompts)
     qpos_encs = f_qpos.result()
     flat_neg_encs = f_neg.result()
-    # _record("tokenize_parallel", t0)
 
     query_encs = qpos_encs[:B]
     pos_encs = qpos_encs[B:]
 
-    # --- Build sample-ID tensors (pos_ids / query_ids) ---
-    # t0 = _tick()
     pos_ids = torch.tensor(
         [
             _str_to_int_id(f"{item['dataset_name']}/{item['positive_id']}")
@@ -913,388 +539,18 @@ def collate_fn_with_hard_negatives(
         ],
         dtype=torch.long,
     )
-    # _record("id_build", t0)
 
-    # --- Pad queries via _fast_pad (numpy fill + zero-copy from_numpy) ---
-    # This replaces: creating B individual tensors, creating B ones_like tensors,
-    # two pad_sequence calls.
-    # t0 = _tick()
-    query_padded, query_mask = _fast_pad(
+    query_padded, query_mask = _fast_pad_v2(
         query_encs, pad_id=pad_token_id, eot_id=eot_id, padding_side=padding_side
     )
-    # _record("query_pad", t0)
 
-    # --- Pad positives and negatives ---
-    # Positives and negatives are padded together (same semantic role, same
-    # downstream usage) so all_doc_padded has shape
-    # (B + B*num_hard_negatives, max_doc_len).
-    # t0 = _tick()
-    all_doc_padded, all_doc_mask = _fast_pad(
+    all_doc_padded, all_doc_mask = _fast_pad_v2(
         pos_encs + flat_neg_encs,
         pad_id=pad_token_id,
         eot_id=eot_id,
         padding_side=padding_side,
     )
-    # _record("doc_pad", t0)
 
-    # _record("total", t_total)
-    # if _bench:
-    #     timing_stats["_calls"] = timing_stats.get("_calls", 0) + 1
-
-    return {
-        "query_token_ids": query_padded,
-        "query_attention_mask": query_mask,
-        "all_doc_token_ids": all_doc_padded,
-        "all_doc_attention_mask": all_doc_mask,
-        "pos_ids": pos_ids,
-        "query_ids": q_ids,
-        "num_hard_negatives": num_hard_negatives,
-    }
-
-
-# def collate_fn_with_hard_negatives_v2(
-#     batch,
-#     pad_token_id=0,
-#     num_hard_negatives=7,
-#     padding_side="right",
-#     tokenizer=None,
-#     eot_id=None,
-#     add_special_tokens=False,
-#     max_seq_len=None,
-#     timing_stats=None,
-# ):
-#     """Optimised collate function – drop-in replacement for
-#     ``collate_fn_with_hard_negatives``.
-
-#     Three improvements over the original:
-
-#     1. **Single Rust ``encode_batch``** for all texts (queries + positives +
-#        negatives) instead of two thread-pool futures with imbalanced load.
-#        The Rust rayon pool distributes work optimally across all CPU cores.
-#     2. **Direct ``tokenizer._tokenizer.encode_batch``** bypasses the
-#        Python-level ``BatchEncoding`` wrapper, padding / attention-mask
-#        construction, and other overhead that is redundant here.
-#     3. **Pre-text character truncation** clips long documents to
-#        ``max_token_len * 8`` chars *before* tokenisation so the encoder
-#        never processes throwaway trailing text.
-
-#     Return dict is identical to ``collate_fn_with_hard_negatives``.
-#     """
-#     import time as _time
-
-#     _bench = timing_stats is not None
-
-#     def _tick() -> float:
-#         return _time.perf_counter() if _bench else 0.0
-
-#     def _record(key: str, t0: float) -> None:
-#         if _bench:
-#             timing_stats[key] = timing_stats.get(key, 0.0) + (_time.perf_counter() - t0)
-
-#     t_total = _tick()
-
-#     # Reserve one slot for eot_id when it is appended after tokenisation.
-#     _max_content = (
-#         (max_seq_len - 1)
-#         if (max_seq_len is not None and eot_id is not None)
-#         else max_seq_len
-#     )
-
-#     B = len(batch)
-
-#     # --- Build all prompt lists ---
-#     t0 = _tick()
-#     query_prompts = [item["query_prompt"] for item in batch]
-#     pos_prompts = [item["positive_prompt"] for item in batch]
-#     flat_neg_prompts: list[str] = []
-#     for item in batch:
-#         flat_neg_prompts.extend(item["negative_prompts"][:num_hard_negatives])
-#     _record("prompt_extract", t0)
-
-#     # --- Tokenisation (single Rust encode_batch – see _encode_batch_fast) ---
-#     t0 = _tick()
-#     all_texts = query_prompts + pos_prompts + flat_neg_prompts
-#     all_ids = _encode_batch_fast(
-#         tokenizer,
-#         all_texts,
-#         add_special_tokens,
-#         _max_content,
-#     )
-#     _record("tokenize_parallel", t0)
-
-#     query_encs = all_ids[:B]
-#     pos_encs = all_ids[B : 2 * B]
-#     flat_neg_encs = all_ids[2 * B :]
-
-#     # --- Build sample-ID tensors (pos_ids / query_ids) ---
-#     t0 = _tick()
-#     pos_ids = torch.tensor(
-#         [
-#             _str_to_int_id(f"{item['dataset_name']}/{item['positive_id']}")
-#             for item in batch
-#         ],
-#         dtype=torch.long,
-#     )
-#     q_ids = torch.tensor(
-#         [
-#             _str_to_int_id(f"{item['dataset_name']}/{item['query_id']}")
-#             for item in batch
-#         ],
-#         dtype=torch.long,
-#     )
-#     _record("id_build", t0)
-
-#     # --- Pad queries ---
-#     t0 = _tick()
-#     query_padded, query_mask = _fast_pad(
-#         query_encs, pad_id=pad_token_id, eot_id=eot_id, padding_side=padding_side
-#     )
-#     _record("query_pad", t0)
-
-#     # --- Pad positives + negatives ---
-#     t0 = _tick()
-#     all_doc_padded, all_doc_mask = _fast_pad(
-#         pos_encs + flat_neg_encs,
-#         pad_id=pad_token_id,
-#         eot_id=eot_id,
-#         padding_side=padding_side,
-#     )
-#     _record("doc_pad", t0)
-
-#     _record("total", t_total)
-#     if _bench:
-#         timing_stats["_calls"] = timing_stats.get("_calls", 0) + 1
-
-#     return {
-#         "query_token_ids": query_padded,
-#         "query_attention_mask": query_mask,
-#         "all_doc_token_ids": all_doc_padded,
-#         "all_doc_attention_mask": all_doc_mask,
-#         "pos_ids": pos_ids,
-#         "query_ids": q_ids,
-#         "num_hard_negatives": num_hard_negatives,
-#     }
-
-
-# def collate_fn_pretokenized(
-#     batch,
-#     pad_token_id=0,
-#     num_hard_negatives=7,
-#     padding_side="right",
-#     eot_id=None,
-#     max_seq_len=None,
-#     timing_stats=None,
-# ):
-#     """Collate function for pre-tokenized batches (no tokenizer calls).
-
-#     Expects each item in *batch* to carry ``query_token_ids``,
-#     ``positive_token_ids`` and ``negative_token_ids`` columns produced by
-#     ``create_pretokenized_hard_negatives_datasets``.  Only padding and tensor
-#     construction happen here — tokenization cost is zero.
-
-#     The return dict has the same schema as ``collate_fn_with_hard_negatives``
-#     so callers (Trainer, benchmark script) are interchangeable.
-
-#     Args:
-#         timing_stats: optional dict-like for per-step wall-clock accumulation.
-#     """
-#     # import time as _time
-
-#     # _bench = timing_stats is not None
-
-#     # def _tick() -> float:
-#     #     return _time.perf_counter() if _bench else 0.0
-
-#     # def _record(key: str, t0: float) -> None:
-#     #     if _bench:
-#     #         timing_stats[key] = timing_stats.get(key, 0.0) + (_time.perf_counter() - t0)
-
-#     # t_total = _tick()
-
-#     _max_content = (
-#         (max_seq_len - 1)
-#         if (max_seq_len is not None and eot_id is not None)
-#         else max_seq_len
-#     )
-
-#     # --- Extract cached token-ID lists ---
-#     # t0 = _tick()
-#     query_encs = [item["query_token_ids"] for item in batch]
-#     pos_encs = [item["positive_token_ids"] for item in batch]
-#     flat_neg_encs: list[list[int]] = []
-#     for item in batch:
-#         flat_neg_encs.extend(item["negative_token_ids"][:num_hard_negatives])
-
-#     # Apply truncation if max_seq_len was requested
-#     if _max_content is not None:
-#         query_encs = [ids[:_max_content] for ids in query_encs]
-#         pos_encs = [ids[:_max_content] for ids in pos_encs]
-#         flat_neg_encs = [ids[:_max_content] for ids in flat_neg_encs]
-#     # _record("extract_ids", t0)
-
-#     # # --- Build sample-ID tensors ---
-#     # t0 = _tick()
-#     pos_ids = torch.tensor(
-#         [
-#             _str_to_int_id(f"{item['dataset_name']}/{item['positive_id']}")
-#             for item in batch
-#         ],
-#         dtype=torch.long,
-#     )
-#     q_ids = torch.tensor(
-#         [
-#             _str_to_int_id(f"{item['dataset_name']}/{item['query_id']}")
-#             for item in batch
-#         ],
-#         dtype=torch.long,
-#     )
-#     # _record("id_build", t0)
-
-#     # --- Pad queries ---
-#     # t0 = _tick()
-#     query_padded, query_mask = _fast_pad(
-#         query_encs, pad_id=pad_token_id, eot_id=eot_id, padding_side=padding_side
-#     )
-#     # _record("query_pad", t0)
-
-#     # --- Pad positives + negatives ---
-#     # t0 = _tick()
-#     all_doc_padded, all_doc_mask = _fast_pad(
-#         pos_encs + flat_neg_encs,
-#         pad_id=pad_token_id,
-#         eot_id=eot_id,
-#         padding_side=padding_side,
-#     )
-#     # _record("doc_pad", t0)
-
-#     # _record("total", t_total)
-#     # if _bench:
-#     #     timing_stats["_calls"] = timing_stats.get("_calls", 0) + 1
-
-#     return {
-#         "query_token_ids": query_padded,
-#         "query_attention_mask": query_mask,
-#         "all_doc_token_ids": all_doc_padded,
-#         "all_doc_attention_mask": all_doc_mask,
-#         "pos_ids": pos_ids,
-#         "query_ids": q_ids,
-#         "num_hard_negatives": num_hard_negatives,
-#     }
-
-
-def collate_fn_pretokenized(
-    batch,
-    pad_token_id=0,
-    num_hard_negatives=7,
-    padding_side="right",
-    eot_id=None,
-):
-    query_tokens = [item["query_token_ids"] for item in batch]
-    all_docs = [item["positive_token_ids"] for item in batch] + [
-        neg for item in batch for neg in item["negative_token_ids"][:num_hard_negatives]
-    ]
-    if eot_id is not None:
-        query_token_ids = [torch.tensor(tok + [eot_id]) for tok in query_tokens]
-        all_docs_ids = [torch.tensor(tok + [eot_id]) for tok in all_docs]
-    else:
-        query_token_ids = [torch.tensor(tok) for tok in query_tokens]
-        all_docs_ids = [torch.tensor(tok) for tok in all_docs]
-
-    query_attention_mask = [torch.ones_like(input_ids) for input_ids in query_token_ids]
-    all_docs_attention_mask = [torch.ones_like(input_ids) for input_ids in all_docs_ids]
-
-    # Pad queries and create attention masks
-    query_token_ids_padded = pad_sequence(
-        query_token_ids,
-        batch_first=True,
-        padding_value=pad_token_id,
-        padding_side=padding_side,
-    )
-
-    query_attention_mask = pad_sequence(
-        query_attention_mask,
-        batch_first=True,
-        padding_value=0,
-        padding_side=padding_side,
-    )
-
-    doc_ids_padded = pad_sequence(
-        all_docs_ids,
-        batch_first=True,
-        padding_value=pad_token_id,
-        padding_side=padding_side,
-    )
-
-    docs_attention_mask = pad_sequence(
-        all_docs_attention_mask,
-        batch_first=True,
-        padding_value=0,
-        padding_side=padding_side,
-    )
-
-    pos_ids = torch.tensor(
-        [
-            _str_to_int_id(f"{item['dataset_name']}/{item['positive_id']}")
-            for item in batch
-        ],
-        dtype=torch.long,
-    )
-    q_ids = torch.tensor(
-        [
-            _str_to_int_id(f"{item['dataset_name']}/{item['query_id']}")
-            for item in batch
-        ],
-        dtype=torch.long,
-    )
-    return {
-        "query_token_ids": query_token_ids_padded,
-        "query_attention_mask": query_attention_mask,
-        "all_doc_token_ids": doc_ids_padded,
-        "all_doc_attention_mask": docs_attention_mask,
-        "pos_ids": pos_ids,
-        "query_ids": q_ids,
-        "num_hard_negatives": num_hard_negatives,
-    }
-
-
-def collate_fn_pretokenized_fast_pad(
-    batch,
-    pad_token_id=0,
-    num_hard_negatives=7,
-    padding_side="right",
-    eot_id=None,
-):
-    """Pre-tokenized collate using ``_fast_pad`` for padding."""
-    query_tokens = [item["query_token_ids"] for item in batch]
-    all_docs = [item["positive_token_ids"] for item in batch] + [
-        neg for item in batch for neg in item["negative_token_ids"][:num_hard_negatives]
-    ]
-    query_padded, query_mask = _fast_pad(
-        query_tokens,
-        pad_id=pad_token_id,
-        eot_id=eot_id,
-        padding_side=padding_side,
-    )
-    all_doc_padded, all_doc_mask = _fast_pad(
-        all_docs,
-        pad_id=pad_token_id,
-        eot_id=eot_id,
-        padding_side=padding_side,
-    )
-    pos_ids = torch.tensor(
-        [
-            _str_to_int_id(f"{item['dataset_name']}/{item['positive_id']}")
-            for item in batch
-        ],
-        dtype=torch.long,
-    )
-    q_ids = torch.tensor(
-        [
-            _str_to_int_id(f"{item['dataset_name']}/{item['query_id']}")
-            for item in batch
-        ],
-        dtype=torch.long,
-    )
     return {
         "query_token_ids": query_padded,
         "query_attention_mask": query_mask,
@@ -1318,6 +574,11 @@ def collate_fn_pretokenized_fast_pad_v2(
     Drop-in replacement for ``collate_fn_pretokenized_fast_pad`` that uses
     the further-optimised ``_fast_pad_v2`` (hoisted branch + np.ones tail-
     zeroing strategy).  Return dict is identical.
+
+    The batch dict includes ``dataset_name`` (first item's name, valid when
+    using ``DatasetAwareSampler`` or ``MultiDatasetLoader`` which guarantee
+    intra-batch homogeneity) so the training loop can make per-task loss
+    decisions.
     """
     query_tokens = [item["query_token_ids"] for item in batch]
     all_docs = [item["positive_token_ids"] for item in batch] + [
@@ -1357,4 +618,5 @@ def collate_fn_pretokenized_fast_pad_v2(
         "pos_ids": pos_ids,
         "query_ids": q_ids,
         "num_hard_negatives": num_hard_negatives,
+        "dataset_name": batch[0]["dataset_name"],
     }

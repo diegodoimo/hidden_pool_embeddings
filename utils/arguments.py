@@ -59,6 +59,22 @@ def parse_args():
     )
 
     parser.add_argument("--distributed_loss", action="store_true")
+    parser.add_argument(
+        "--loss_type",
+        type=str,
+        default="gemma",
+        choices=["gemma", "f2llm"],
+        help="Loss function: 'gemma' (EmbeddingGemmaLossHardNegatives with "
+        "spherical loss + hardness weighting + duplicate masking), or "
+        "'f2llm' (F2LLMLoss: in-batch NCE + hard-negative NCE, the original "
+        "CodeFuse-Embeddings/F2LLM loss).",
+    )
+    parser.add_argument(
+        "--f2llm_temperature",
+        type=float,
+        default=0.05,
+        help="Temperature for the F2LLM loss (default: 0.05).",
+    )
     parser.add_argument("--attention_pooling", action="store_true")
     parser.add_argument("--attention_dim", type=int, default=None)
     parser.add_argument("--cls_query_pooling", action="store_true")
@@ -82,10 +98,12 @@ def parse_args():
         "--batch_strategy",
         type=str,
         default="sequential",
-        choices=["mixed", "sequential", "grouped"],
-        help="Batching strategy: 'mixed' (default, standard DistributedSampler), "
+        choices=["mixed", "sequential", "grouped", "f2llm_multi"],
+        help="Batching strategy: 'mixed' (standard DistributedSampler), "
         "'sequential' (process one dataset at a time), "
-        "'grouped' (interleave datasets round-robin, each batch from one dataset).",
+        "'grouped' (interleave datasets round-robin, each batch from one dataset), "
+        "'f2llm_multi' (per-dataset DataLoaders with weighted-random sampling, "
+        "binary classification uses 1 negative, retrieval adds in-batch loss).",
     )
     parser.add_argument("--num_hard_negatives", type=int, default=8)
     parser.add_argument(

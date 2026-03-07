@@ -317,3 +317,156 @@ class EmbeddingGemmaLossHardNegativesOLD(nn.Module):
         loss_q = F.cross_entropy(logits_masked, labels)
 
         return Ls + loss_q
+
+
+# ---------------------------------------------------------------------------
+# F2LLM losses – faithful reimplementation of the loss functions from
+# CodeFuse-Embeddings/F2LLM/utils.py, adapted for PyTorch DDP
+# (torch.distributed) instead of HuggingFace Accelerate.
+# ---------------------------------------------------------------------------
+
+
+class F2LLMInBatchLoss(nn.Module):
+    """Cross-GPU in-batch contrastive loss (F2LLM ``inbatch_loss``).
+
+    1. L2-normalise queries.
+    2. Gather document embeddings across all DDP ranks (with gradient support).
+    3. L2-normalise the gathered documents.
+    4. Compute cosine-similarity logits scaled by ``1 / temperature``.
+    5. Cross-entropy with labels shifted by ``batch_size * rank``.
+
+    **torch.compile note:** distributed state (``rank``, ``distributed`` flag)
+    is resolved once at ``__init__`` so that ``forward()`` contains no opaque
+    Python-level ``dist.*`` calls and therefore introduces no graph breaks.
+    """
+
+    def __init__(self, temperature: float = 0.05):
+        super().__init__()
+        self.temperature = temperature
+        self.criterion = nn.CrossEntropyLoss(reduction="none")
+        # Resolve distributed state once so forward() is graph-break-free.
+        self._distributed: bool = dist.is_available() and dist.is_initialized()
+        self._rank: int = dist.get_rank() if self._distributed else 0
+
+    def forward(
+        self,
+        query_embeddings: torch.Tensor,  # (B, D)
+        doc_embeddings: torch.Tensor,  # (B, D)
+    ) -> torch.Tensor:
+        bs = query_embeddings.size(0)
+        a_norm = F.normalize(query_embeddings, p=2, dim=-1)
+
+        # Gather doc embeddings across GPUs (supports backward through all_gather)
+        if self._distributed:
+            b_cross_gpus = torch.cat(
+                torch.distributed.nn.functional.all_gather(doc_embeddings), dim=0
+            )
+        else:
+            b_cross_gpus = doc_embeddings
+
+        b_norm = F.normalize(b_cross_gpus, p=2, dim=-1)
+
+        logits = torch.matmul(a_norm, b_norm.t()) / self.temperature  # (B, B*world)
+        labels = torch.arange(bs, device=logits.device) + bs * self._rank
+
+        return self.criterion(logits, labels).mean()
+
+
+class F2LLMHardNegativeLoss(nn.Module):
+    """Per-query hard-negative contrastive loss (F2LLM ``hard_loss``).
+
+    1. Concatenate positive (index 0) with hard negatives → ``(B, 1+K, D)``.
+    2. L2-normalise queries and the combined doc tensor.
+    3. Compute per-element cosine similarity → ``(B, 1+K)``.
+    4. Cross-entropy with label = 0 (positive is always first).
+
+    **torch.compile note:** ``hard_neg_embeddings`` must be a tensor (not
+    ``None``).  An input-type guard (``is None``) causes specialisation and
+    recompilation when the type changes between calls.  Callers that may
+    have no hard negatives should skip this loss entirely rather than
+    passing ``None``.
+    """
+
+    def __init__(self, temperature: float = 0.05):
+        super().__init__()
+        self.temperature = temperature
+        self.criterion = nn.CrossEntropyLoss(reduction="none")
+
+    def forward(
+        self,
+        query_embeddings: torch.Tensor,  # (B, D)
+        doc_embeddings: torch.Tensor,  # (B, D) positives
+        hard_neg_embeddings: torch.Tensor,  # (B, K, D)
+    ) -> torch.Tensor:
+        bs = query_embeddings.size(0)
+        a_norm = F.normalize(query_embeddings, p=2, dim=-1)
+
+        # (B, 1+K, D)
+        combined = torch.cat([doc_embeddings.unsqueeze(1), hard_neg_embeddings], dim=1)
+        combined_norm = F.normalize(combined, p=2, dim=-1)
+
+        # Element-wise cosine similarity: (B, 1+K)
+        logits = (a_norm.unsqueeze(1) * combined_norm).sum(-1) / self.temperature
+
+        labels = torch.zeros(bs, dtype=torch.long, device=logits.device)
+        return self.criterion(logits, labels).mean()
+
+
+class F2LLMLoss(nn.Module):
+    """Combined loss replicating CodeFuse-Embeddings/F2LLM training objective.
+
+    ``loss = inbatch_loss + hard_negative_loss``
+
+    * **inbatch_loss** — cross-GPU in-batch NCE (``F2LLMInBatchLoss``).
+    * **hard_negative_loss** — per-query NCE over positive + hard negatives
+      (``F2LLMHardNegativeLoss``).
+
+    The forward signature is compatible with the existing ``train.py`` loop:
+    ``doc_ids`` and ``query_ids`` are accepted but ignored (F2LLM does not
+    use duplicate masking).
+
+    Per-batch in-batch control
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~
+    In the original F2LLM, retrieval batches use ``inbatch + hard_neg`` while
+    classification / clustering batches use ``hard_neg`` only.  This is
+    replicated via the ``use_inbatch`` forward parameter:
+
+    * When omitted (``None``), the instance default ``self.use_inbatch`` is
+      used (set at ``__init__``).
+    * Pass ``use_inbatch=True/False`` per call to override — e.g. when the
+      training loop mixes retrieval and classification batches via
+      ``MultiDatasetLoader``.
+
+    ``torch.compile`` handles the two branches (True/False) as two cached
+    specialisations — no performance penalty.
+
+    **torch.compile note:** ``hard_neg_embeddings`` must be a tensor, not
+    ``None``.
+    """
+
+    # Flag checked by train.py to decide whether hard-negative embeddings
+    # should be computed and passed to forward().
+    uses_hard_negatives: bool = True
+
+    def __init__(self, temperature: float = 0.05, use_inbatch: bool = True):
+        super().__init__()
+        self.inbatch = F2LLMInBatchLoss(temperature)
+        self.hard_neg = F2LLMHardNegativeLoss(temperature)
+        self.use_inbatch = use_inbatch
+
+    def forward(
+        self,
+        query_embeddings: torch.Tensor,
+        doc_embeddings: torch.Tensor,
+        hard_neg_embeddings: torch.Tensor,
+        doc_ids: torch.Tensor | None = None,  # unused, kept for API compat
+        query_ids: torch.Tensor | None = None,  # unused, kept for API compat
+        use_inbatch: bool | None = None,  # per-call override
+    ) -> torch.Tensor:
+        loss_hard = self.hard_neg(query_embeddings, doc_embeddings, hard_neg_embeddings)
+
+        _ib = self.use_inbatch if use_inbatch is None else use_inbatch
+        if _ib:
+            return loss_hard + self.inbatch(query_embeddings, doc_embeddings)
+
+        return loss_hard

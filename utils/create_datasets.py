@@ -1275,7 +1275,7 @@ def create_hard_negatives_datasets_from_pretokenized(
 
     all_datasets = []
     for i, path in enumerate(parquet_files):
-        
+
         dataset_name = _dataset_name_from_path(path)
         task_metadata = TASK_TYPE_TO_TASK_METADATA[NAME_TO_TASK_TYPE[dataset_name]]
 
@@ -1295,3 +1295,72 @@ def create_hard_negatives_datasets_from_pretokenized(
         print(f"Total tokens: {total_tokens/10**9:.2f}B")
 
     return combined
+
+
+def create_per_dataset_from_pretokenized(
+    base_dir,
+    rank=0,
+    datasets_subset: Optional[List[str]] = None,
+) -> dict[str, "Dataset"]:
+    """Load pre-tokenized parquet datasets and return them individually.
+
+    Unlike ``create_hard_negatives_datasets_from_pretokenized`` which
+    concatenates everything into a single HF Dataset, this function returns
+    a ``{dataset_name: Dataset}`` dict — one entry per task.  This is the
+    expected input for ``MultiDatasetLoader`` which wraps each dataset in
+    its own DataLoader.
+
+    Returns:
+        dict mapping dataset name (e.g. ``"msmarco"``, ``"imdb"``) to an HF
+        Dataset with pre-tokenized columns.
+    """
+
+    parquet_files = sorted(
+        glob.glob(os.path.join(base_dir, "**", "data.parquet"), recursive=True)
+    )
+
+    if datasets_subset is not None:
+        subset_set = set(datasets_subset)
+        parquet_files = [
+            p
+            for p in parquet_files
+            if os.path.basename(os.path.dirname(p)) in subset_set
+        ]
+        if rank == 0:
+            print(
+                f"Restricted to {len(parquet_files)} datasets "
+                f"(subset of {len(datasets_subset)} requested)"
+            )
+
+    def _dataset_name_from_path(p):
+        return os.path.basename(os.path.dirname(p))
+
+    assert all(
+        _dataset_name_from_path(p) in NAME_TO_TASK_TYPE for p in parquet_files
+    ), "mapping dataset name -> task type not found"
+
+    if rank == 0:
+        print(f"Found {len(parquet_files)} datasets under {base_dir}")
+
+    if not parquet_files:
+        raise ValueError(
+            f"No parquet files found under {base_dir}. "
+            "Check that base_dir exists and contains **/data.parquet."
+        )
+
+    result: dict[str, Dataset] = {}
+    for i, path in enumerate(parquet_files):
+        dataset_name = _dataset_name_from_path(path)
+        ds_name = os.path.relpath(os.path.dirname(path), base_dir)
+        if rank == 0:
+            print(f"  Loading {ds_name} {i}/{len(parquet_files)}...")
+        result[dataset_name] = _load_parquet_safe(path)
+
+    if rank == 0:
+        total_rows = sum(len(ds) for ds in result.values())
+        print(
+            f"Total training examples: {total_rows / 10**6:.2f}M "
+            f"across {len(result)} datasets"
+        )
+
+    return result

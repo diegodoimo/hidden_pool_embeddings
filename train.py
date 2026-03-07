@@ -25,6 +25,7 @@ from utils.create_datasets import (
     create_hard_negatives_datasets,
     create_and_tokenize_hard_negatives_datasets,
     create_hard_negatives_datasets_from_pretokenized,
+    create_per_dataset_from_pretokenized,
     DATASET_SUBSET,
     get_eval_tasks,
 )
@@ -32,8 +33,13 @@ from utils.dataloader_helpers import (
     collate_fn_with_hard_negatives,
     collate_fn_pretokenized_fast_pad_v2,
     DatasetAwareSampler,
+    MultiDatasetLoader,
 )
-from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLossHardNegatives
+from utils.losses import (
+    EmbeddingGemmaLossDistributed,
+    EmbeddingGemmaLossHardNegatives,
+    F2LLMLoss,
+)
 from typing import Callable
 import torch.nn.functional as TF
 from functools import partial
@@ -47,7 +53,8 @@ from utils.create_datasets import (
 )
 from models.modules import last_token_pool, add_pooling_layers, mean_pool
 from datetime import timedelta
-from tasks import RETRIEVAL_SUBSET
+from tasks import RETRIEVAL_SUBSET, NAME_TO_TASK_TYPE
+from tasks.task_categories import BINARY_CLASSIFICATION_TASKS
 
 
 class CudaDataPrefetcher:
@@ -120,11 +127,22 @@ class Trainer:
             os.makedirs(args.output_dir, exist_ok=True)
 
         if args.activation_checkpointing:
+            # Resolve the underlying transformer model for checkpointing.
+            # EmbeddingT5Gemma2* variants expose it as .encoder;
+            # EncoderWithPooling (Qwen3, embeddinggemma) wraps it as .model.
+            if hasattr(self.model, "encoder"):
+                _base = self.model.encoder
+            elif hasattr(self.model, "model"):
+                _base = self.model.model
+            else:
+                _base = self.model
+
             # Disable cache first
-            self.model.encoder.config.use_cache = False
+            if hasattr(_base, "config"):
+                _base.config.use_cache = False
 
             # Enable PyTorch gradient checkpointing
-            self.model.encoder.gradient_checkpointing_enable(
+            _base.gradient_checkpointing_enable(
                 gradient_checkpointing_kwargs={"use_reentrant": False}
             )
 
@@ -142,8 +160,6 @@ class Trainer:
 
         print_memory_consumed(message="memory consumed before loading model")
 
-        # self.model = ContrastiveLossEmbedding(model = self.model, loss_fn=loss_fn)
-
         # 3. Move your model to the device
         self.model = self.model.to(self.device)
         self.model = DDP(
@@ -152,10 +168,7 @@ class Trainer:
             static_graph=True,  # cache allreduce schedule (graph never changes)
             gradient_as_bucket_view=True,  # avoid gradient-to-bucket copy
         )
-        # NOTE: model is NOT compiled here individually.  Instead, the
-        # entire model-forward + loss is compiled as a single graph in
-        # Trainer.train() so torch.compile can fuse kernels across the
-        # model → loss boundary and compile one unified backward.
+
         self.model = torch.compile(self.model)
         print_memory_consumed(message="memory consumed after loading model")
 
@@ -241,66 +254,24 @@ class Trainer:
         total_loss = 0
         total_time = 0
 
-        use_hard_negatives = isinstance(loss_fn, EmbeddingGemmaLossHardNegatives)
-
-        # -----------------------------------------------------------------
-        # Compile model + loss as ONE graph so torch.compile can fuse
-        # kernels across the model-output → loss boundary and produce a
-        # single optimised backward.  Two variants are defined (with /
-        # without hard negatives) so no Python-level branching appears
-        # inside the compiled region.
-        # -----------------------------------------------------------------
-        # model = self.model  # captured by the closures
-
-        # if use_hard_negatives:
-
-        #     def _step(
-        #         query_inputs,
-        #         query_mask,
-        #         all_doc_inputs,
-        #         all_doc_mask,
-        #         doc_ids,
-        #         query_ids,
-        #         num_neg,
-        #     ):
-        #         B = query_inputs.shape[0]
-        #         query_emb = model(input_ids=query_inputs, attention_mask=query_mask)
-        #         all_doc_emb = model(
-        #             input_ids=all_doc_inputs, attention_mask=all_doc_mask
-        #         )
-        #         doc_emb = all_doc_emb[:B]
-        #         neg_emb = all_doc_emb[B:].view(B, num_neg, -1)
-        #         return loss_fn(
-        #             query_embeddings=query_emb,
-        #             doc_embeddings=doc_emb,
-        #             hard_neg_embeddings=neg_emb,
-        #             doc_ids=doc_ids,
-        #             query_ids=query_ids,
-        #         )
-
-        # else:
-
-        #     def _step(
-        #         query_inputs,
-        #         query_mask,
-        #         all_doc_inputs,
-        #         all_doc_mask,
-        #         doc_ids,
-        #         query_ids,
-        #         num_neg,
-        #     ):
-        #         B = query_inputs.shape[0]
-        #         query_emb = model(input_ids=query_inputs, attention_mask=query_mask)
-        #         doc_emb = model(
-        #             input_ids=all_doc_inputs[:B], attention_mask=all_doc_mask[:B]
-        #         )
-        #         return loss_fn(
-        #             query_embeddings=query_emb,
-        #             doc_embeddings=doc_emb,
-        #             doc_ids=doc_ids,
-        #         )
-
-        # compiled_step = torch.compile(_step, mode="max-autotune")
+        is_f2llm = isinstance(loss_fn, F2LLMLoss)
+        # Pre-compute set of retrieval task names for per-batch inbatch decision
+        _retrieval_types = {
+            "Retrieval",
+            "PairClassification",
+            "STS",
+            "Reranking",
+            "Summarization",
+        }
+        _inbatch_tasks = (
+            frozenset(
+                name
+                for name, ttype in NAME_TO_TASK_TYPE.items()
+                if ttype in _retrieval_types
+            )
+            if is_f2llm
+            else frozenset()
+        )
 
         start = time.time()
         for epoch in range(args.num_train_epochs):
@@ -339,43 +310,37 @@ class Trainer:
                 num_neg = batch["num_hard_negatives"]
 
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    # loss = compiled_step(
-                    #     query_inputs,
-                    #     query_mask,
-                    #     all_doc_inputs,
-                    #     all_doc_mask,
-                    #     doc_ids,
-                    #     query_ids,
-                    #     num_neg,
-                    # )
 
-                    #--- OLD: separate model forward + eager loss ---
+                    # --- OLD: separate model forward + eager loss ---
                     B = query_inputs.shape[0]
                     query_embeddings = self.model(
                         input_ids=query_inputs, attention_mask=query_mask
                     )
-                    if use_hard_negatives:
-                        all_doc_embeddings = self.model(
-                            input_ids=all_doc_inputs, attention_mask=all_doc_mask
-                        )
-                        doc_embeddings = all_doc_embeddings[:B]
-                        neg_embeddings = all_doc_embeddings[B:].view(B, num_neg, -1)
+
+                    all_doc_embeddings = self.model(
+                        input_ids=all_doc_inputs, attention_mask=all_doc_mask
+                    )
+                    doc_embeddings = all_doc_embeddings[:B]
+                    neg_embeddings = all_doc_embeddings[B:].view(B, num_neg, -1)
+
+                    if is_f2llm:
+                        ds_name = batch.get("dataset_name", "")
+                        _ib = ds_name in _inbatch_tasks
                         loss = loss_fn(
                             query_embeddings=query_embeddings,
                             doc_embeddings=doc_embeddings,
                             hard_neg_embeddings=neg_embeddings,
                             doc_ids=doc_ids,
                             query_ids=query_ids,
+                            use_inbatch=_ib,
                         )
                     else:
-                        doc_embeddings = self.model(
-                            input_ids=all_doc_inputs[:B],
-                            attention_mask=all_doc_mask[:B],
-                        )
                         loss = loss_fn(
                             query_embeddings=query_embeddings,
                             doc_embeddings=doc_embeddings,
+                            hard_neg_embeddings=neg_embeddings,
                             doc_ids=doc_ids,
+                            query_ids=query_ids,
                         )
 
                 loss.backward()
@@ -529,13 +494,19 @@ def main():
         ).to("cuda")
         model = add_pooling_layers(model, pool_fn=last_token_pool)
 
-        args.use_lora = False
-        args.eval_only = True
         task_type = None
-        lora_modules = None
+        lora_modules = [
+            "q_proj",
+            "o_proj",
+            "v_proj",
+            "k_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ]
 
         if RANK == 0:
-            print("qwen3 model: setting up eval only mode")
+            print(f"qwen3 model loaded (eval_only={args.eval_only})")
     elif "embeddinggemma" in args.model_name_or_path.lower():
 
         model_name = "embeddinggemma"
@@ -595,7 +566,7 @@ def main():
     #         datasets_subset=train_list,
     #         max_seq_len=args.max_seq_len if args.length_strategy == "filter" else None,
     #     )
-    
+
     train_dataset = create_hard_negatives_datasets_from_pretokenized(
         base_dir=args.negatives_dir,
         rank=RANK,
@@ -607,71 +578,99 @@ def main():
         print(f"datasets prepared in {time.time()-start:.1f}s")
         print("dataloader preparation")
 
-    # dataset collection is already sorted by length dataset / specific
-    if args.batch_strategy in ("sequential", "grouped"):
-        sampler = DatasetAwareSampler(
+    # ------------------------------------------------------------------
+    # F2LLM multi-dataset path: per-dataset DataLoaders + MultiDatasetLoader
+    # ------------------------------------------------------------------
+    if args.batch_strategy == "f2llm_multi":
+        per_dataset_dict = create_per_dataset_from_pretokenized(
+            base_dir=args.negatives_dir,
+            rank=RANK,
+            datasets_subset=train_list,
+        )
+
+        binary_set = set(BINARY_CLASSIFICATION_TASKS)
+        args.num_workers = int(args.num_workers * 1.25)
+
+        loaders: dict[str, DataLoader] = {}
+        for ds_name, ds in per_dataset_dict.items():
+            # Binary classification tasks: 1 hard negative
+            # Everything else: full num_hard_negatives
+            k = 1 if ds_name in binary_set else args.num_hard_negatives
+
+            ds_sampler = DistributedSampler(
+                ds,
+                num_replicas=WORLD_SIZE,
+                rank=RANK,
+                shuffle=True,
+                seed=42,
+            )
+            ds_collate = partial(
+                collate_fn_pretokenized_fast_pad_v2,
+                pad_token_id=tokenizer.pad_token_id,
+                num_hard_negatives=k,
+                padding_side="right",
+                eot_id=eot_id,
+            )
+            loaders[ds_name] = DataLoader(
+                ds,
+                batch_size=args.per_device_train_batch_size,
+                sampler=ds_sampler,
+                collate_fn=ds_collate,
+                num_workers=min(args.num_workers, 2),
+                pin_memory=True,
+                persistent_workers=min(args.num_workers, 2) > 0,
+                prefetch_factor=4 if min(args.num_workers, 2) > 0 else None,
+                multiprocessing_context=(
+                    "spawn" if min(args.num_workers, 2) > 0 else None
+                ),
+            )
+
+        train_loader = MultiDatasetLoader(loaders)
+
+    # ------------------------------------------------------------------
+    # Standard path: single concatenated dataset
+    # ------------------------------------------------------------------
+    else:
+        if args.batch_strategy in ("sequential", "grouped"):
+            sampler = DatasetAwareSampler(
+                train_dataset,
+                batch_size=args.per_device_train_batch_size,
+                strategy=args.batch_strategy,
+                num_replicas=WORLD_SIZE,
+                rank=RANK,
+                shuffle=True,
+                seed=42,
+            )
+        else:
+            sampler = DistributedSampler(
+                train_dataset,
+                num_replicas=WORLD_SIZE,
+                rank=RANK,
+                shuffle=False,
+                seed=42,
+            )
+
+        collate_fn = partial(
+            collate_fn_pretokenized_fast_pad_v2,
+            pad_token_id=tokenizer.pad_token_id,
+            num_hard_negatives=args.num_hard_negatives,
+            padding_side="right",
+            eot_id=eot_id,
+        )
+
+        # num workers can be slightly more that tot/num_ranks (empirical factor)
+        args.num_workers = int(args.num_workers * 1.25)
+        train_loader = DataLoader(
             train_dataset,
             batch_size=args.per_device_train_batch_size,
-            strategy=args.batch_strategy,
-            num_replicas=WORLD_SIZE,
-            rank=RANK,
-            shuffle=True,
-            seed=42,
+            sampler=sampler,
+            collate_fn=collate_fn,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            persistent_workers=args.num_workers > 0,
+            prefetch_factor=4 if args.num_workers > 0 else None,
+            multiprocessing_context="spawn" if args.num_workers > 0 else None,
         )
-    else:
-        sampler = DistributedSampler(
-            train_dataset,
-            num_replicas=WORLD_SIZE,
-            rank=RANK,
-            shuffle=False,
-            seed=42,
-        )
-
-    # if args.tokenize_dataset:
-    collate_fn = partial(
-        collate_fn_pretokenized_fast_pad_v2,
-        pad_token_id=tokenizer.pad_token_id,
-        num_hard_negatives=args.num_hard_negatives,
-        padding_side="right",
-        eot_id=eot_id,
-    )
-    # else:
-    #     collate_fn = partial(
-    #         collate_fn_with_hard_negatives,
-    #         pad_token_id=tokenizer.pad_token_id,
-    #         num_hard_negatives=args.num_hard_negatives,
-    #         padding_side="right",
-    #         tokenizer=tokenizer,
-    #         eot_id=eot_id,
-    #         add_special_tokens=add_special_tokens,
-    #         max_seq_len=(
-    #             args.max_seq_len if args.length_strategy == "truncate" else None
-    #         ),
-    #     )
-
-    # OLD: DataLoader without persistent workers / spawn
-    # train_loader = DataLoader(
-    #     train_dataset,
-    #     batch_size=args.per_device_train_batch_size,
-    #     sampler=sampler,
-    #     collate_fn=collate_fn,
-    #     num_workers=args.num_workers,
-    #     pin_memory=True,
-    # )
-
-    # num workers can be slightly more that tot/num_ranks (empirical factor)
-    args.num_workers = int(args.num_workers * 1.25)
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.per_device_train_batch_size,
-        sampler=sampler,
-        collate_fn=collate_fn,
-        num_workers=args.num_workers,
-        pin_memory=True,
-        persistent_workers=args.num_workers > 0,
-        prefetch_factor=4 if args.num_workers > 0 else None,
-        multiprocessing_context="spawn" if args.num_workers > 0 else None,
-    )
 
     # **************************************
 
@@ -688,11 +687,14 @@ def main():
 
     # Initialize loss (not compiled here; model+loss are compiled as one
     # graph inside Trainer.train()).
-    loss_fn = EmbeddingGemmaLossHardNegatives(
-        temperature=0.07, num_hard_negatives=args.num_hard_negatives
-    )
-    if WORLD_SIZE > 1 and args.distributed_loss:
-        loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
+    if args.loss_type == "f2llm":
+        loss_fn = F2LLMLoss(temperature=args.f2llm_temperature)
+    else:
+        loss_fn = EmbeddingGemmaLossHardNegatives(
+            temperature=0.07, num_hard_negatives=args.num_hard_negatives
+        )
+        if WORLD_SIZE > 1 and args.distributed_loss:
+            loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
 
     # Compile loss standalone (alternative to unified model+loss compilation):
     # loss_fn = torch.compile(loss_fn, mode="max-autotune")
