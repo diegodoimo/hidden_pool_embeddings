@@ -156,7 +156,7 @@ class Trainer:
         # entire model-forward + loss is compiled as a single graph in
         # Trainer.train() so torch.compile can fuse kernels across the
         # model → loss boundary and compile one unified backward.
-        self.model = torch.compile(self.model)  # , mode="max-autotune")
+        self.model = torch.compile(self.model)
         print_memory_consumed(message="memory consumed after loading model")
 
         self.optimizer, self.lr_scheduler = get_scheduler_optimizer(
@@ -338,45 +338,45 @@ class Trainer:
                 query_ids = batch["query_ids"]
                 num_neg = batch["num_hard_negatives"]
 
-                # with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                #     loss = compiled_step(
-                #         query_inputs,
-                #         query_mask,
-                #         all_doc_inputs,
-                #         all_doc_mask,
-                #         doc_ids,
-                #         query_ids,
-                #         num_neg,
-                #     )
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    # loss = compiled_step(
+                    #     query_inputs,
+                    #     query_mask,
+                    #     all_doc_inputs,
+                    #     all_doc_mask,
+                    #     doc_ids,
+                    #     query_ids,
+                    #     num_neg,
+                    # )
 
-                # --- OLD: separate model forward + eager loss ---
-                B = query_inputs.shape[0]
-                query_embeddings = self.model(
-                    input_ids=query_inputs, attention_mask=query_mask
-                )
-                if use_hard_negatives:
-                    all_doc_embeddings = self.model(
-                        input_ids=all_doc_inputs, attention_mask=all_doc_mask
+                    #--- OLD: separate model forward + eager loss ---
+                    B = query_inputs.shape[0]
+                    query_embeddings = self.model(
+                        input_ids=query_inputs, attention_mask=query_mask
                     )
-                    doc_embeddings = all_doc_embeddings[:B]
-                    neg_embeddings = all_doc_embeddings[B:].view(B, num_neg, -1)
-                    loss = loss_fn(
-                        query_embeddings=query_embeddings,
-                        doc_embeddings=doc_embeddings,
-                        hard_neg_embeddings=neg_embeddings,
-                        doc_ids=doc_ids,
-                        query_ids=query_ids,
-                    )
-                else:
-                    doc_embeddings = self.model(
-                        input_ids=all_doc_inputs[:B],
-                        attention_mask=all_doc_mask[:B],
-                    )
-                    loss = loss_fn(
-                        query_embeddings=query_embeddings,
-                        doc_embeddings=doc_embeddings,
-                        doc_ids=doc_ids,
-                    )
+                    if use_hard_negatives:
+                        all_doc_embeddings = self.model(
+                            input_ids=all_doc_inputs, attention_mask=all_doc_mask
+                        )
+                        doc_embeddings = all_doc_embeddings[:B]
+                        neg_embeddings = all_doc_embeddings[B:].view(B, num_neg, -1)
+                        loss = loss_fn(
+                            query_embeddings=query_embeddings,
+                            doc_embeddings=doc_embeddings,
+                            hard_neg_embeddings=neg_embeddings,
+                            doc_ids=doc_ids,
+                            query_ids=query_ids,
+                        )
+                    else:
+                        doc_embeddings = self.model(
+                            input_ids=all_doc_inputs[:B],
+                            attention_mask=all_doc_mask[:B],
+                        )
+                        loss = loss_fn(
+                            query_embeddings=query_embeddings,
+                            doc_embeddings=doc_embeddings,
+                            doc_ids=doc_ids,
+                        )
 
                 loss.backward()
                 total_loss += loss.detach().float()
@@ -595,6 +595,7 @@ def main():
     #         datasets_subset=train_list,
     #         max_seq_len=args.max_seq_len if args.length_strategy == "filter" else None,
     #     )
+    
     train_dataset = create_hard_negatives_datasets_from_pretokenized(
         base_dir=args.negatives_dir,
         rank=RANK,

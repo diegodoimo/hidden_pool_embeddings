@@ -38,8 +38,8 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train.py \
-    --train_subset reduced \
-    --out_filename test_speedup_improved_loss \
+    --train_subset retrieval \
+    --out_filename f2llm_retrieval_improved_loss \
     --num_hard_negatives 7 \
     --negatives_dir results/datasets_tokenized/f2llm/qwen3_600m-teacher_embeddinggemma-prompt_t5gemma-2-tok \
     --model_name_or_path google/t5gemma-2-270m-270m  \
@@ -61,7 +61,6 @@ torchrun \
     --eval_steps 5 \
     --output_dir "./results/train" \
     #--negatives_dir results/datasets_negatives/qwen3_600m \
-    #--train_subset reduced \
     #--measure_baselines \
     # --eval_only \
     # --distributed_loss \
