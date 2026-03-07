@@ -6,7 +6,7 @@
 #SBATCH --time=24:00:00            
 #SBATCH --ntasks-per-node=1       
 #SBATCH --cpus-per-task=64  #32          
-#SBATCH --mem=100G                   
+#SBATCH --mem=200G                   
 #SBATCH --job-name=test
 
 source /u/area/ddoimo/anaconda3/bin/activate ./env_a100
@@ -24,8 +24,8 @@ export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
 python tokenize_data.py \
     --tokenizer_path google/t5gemma-2-270m-270m \
     --force_recompute \
-    --f2llm \
-    #--data_subset arguana 
+    #--f2llm \
+    #--data_subset bioasq 
     # --data_subset fever \
     # --implementation dedup
 
