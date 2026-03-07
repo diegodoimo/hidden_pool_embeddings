@@ -156,7 +156,7 @@ class Trainer:
         # entire model-forward + loss is compiled as a single graph in
         # Trainer.train() so torch.compile can fuse kernels across the
         # model → loss boundary and compile one unified backward.
-        self.model = torch.compile(self.model)#, mode="max-autotune")
+        self.model = torch.compile(self.model)  # , mode="max-autotune")
         print_memory_consumed(message="memory consumed after loading model")
 
         self.optimizer, self.lr_scheduler = get_scheduler_optimizer(
@@ -250,7 +250,7 @@ class Trainer:
         # without hard negatives) so no Python-level branching appears
         # inside the compiled region.
         # -----------------------------------------------------------------
-        # model = self.model  # captured by the closures 
+        # model = self.model  # captured by the closures
 
         # if use_hard_negatives:
 
@@ -471,7 +471,7 @@ class Trainer:
 def main():
     args = parse_args()
 
-    #Login to Hugging Face for gated models (read token from .hf_token, gitignored)
+    # Login to Hugging Face for gated models (read token from .hf_token, gitignored)
     _hf_token_path = os.path.join(os.path.dirname(__file__), ".hf_token")
     if os.path.isfile(_hf_token_path):
         with open(_hf_token_path, "r") as f:

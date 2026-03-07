@@ -68,8 +68,8 @@ def parse_args():
         default="sdpa",
         choices=["eager", "sdpa", "flash_attention_2"],
         help="Attention kernel: 'eager' (full O(L^2) materialisation), "
-             "'sdpa' (fused PyTorch SDPA), 'flash_attention_2' (FlashAttn2). "
-             "Default: 'sdpa'.",
+        "'sdpa' (fused PyTorch SDPA), 'flash_attention_2' (FlashAttn2). "
+        "Default: 'sdpa'.",
     )
 
     parser.add_argument(
