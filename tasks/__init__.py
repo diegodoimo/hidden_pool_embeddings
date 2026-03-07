@@ -1,9 +1,24 @@
+import os
+
 from .binary_classification_tasks import *
 from .classification_tasks import *
 from .clustering_tasks import *
 from .nli_tasks import *
 from .retrieval_tasks import *
 from .sts_tasks import *
+
+
+def task_name_to_inner_path(task_name: str) -> str:
+    """Build canonical inner path from NAME_TO_TASK_SUBTASK_PATH.
+
+    Returns e.g. "retrieval/general_retrieval/arguana" or "nli/snli".
+    """
+    info = NAME_TO_TASK_SUBTASK_PATH[task_name]
+    parent = info["parent_folder"]
+    subparent = info["subparent_folder"]
+    if subparent is not None:
+        return os.path.join(parent, subparent, task_name)
+    return os.path.join(parent, task_name)
 
 
 NAME_TO_TASK = {

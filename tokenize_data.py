@@ -13,7 +13,7 @@ Usage:
         --tokenizer_path google/t5gemma-2-270m-270m \
         [--num_hard_negatives 8] \
         [--max_seq_len 1024] \
-        [--data_subset retrieval/general_retrieval/arguana]
+        [--data_subset arguana msmarco]
 """
 
 import argparse
@@ -30,7 +30,12 @@ import pyarrow.parquet as pq
 import pandas as pd
 from transformers import AutoTokenizer
 
-from tasks import NAME_TO_TASK_SUBTASK_PATH, NAME_TO_TASK_TYPE, TRANSLATE_F2LLM_NAME
+from tasks import (
+    NAME_TO_TASK_SUBTASK_PATH,
+    NAME_TO_TASK_TYPE,
+    TRANSLATE_F2LLM_NAME,
+    task_name_to_inner_path,
+)
 from tasks.f2llm_prompts import TASK_TO_PROMPT
 from tasks.retrieval_loaders import deduplicate
 from utils.create_datasets import (
@@ -48,19 +53,6 @@ from utils.load_f2llm_data import get_f2llm_sources, load_f2llm
 from datasets import Dataset
 import time
 import warnings
-
-def _inner_path_for_dataset(ds_name: str) -> str:
-    """Build canonical inner path from NAME_TO_TASK_SUBTASK_PATH.
-
-    Returns e.g. "retrieval/general_retrieval/arguana" or "nli/snli".
-    """
-    info = NAME_TO_TASK_SUBTASK_PATH[ds_name]
-    parent = info["parent_folder"]
-    subparent = info["subparent_folder"]
-    if subparent is not None:
-        return os.path.join(parent, subparent, ds_name)
-    return os.path.join(parent, ds_name)
-
 
 INSTRUCTION_TEMPLATES = {
     "qwen3": (instruction_template_qwen3, False),
@@ -131,7 +123,7 @@ def parse_args():
         nargs="*",
         default=None,
         help="Optional list of datasets to restrict. For --f2llm: source names (e.g. arguana amazon_qa). "
-        "For hard-negative datasets: inner paths (e.g. retrieval/general_retrieval/arguana). If omitted, process all.",
+        "For hard-negative datasets: task names (e.g. arguana) or full paths. If omitted, process all.",
     )
     parser.add_argument(
         "--num_workers",
@@ -537,10 +529,16 @@ def get_data_paths(root_folder, subset_list, teacher_model):
         return
 
     if subset_list is not None:
-        subset_set = set(subset_list)
+        # Expand task names to full paths via NAME_TO_TASK_SUBTASK_PATH
+        subset_set = set()
+        for item in subset_list:
+            if "/" in item:
+                subset_set.add(item)
+            elif item in NAME_TO_TASK_SUBTASK_PATH:
+                subset_set.add(task_name_to_inner_path(item))
+            else:
+                subset_set.add(item)
 
-        # Match by inner path (e.g. retrieval/general_retrieval/arguana) so the
-        # subset applies across all dataset folders
         def _inner_path(p):
             rel = os.path.relpath(p, root_folder)
             parts = rel.split(os.sep)
@@ -555,6 +553,9 @@ def get_data_paths(root_folder, subset_list, teacher_model):
 
 def main():
     args = parse_args()
+
+    if args.f2llm_prompt:
+        args.instruction_template = None
 
     if args.instruction_template not in INSTRUCTION_TEMPLATES:
         raise ValueError(
@@ -619,7 +620,7 @@ def main():
             # inner_path = _inner_path_for_ds(ds_name)
 
             if ds_name in NAME_TO_TASK_SUBTASK_PATH:
-                inner_path = _inner_path_for_dataset(ds_name)
+                inner_path = task_name_to_inner_path(ds_name)
             else:
                 print(f"{ds_name} NOT FULL TASKS ADD IT TO PROCESS IT")
                 continue
@@ -652,20 +653,22 @@ def main():
             f2llm_prompt = TASK_TO_PROMPT.get(ds_name)
             ds = load_f2llm(sources=[f2llm_source])
             # Step 1: strip F2LLM instruct-prefix from queries via parallel map.
-            convert_fn = partial(
-                _convert_f2llm_batch, f2llm_prompt, args.num_hard_negatives
-            )
 
-            ds = ds.map(
-                convert_fn,
-                batched=True,
-                batch_size=10000,
-                num_proc=args.num_workers,
-                remove_columns=ds.column_names,
-            )
-            # Step 2: assign query_id / positive_id via fast pandas deduplication.
-            # Same-text queries / positives across the whole source receive the
-            # same ID, consistent with the hard-negative parquet convention.
+            if not args.f2llm_prompt
+                convert_fn = partial(
+                    _convert_f2llm_batch, f2llm_prompt, args.num_hard_negatives
+                )
+
+                ds = ds.map(
+                    convert_fn,
+                    batched=True,
+                    batch_size=10000,
+                    num_proc=args.num_workers,
+                    remove_columns=ds.column_names,
+                )
+                # Step 2: assign query_id / positive_id via fast pandas deduplication.
+                # Same-text queries / positives across the whole source receive the
+                # same ID, consistent with the hard-negative parquet convention.
             ds = _assign_dedup_ids(ds)
         else:
             ds = _load_parquet_safe(input_path)
