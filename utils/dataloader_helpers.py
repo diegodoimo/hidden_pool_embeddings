@@ -1178,3 +1178,55 @@ def collate_fn_pretokenized(
         "query_ids": q_ids,
         "num_hard_negatives": num_hard_negatives,
     }
+
+
+
+def collate_fn_pretokenized_fast_pad(
+    batch,
+    pad_token_id=0,
+    num_hard_negatives=7,
+    padding_side="right",
+    eot_id=None,
+):
+    query_tokens = [item["query_token_ids"] for item in batch]
+    all_docs = [item["positive_token_ids"] for item in batch] + [
+        neg for item in batch for neg in item["negative_token_ids"][:num_hard_negatives]
+    ]
+    # Pad queries and create attention masks
+    query_padded, query_mask = _fast_pad(
+        _query_tokens,
+        pad_id=pad_token_id,
+        eot_id=eot_id,
+        padding_side=padding_side,
+    )
+
+    all_doc_padded, all_doc_mask = _fast_pad(
+        all_docs_ids,
+        pad_id=pad_token_id,
+        eot_id=eot_id,
+        padding_side=padding_side,
+    )
+
+    pos_ids = torch.tensor(
+        [
+            _str_to_int_id(f"{item['dataset_name']}/{item['positive_id']}")
+            for item in batch
+        ],
+        dtype=torch.long,
+    )
+    q_ids = torch.tensor(
+        [
+            _str_to_int_id(f"{item['dataset_name']}/{item['query_id']}")
+            for item in batch
+        ],
+        dtype=torch.long,
+    )
+    return {
+        "query_token_ids": query_token_ids_padded,
+        "query_attention_mask": query_attention_mask,
+        "all_doc_token_ids": all_doc_padded,
+        "all_doc_attention_mask": all_doc_mask,
+        "pos_ids": pos_ids,
+        "query_ids": q_ids,
+        "num_hard_negatives": num_hard_negatives,
+    }
