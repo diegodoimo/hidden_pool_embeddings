@@ -1194,14 +1194,14 @@ def collate_fn_pretokenized_fast_pad(
     ]
     # Pad queries and create attention masks
     query_padded, query_mask = _fast_pad(
-        _query_tokens,
+        query_tokens,
         pad_id=pad_token_id,
         eot_id=eot_id,
         padding_side=padding_side,
     )
 
     all_doc_padded, all_doc_mask = _fast_pad(
-        all_docs_ids,
+        all_docs,
         pad_id=pad_token_id,
         eot_id=eot_id,
         padding_side=padding_side,

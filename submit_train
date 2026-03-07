@@ -28,6 +28,7 @@ head_node=${nodes[0]}
 head_node_ip=$(getent hosts "$head_node" | awk '{ print $1 }')
 GPU_NUMBER=$(echo $CUDA_VISIBLE_DEVICES | tr ',' ' ' | wc -w)
 WORKERS_PER_RANK=$(( SLURM_CPUS_PER_TASK / GPU_NUMBER ))
+#train.py \
 
 torchrun \
     --nnodes=$SLURM_NTASKS \
@@ -36,7 +37,7 @@ torchrun \
     --rdzv-id=$SLURM_PROCID \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
-    train.py \
+    benchmark_collate_fn_pretokenized.py \
     --train_subset reduced \
     --out_filename test_speedup_improved_loss \
     --num_hard_negatives 7 \
