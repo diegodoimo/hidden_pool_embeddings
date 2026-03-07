@@ -1198,14 +1198,14 @@ def collate_fn_pretokenized_fast_pad(
         neg for item in batch for neg in item["negative_token_ids"][:num_hard_negatives]
     ]
     # Pad queries and create attention masks
-    query_padded, query_mask = _fast_pad(
+    query_token_ids_padded, query_attention_mask = _fast_pad(
         query_tokens,
         pad_id=pad_token_id,
         eot_id=eot_id,
         padding_side=padding_side,
     )
 
-    all_doc_padded, all_doc_mask = _fast_pad(
+    doc_ids_padded, docs_attention_mask = _fast_pad(
         all_docs,
         pad_id=pad_token_id,
         eot_id=eot_id,
@@ -1229,8 +1229,8 @@ def collate_fn_pretokenized_fast_pad(
     return {
         "query_token_ids": query_token_ids_padded,
         "query_attention_mask": query_attention_mask,
-        "all_doc_token_ids": all_doc_padded,
-        "all_doc_attention_mask": all_doc_mask,
+        "all_doc_token_ids": doc_ids_padded,
+        "all_doc_attention_mask": docs_attention_mask,
         "pos_ids": pos_ids,
         "query_ids": q_ids,
         "num_hard_negatives": num_hard_negatives,
