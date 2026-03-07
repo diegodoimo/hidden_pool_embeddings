@@ -76,13 +76,15 @@ def _fast_pad(
     """Pad a list of token-id lists into (N, L) tensors without creating N
     intermediate 1-D torch.Tensors.
 
-    Steps:
-    1. Allocate a numpy int64 array pre-filled with pad_id  (one alloc).
-    2. Copy each sequence via a numpy slice (much faster than torch.tensor
-       per element and avoids the Python-object overhead of torch.tensor).
-    3. Convert to torch via zero-copy from_numpy.
-    4. Build the attention mask with a single vectorised comparison instead
-       of creating N ones_like tensors and padding them separately.
+    Why numpy instead of pure torch:
+        ``torch.tensor(python_list)`` must traverse Python objects element by
+        element.  NumPy's C layer unpacks a ``list[int]`` directly into a
+        pre-allocated contiguous buffer in one shot, and ``torch.from_numpy``
+        is a zero-copy view — no allocation, no data copy.
+
+    Build the mask positionally (not value-based) so it is correct even when
+    ``pad_id == eot_id``:  a value-based ``padded != pad_id`` would
+    incorrectly mark the EOT token as padding in that case.
 
     Returns:
         padded  – LongTensor of shape (N, max_len)
@@ -92,9 +94,6 @@ def _fast_pad(
     extra = 1 if eot_id is not None else 0
     max_len = max(len(s) for s in token_lists) + extra
     arr = np.full((n, max_len), pad_id, dtype=np.int64)
-    # Build the mask positionally so it is correct even when pad_id == eot_id.
-    # A value-based mask `(padded != pad_id)` would incorrectly mark the EOT
-    # token as padding in that case.
     mask_arr = np.zeros((n, max_len), dtype=np.int64)
     if padding_side == "right":
         for i, s in enumerate(token_lists):
@@ -111,6 +110,74 @@ def _fast_pad(
             mask_arr[i, start : start + L + extra] = 1
             if eot_id is not None:
                 arr[i, start + L] = eot_id
+    padded = torch.from_numpy(arr)
+    mask = torch.from_numpy(mask_arr)
+    return padded, mask
+
+
+def _fast_pad_v2(
+    token_lists: list[list[int]],
+    pad_id: int,
+    eot_id: int | None = None,
+    padding_side: str = "right",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Optimised drop-in replacement for ``_fast_pad``.
+
+    Two additional improvements over ``_fast_pad``:
+
+    1. **``np.ones`` + zero the padding tail** – initialising to ones and
+       then zeroing only the trailing (or leading) padding writes
+       ``max_len - L`` elements per row instead of ``L`` elements.  For
+       length-sorted batches (the common training case) the tail is nearly
+       empty, so mask construction costs almost nothing.
+
+    2. **``eot_id`` branch hoisted outside the loop** – the conditional is
+       evaluated once per call rather than once per sequence.
+
+    Correctness guarantee (``pad_id == eot_id``) is inherited from
+    ``_fast_pad``: the mask is positional, not value-based.
+
+    Returns:
+        padded  – LongTensor of shape (N, max_len)
+        mask    – LongTensor of shape (N, max_len), 1 for real tokens, 0 for pad
+    """
+    n = len(token_lists)
+    extra = 1 if eot_id is not None else 0
+    max_len = max(len(s) for s in token_lists) + extra
+    arr = np.full((n, max_len), pad_id, dtype=np.int64)
+    mask_arr = np.ones((n, max_len), dtype=np.int64)
+
+    if padding_side == "right":
+        if eot_id is not None:
+            for i, s in enumerate(token_lists):
+                L = len(s)
+                arr[i, :L] = s
+                arr[i, L] = eot_id
+                if L + extra < max_len:
+                    mask_arr[i, L + extra :] = 0
+        else:
+            for i, s in enumerate(token_lists):
+                L = len(s)
+                arr[i, :L] = s
+                if L < max_len:
+                    mask_arr[i, L:] = 0
+    else:  # left padding
+        if eot_id is not None:
+            for i, s in enumerate(token_lists):
+                L = len(s)
+                start = max_len - L - extra
+                arr[i, start : start + L] = s
+                arr[i, start + L] = eot_id
+                if start:
+                    mask_arr[i, :start] = 0
+        else:
+            for i, s in enumerate(token_lists):
+                L = len(s)
+                start = max_len - L
+                arr[i, start:] = s
+                if start:
+                    mask_arr[i, :start] = 0
+
     padded = torch.from_numpy(arr)
     mask = torch.from_numpy(mask_arr)
     return padded, mask
@@ -1193,25 +1260,23 @@ def collate_fn_pretokenized_fast_pad(
     padding_side="right",
     eot_id=None,
 ):
+    """Pre-tokenized collate using ``_fast_pad`` for padding."""
     query_tokens = [item["query_token_ids"] for item in batch]
     all_docs = [item["positive_token_ids"] for item in batch] + [
         neg for item in batch for neg in item["negative_token_ids"][:num_hard_negatives]
     ]
-    # Pad queries and create attention masks
     query_padded, query_mask = _fast_pad(
-        _query_tokens,
+        query_tokens,
         pad_id=pad_token_id,
         eot_id=eot_id,
         padding_side=padding_side,
     )
-
     all_doc_padded, all_doc_mask = _fast_pad(
-        all_docs_ids,
+        all_docs,
         pad_id=pad_token_id,
         eot_id=eot_id,
         padding_side=padding_side,
     )
-
     pos_ids = torch.tensor(
         [
             _str_to_int_id(f"{item['dataset_name']}/{item['positive_id']}")
@@ -1227,8 +1292,62 @@ def collate_fn_pretokenized_fast_pad(
         dtype=torch.long,
     )
     return {
-        "query_token_ids": query_token_ids_padded,
-        "query_attention_mask": query_attention_mask,
+        "query_token_ids": query_padded,
+        "query_attention_mask": query_mask,
+        "all_doc_token_ids": all_doc_padded,
+        "all_doc_attention_mask": all_doc_mask,
+        "pos_ids": pos_ids,
+        "query_ids": q_ids,
+        "num_hard_negatives": num_hard_negatives,
+    }
+
+
+def collate_fn_pretokenized_fast_pad_v2(
+    batch,
+    pad_token_id=0,
+    num_hard_negatives=7,
+    padding_side="right",
+    eot_id=None,
+):
+    """Pre-tokenized collate using ``_fast_pad_v2`` for padding.
+
+    Drop-in replacement for ``collate_fn_pretokenized_fast_pad`` that uses
+    the further-optimised ``_fast_pad_v2`` (hoisted branch + np.ones tail-
+    zeroing strategy).  Return dict is identical.
+    """
+    query_tokens = [item["query_token_ids"] for item in batch]
+    all_docs = [item["positive_token_ids"] for item in batch] + [
+        neg for item in batch for neg in item["negative_token_ids"][:num_hard_negatives]
+    ]
+    query_padded, query_mask = _fast_pad_v2(
+        query_tokens,
+        pad_id=pad_token_id,
+        eot_id=eot_id,
+        padding_side=padding_side,
+    )
+    all_doc_padded, all_doc_mask = _fast_pad_v2(
+        all_docs,
+        pad_id=pad_token_id,
+        eot_id=eot_id,
+        padding_side=padding_side,
+    )
+    pos_ids = torch.tensor(
+        [
+            _str_to_int_id(f"{item['dataset_name']}/{item['positive_id']}")
+            for item in batch
+        ],
+        dtype=torch.long,
+    )
+    q_ids = torch.tensor(
+        [
+            _str_to_int_id(f"{item['dataset_name']}/{item['query_id']}")
+            for item in batch
+        ],
+        dtype=torch.long,
+    )
+    return {
+        "query_token_ids": query_padded,
+        "query_attention_mask": query_mask,
         "all_doc_token_ids": all_doc_padded,
         "all_doc_attention_mask": all_doc_mask,
         "pos_ids": pos_ids,
