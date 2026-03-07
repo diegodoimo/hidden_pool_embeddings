@@ -105,36 +105,7 @@ QWEN3_600M_DATASET_SUBSET = [
     # "nli/snli",
 ]
 
-# All datasets in results/datasets_negatives/qwen3_600m
-FULL_TRAIN_DATA = [
-    "nli/anli",
-    "nli/mnli",
-    "nli/snli",
-    "retrieval/domain_specific_qa/amazonqa",
-    "retrieval/domain_specific_qa/fiqa2018",
-    "retrieval/fact_verification/fever",
-    "retrieval/fact_verification/scifact",
-    "retrieval/general_retrieval/arguana",
-    "retrieval/general_retrieval/msmarco",
-    "retrieval/general_retrieval/nfcorpus",
-    "retrieval/open_domain_qa/eli5",
-    "retrieval/open_domain_qa/hotpotqa",
-    "retrieval/open_domain_qa/naturalquestions",
-    "retrieval/open_domain_qa/squad",
-    "retrieval/open_domain_qa/triviaqa",
-    "retrieval/paraphrase_detection/qqp",
-    "retrieval/paraphrase_detection/stackexchange_dup_p2p",
-    "retrieval/paraphrase_detection/stackexchange_dup_s2s",
-    "retrieval/paraphrase_detection/stackoverflow_dup",
-    "retrieval/scientific_doc_retrieval/specter",
-    "retrieval/summarization/cnndm",
-    "retrieval/summarization/sentence_compression",
-    "retrieval/summarization/wikihow",
-    "retrieval/summarization/xsum",
-    "sts/sts12",
-    "sts/sts22",
-    "sts/stsbenchmark",
-]
+
 
 
 # MTEB 20-task subset (mteb_20task_subset_selection.md) - minimizes eval time while preserving category averages
@@ -609,11 +580,9 @@ def create_dataset(
 
     input_to_dict = partial(
         _build_prompt_text,
-        tokenizer=tokenizer,
         instruction_template=instruction_template,
         prompt_type=prompt_type,
         task_metadata=task_metadata,
-        eot_id=tokenizer.pad_token_id,
     )
     new_ds = dataset.map(input_to_dict, batched=True, batch_size=10000)
 

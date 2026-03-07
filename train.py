@@ -565,6 +565,8 @@ def main():
     train_list = None  # defaults to all
     if args.train_subset == "reduced":
         train_list = QWEN3_600M_DATASET_SUBSET
+    elif args.train_subset == "retireval": 
+        train_liast = RETRIEVAL_SUBSET
 
     teacher_model = args.negatives_dir.split("/")[-1]
 

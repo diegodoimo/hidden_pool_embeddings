@@ -30,11 +30,10 @@ import pyarrow.parquet as pq
 import pandas as pd
 from transformers import AutoTokenizer
 
-from tasks import NAME_TO_TASK_TYPE, TRANSLATE_F2LLM_NAME
+from tasks import NAME_TO_TASK_SUBTASK_PATH, NAME_TO_TASK_TYPE, TRANSLATE_F2LLM_NAME
 from tasks.f2llm_prompts import TASK_TO_PROMPT
 from tasks.retrieval_loaders import deduplicate
 from utils.create_datasets import (
-    FULL_TRAIN_DATA,
     TASK_TYPE_TO_TASK_METADATA,
     instruction_template_embeddinggemma,
     instruction_template_qwen3,
@@ -49,14 +48,17 @@ from utils.load_f2llm_data import get_f2llm_sources, load_f2llm
 from datasets import Dataset
 import time
 
-# Build a per-dataset-name → canonical inner path lookup from the full training
-# data manifest.  Keys are leaf dataset names (e.g. "arguana"); values are the
-# full inner path including task type and retrieval subtype when applicable
-# (e.g. "retrieval/general_retrieval/arguana").  Used to construct output paths
-# for F2LLM sources that have no on-disk directory hierarchy.
-_DATASET_TO_INNER_PATH: dict[str, str] = {
-    p.rstrip("/").split("/")[-1]: p.rstrip("/") for p in FULL_TRAIN_DATA
-}
+def _inner_path_for_dataset(ds_name: str) -> str:
+    """Build canonical inner path from NAME_TO_TASK_SUBTASK_PATH.
+
+    Returns e.g. "retrieval/general_retrieval/arguana" or "nli/snli".
+    """
+    info = NAME_TO_TASK_SUBTASK_PATH[ds_name]
+    parent = info["parent_folder"]
+    subparent = info["subparent_folder"]
+    if subparent is not None:
+        return os.path.join(parent, subparent, ds_name)
+    return os.path.join(parent, ds_name)
 
 
 INSTRUCTION_TEMPLATES = {
@@ -615,13 +617,11 @@ def main():
             # "retrieval/general_retrieval/arguana"
             # inner_path = _inner_path_for_ds(ds_name)
 
-            if ds_name in _DATASET_TO_INNER_PATH:
-                inner_path = _DATASET_TO_INNER_PATH[ds_name]
+            if ds_name in NAME_TO_TASK_SUBTASK_PATH:
+                inner_path = _inner_path_for_dataset(ds_name)
             else:
-                task_type = NAME_TO_TASK_TYPE.get(ds_name)
-                assert task_type is not None, ds_name
-                task_type = task_type.lower()
-                inner_path = os.path.join(task_type, ds_name)
+                print(f"{ds_name} NOT FULL TASKS ADD IT TO PROCESS IT")
+                continue
 
         else:
             input_path: str = item
