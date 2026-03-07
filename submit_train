@@ -37,7 +37,6 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train.py \
-    --tokenize_dataset \
     --out_filename test_speedup_improved_loss \
     --num_hard_negatives 7 \
     --negatives_dir results/datasets_tokenized/f2llm/qwen3_600m-teacher_embeddinggemma-prompt_t5gemma-2-tok \
