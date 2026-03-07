@@ -98,7 +98,7 @@ def parse_args():
         "--train_subset",
         type=str,
         default="full",
-        choices=["full", "reduced"],
+        choices=["full", "reduced", "retrieval"],
         help="MTEB evaluation set: full eng/multilingual or reduced task subset",
     )
     parser.add_argument(

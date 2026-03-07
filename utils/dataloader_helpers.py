@@ -1142,7 +1142,7 @@ def collate_fn_pretokenized(
     )
 
     doc_ids_padded = pad_sequence(
-        all_docs,
+        all_docs_ids,
         batch_first=True,
         padding_value=pad_token_id,
         padding_side=padding_side,

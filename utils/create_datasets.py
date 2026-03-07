@@ -90,19 +90,19 @@ TASK_TYPE_TO_TASK_METADATA = {
 }
 
 
-# Example subset of 10 datasets from results/datasets_negatives/qwen3_600m leaf folders.
-# Use as datasets_subset=QWEN3_600M_10DATASET_SUBSET to restrict training to these.
-QWEN3_600M_DATASET_SUBSET = [
-    # "retrieval/general_retrieval/msmarco",
-    # "retrieval/general_retrieval/nfcorpus",
-    "retrieval/general_retrieval/arguana",
-    # "retrieval/domain_specific_qa/fiqa2018",
-    # "retrieval/open_domain_qa/naturalquestions",
-    # "retrieval/open_domain_qa/squad",
-    # "retrieval/fact_verification/scifact",
-    # "retrieval/summarization/xsum",
-    # "sts/stsbenchmark",
-    # "nli/snli",
+# Example subset of datasets (task names only). Paths are expanded via
+# NAME_TO_TASK_SUBTASK_PATH where needed. Use as datasets_subset=QWEN3_600M_DATASET_SUBSET.
+DATASET_SUBSET = [
+    "msmarco",
+    "nfcorpus",
+    "arguana",
+    # "fiqa2018",
+    # "naturalquestions",
+    # "squad",
+    # "scifact",
+    # "xsum",
+    # "stsbenchmark",
+    # "snli",
 ]
 
 
@@ -959,10 +959,8 @@ def create_hard_negatives_datasets(
         max_query_len: Max query token length
         max_passage_len: Max passage token length
         rank: Process rank (0 = main, for logging)
-        datasets_subset: Optional list of dataset names (relative paths from base_dir)
-            to restrict loading. Names should match leaf folders, e.g.
-            "retrieval/general_retrieval/msmarco", "sts/stsbenchmark".
-            Use QWEN3_600M_10DATASET_SUBSET for a 10-dataset example.
+        datasets_subset: Optional list of task names to restrict loading
+            (e.g. "arguana", "msmarco"). Use QWEN3_600M_DATASET_SUBSET.
 
     Returns a single concatenated HF Dataset sorted by total sequence length
     (longest first) for length-balanced batching.
@@ -977,7 +975,7 @@ def create_hard_negatives_datasets(
         parquet_files = [
             p
             for p in parquet_files
-            if os.path.relpath(os.path.dirname(p), base_dir) in subset_set
+            if os.path.basename(os.path.dirname(p)) in subset_set
         ]
         if rank == 0:
             print(
@@ -987,6 +985,13 @@ def create_hard_negatives_datasets(
     # dataset_name = leaf dir (e.g. msmarco), not filename (data.parquet)
     def _dataset_name_from_path(p):
         return os.path.basename(os.path.dirname(p))
+
+    if not parquet_files:
+        raise ValueError(
+            f"No parquet files found under {base_dir}. "
+            "Check that base_dir exists and contains **/data.parquet. "
+            "datasets_subset expects task names (e.g. 'arguana', 'msmarco')."
+        )
 
     assert all(
         [_dataset_name_from_path(p) in NAME_TO_TASK_TYPE for p in parquet_files]
@@ -1111,8 +1116,8 @@ def create_and_tokenize_hard_negatives_datasets(
         rank: Process rank (0 = main, for logging).
         max_seq_len: When set, rows whose *any* component exceeds this length
             are filtered out (same ``filter`` strategy as the original fn).
-        datasets_subset: Optional list of dataset relative paths to restrict
-            loading (e.g. ``["retrieval/general_retrieval/arguana"]``).
+        datasets_subset: Optional list of task names to restrict loading
+            (e.g. ``["arguana", "msmarco"]``).
 
     Returns:
         A single concatenated HF Dataset sorted by total sequence length
@@ -1127,7 +1132,7 @@ def create_and_tokenize_hard_negatives_datasets(
         parquet_files = [
             p
             for p in parquet_files
-            if os.path.relpath(os.path.dirname(p), base_dir) in subset_set
+            if os.path.basename(os.path.dirname(p)) in subset_set
         ]
         if rank == 0:
             print(
@@ -1243,7 +1248,7 @@ def create_hard_negatives_datasets_from_pretokenized(
         parquet_files = [
             p
             for p in parquet_files
-            if os.path.relpath(os.path.dirname(p), base_dir) in subset_set
+            if os.path.basename(os.path.dirname(p)) in subset_set
         ]
         if rank == 0:
             print(
@@ -1261,10 +1266,16 @@ def create_hard_negatives_datasets_from_pretokenized(
     if rank == 0:
         print(f"Found {len(parquet_files)} datasets under {base_dir}")
 
-    all_datasets = []
-    midpoint = len(parquet_files) // 2
-    for i, path in enumerate(parquet_files):
+    if not parquet_files:
+        raise ValueError(
+            f"No parquet files found under {base_dir}. "
+            "Check that base_dir exists and contains **/data.parquet. "
+            "datasets_subset expects task names (e.g. 'arguana')."
+        )
 
+    all_datasets = []
+    for i, path in enumerate(parquet_files):
+        
         dataset_name = _dataset_name_from_path(path)
         task_metadata = TASK_TYPE_TO_TASK_METADATA[NAME_TO_TASK_TYPE[dataset_name]]
 
@@ -1272,11 +1283,6 @@ def create_hard_negatives_datasets_from_pretokenized(
 
         if rank == 0:
             print(f"  Loading {ds_name} {i}/{len(parquet_files)}...")
-
-        if i == midpoint and dist.is_initialized():
-            dist.barrier()
-            if rank == 0:
-                print("  [barrier] ranks synced at dataset midpoint")
 
         ds = _load_parquet_safe(path)
         all_datasets.append(ds)
