@@ -92,10 +92,15 @@ def _fast_pad(
     extra = 1 if eot_id is not None else 0
     max_len = max(len(s) for s in token_lists) + extra
     arr = np.full((n, max_len), pad_id, dtype=np.int64)
+    # Build the mask positionally so it is correct even when pad_id == eot_id.
+    # A value-based mask `(padded != pad_id)` would incorrectly mark the EOT
+    # token as padding in that case.
+    mask_arr = np.zeros((n, max_len), dtype=np.int64)
     if padding_side == "right":
         for i, s in enumerate(token_lists):
             L = len(s)
             arr[i, :L] = s
+            mask_arr[i, : L + extra] = 1
             if eot_id is not None:
                 arr[i, L] = eot_id
     else:  # left padding
@@ -103,10 +108,11 @@ def _fast_pad(
             L = len(s)
             start = max_len - L - extra
             arr[i, start : start + L] = s
+            mask_arr[i, start : start + L + extra] = 1
             if eot_id is not None:
                 arr[i, start + L] = eot_id
     padded = torch.from_numpy(arr)
-    mask = (padded != pad_id).to(dtype=torch.long)
+    mask = torch.from_numpy(mask_arr)
     return padded, mask
 
 
@@ -1178,7 +1184,6 @@ def collate_fn_pretokenized(
         "query_ids": q_ids,
         "num_hard_negatives": num_hard_negatives,
     }
-
 
 
 def collate_fn_pretokenized_fast_pad(
