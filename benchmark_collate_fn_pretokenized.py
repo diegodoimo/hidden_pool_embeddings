@@ -17,6 +17,7 @@ from utils.create_datasets import (
 from utils.dataloader_helpers import (
     collate_fn_pretokenized,
     collate_fn_pretokenized_fast_pad,
+    collate_fn_pretokenized_fast_pad_v2,
     DatasetAwareSampler,
 )
 
@@ -80,6 +81,7 @@ def main():
     collate_variants = {
         "collate_fn_pretokenized": collate_fn_pretokenized,
         "collate_fn_pretokenized_fast_pad": collate_fn_pretokenized_fast_pad,
+        "collate_fn_pretokenized_fast_pad_v2": collate_fn_pretokenized_fast_pad_v2,
     }
 
     # Shared kwargs for both collate functions

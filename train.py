@@ -30,7 +30,7 @@ from utils.create_datasets import (
 )
 from utils.dataloader_helpers import (
     collate_fn_with_hard_negatives,
-    collate_fn_pretokenized,
+    collate_fn_pretokenized_fast_pad_v2,
     DatasetAwareSampler,
 )
 from utils.losses import EmbeddingGemmaLossDistributed, EmbeddingGemmaLossHardNegatives
@@ -627,7 +627,7 @@ def main():
 
     # if args.tokenize_dataset:
     collate_fn = partial(
-        collate_fn_pretokenized,
+        collate_fn_pretokenized_fast_pad_v2,
         pad_token_id=tokenizer.pad_token_id,
         num_hard_negatives=args.num_hard_negatives,
         padding_side="right",
