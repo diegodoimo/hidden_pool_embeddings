@@ -47,7 +47,7 @@ from utils.create_datasets import (
 )
 from models.modules import last_token_pool, add_pooling_layers, mean_pool
 from datetime import timedelta
-import warnings
+from tasks import RETRIEVAL_SUBSET
 
 
 class CudaDataPrefetcher:
@@ -566,8 +566,10 @@ def main():
     train_list = None  # defaults to all
     if args.train_subset == "reduced":
         train_list = QWEN3_600M_DATASET_SUBSET
-    elif args.train_subset == "retireval": 
-        train_liast = RETRIEVAL_SUBSET
+    elif args.train_subset == "retrieval":
+        train_list = RETRIEVAL_SUBSET
+    elif args.train_subset is not None:
+        raise ValueError("train_subset_misspelled")
 
     teacher_model = args.negatives_dir.split("/")[-1]
 

@@ -106,8 +106,6 @@ QWEN3_600M_DATASET_SUBSET = [
 ]
 
 
-
-
 # MTEB 20-task subset (mteb_20task_subset_selection.md) - minimizes eval time while preserving category averages
 TASK_DICT = {
     # "mteb_eng_v2_reduced": [
