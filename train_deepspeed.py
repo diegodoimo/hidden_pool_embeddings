@@ -336,37 +336,36 @@ class Trainer:
                 query_ids = batch["query_ids"]
                 num_neg = batch["num_hard_negatives"]
 
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    B = query_inputs.shape[0]
-                    query_embeddings = self.model(
-                        input_ids=query_inputs, attention_mask=query_mask
-                    )
+                B = query_inputs.shape[0]
+                query_embeddings = self.model(
+                    input_ids=query_inputs, attention_mask=query_mask
+                )
 
-                    all_doc_embeddings = self.model(
-                        input_ids=all_doc_inputs, attention_mask=all_doc_mask
-                    )
-                    doc_embeddings = all_doc_embeddings[:B]
-                    neg_embeddings = all_doc_embeddings[B:].view(B, num_neg, -1)
+                all_doc_embeddings = self.model(
+                    input_ids=all_doc_inputs, attention_mask=all_doc_mask
+                )
+                doc_embeddings = all_doc_embeddings[:B]
+                neg_embeddings = all_doc_embeddings[B:].view(B, num_neg, -1)
 
-                    if is_f2llm:
-                        ds_name = batch.get("dataset_name", "")
-                        _ib = ds_name in _inbatch_tasks
-                        loss = loss_fn(
-                            query_embeddings=query_embeddings,
-                            doc_embeddings=doc_embeddings,
-                            hard_neg_embeddings=neg_embeddings,
-                            doc_ids=doc_ids,
-                            query_ids=query_ids,
-                            use_inbatch=_ib,
-                        )
-                    else:
-                        loss = loss_fn(
-                            query_embeddings=query_embeddings,
-                            doc_embeddings=doc_embeddings,
-                            hard_neg_embeddings=neg_embeddings,
-                            doc_ids=doc_ids,
-                            query_ids=query_ids,
-                        )
+                if is_f2llm:
+                    ds_name = batch.get("dataset_name", "")
+                    _ib = ds_name in _inbatch_tasks
+                    loss = loss_fn(
+                        query_embeddings=query_embeddings,
+                        doc_embeddings=doc_embeddings,
+                        hard_neg_embeddings=neg_embeddings,
+                        doc_ids=doc_ids,
+                        query_ids=query_ids,
+                        use_inbatch=_ib,
+                    )
+                else:
+                    loss = loss_fn(
+                        query_embeddings=query_embeddings,
+                        doc_embeddings=doc_embeddings,
+                        hard_neg_embeddings=neg_embeddings,
+                        doc_ids=doc_ids,
+                        query_ids=query_ids,
+                    )
 
                 self.model.backward(loss)
                 self.model.step()

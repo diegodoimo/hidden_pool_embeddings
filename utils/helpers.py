@@ -184,8 +184,11 @@ def get_train_ds_config(
             }
         )
 
+    # we enable torch autocast within deepspeed.
+    # Check whether this matches the F2LLM behaviour (the rely on accelerate)
     ds_config = {
         "bf16": {"enabled": True},
+        "torch_autocast": {"enabled": True, "dtype": "bfloat16"},
         "zero_optimization": zero_opt,
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "gradient_clipping": max_norm,
