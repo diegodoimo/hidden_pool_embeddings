@@ -3,6 +3,7 @@ CodeFuse-Embeddings
 lmms-eval
 env_100
 env_a100*
+env_f2llm
 dgx003.hpc.rd.areasciencepark.it*
 env_h100*
 env_amd*
