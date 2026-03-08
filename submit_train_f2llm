@@ -2,7 +2,7 @@
 #SBATCH --partition=H100
 ##SBATCH --partition=DGX
 #SBATCH --account=lade
-##SBATCH --nodelist=dgx003
+#SBATCH --nodelist=dgx004
 #SBATCH --nodes=1
 #SBATCH --time=48:00:00            
 #SBATCH --ntasks-per-node=1       
@@ -74,7 +74,7 @@ torchrun \
     --rdzv-endpoint=$head_node:0 \
     train.py \
     --model_name_or_path google/t5gemma-2-270m-270m  \
-    --out_filename f2llm_t5gemma-2 \
+    --out_filename f2llm_t5gemma-2_f2llm-loss \
     --negatives_dir results/datasets_tokenized/f2llm/qwen3_600m-teacher_embeddinggemma-prompt_t5gemma-2-tok \
     --loss_type f2llm \
     --f2llm_temperature 0.05 \
@@ -96,13 +96,13 @@ torchrun \
     --logging_steps 100 \
     --eval_steps 5 \
     --output_dir "./results/train" \
-|| true
+# || true
 
-torchrun \
-    --nnodes=$SLURM_NTASKS \
-    --node-rank=$SLURM_NODEID \
-    --nproc-per-node=$GPU_NUMBER \
-    --rdzv-id=$SLURM_PROCID \
-    --rdzv-backend=c10d \
-    --rdzv-endpoint=$head_node:0 \
-    filler.py
+# torchrun \
+#     --nnodes=$SLURM_NTASKS \
+#     --node-rank=$SLURM_NODEID \
+#     --nproc-per-node=$GPU_NUMBER \
+#     --rdzv-id=$SLURM_PROCID \
+#     --rdzv-backend=c10d \
+#     --rdzv-endpoint=$head_node:0 \
+#     filler.py

@@ -6,10 +6,10 @@
 #SBATCH --nodes=1
 #SBATCH --time=24:00:00            
 #SBATCH --ntasks-per-node=1       
-#SBATCH --cpus-per-task=28 #32          
+#SBATCH --cpus-per-task=56 #32          
 #SBATCH --mem=200G                   
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:2
+#SBATCH --gres=gpu:H100:4
 
 #source /u/area/ddoimo/anaconda3/bin/activate ./env_a100
 module load cuda/12.8 
@@ -83,14 +83,13 @@ torchrun \
     --eval_steps 5 \
     --output_dir "./results/train" \
     --measure_baselines \
-    
-|| true
+# || true
 
-torchrun \
-    --nnodes=$SLURM_NTASKS \
-    --node-rank=$SLURM_NODEID \
-    --nproc-per-node=$GPU_NUMBER \
-    --rdzv-id=$SLURM_PROCID \
-    --rdzv-backend=c10d \
-    --rdzv-endpoint=$head_node:0 \
-    filler.py
+# torchrun \
+#     --nnodes=$SLURM_NTASKS \
+#     --node-rank=$SLURM_NODEID \
+#     --nproc-per-node=$GPU_NUMBER \
+#     --rdzv-id=$SLURM_PROCID \
+#     --rdzv-backend=c10d \
+#     --rdzv-endpoint=$head_node:0 \
+#     filler.py
