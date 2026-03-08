@@ -23,7 +23,12 @@ def get_scheduler(
         lr_min_fact
         + 0.5
         * (1 - lr_min_fact)
-        * (1 + math.cos(max(0, x - warmup_steps) / (max_train_steps - warmup_steps) * math.pi)),
+        * (
+            1
+            + math.cos(
+                max(0, x - warmup_steps) / (max_train_steps - warmup_steps) * math.pi
+            )
+        ),
     )
     scheduler = LambdaLR(optimizer, lambda x: scheduler_func(x))
     return scheduler, warmup_steps
@@ -33,18 +38,25 @@ def get_scheduler_optimizer(
     model,
     args,
     total_steps,
+    fused: bool = False,
 ):
     # "use_orig_parameters" needed for this split of parameters!
     no_decay = ["bias", "layer_norm.weight"]
     optimizer_grouped_parameters = [
         {
             "params": [
-                p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)
+                p
+                for n, p in model.named_parameters()
+                if not any(nd in n for nd in no_decay)
             ],
             "weight_decay": args.weight_decay,
         },
         {
-            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if any(nd in n for nd in no_decay)
+            ],
             "weight_decay": 0.0,
         },
     ]
@@ -53,10 +65,13 @@ def get_scheduler_optimizer(
         optimizer_grouped_parameters,
         lr=args.learning_rate,
         betas=(0.9, 0.999),
-        fused=True,  # single multi-tensor CUDA kernel instead of per-param launches
+        fused=fused,  # True for DDP (single multi-tensor CUDA kernel),
+        # False for DeepSpeed (wraps optimizer internally).
     )
 
-    num_update_steps_per_epoch = math.ceil(total_steps / args.gradient_accumulation_steps)
+    num_update_steps_per_epoch = math.ceil(
+        total_steps / args.gradient_accumulation_steps
+    )
     args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
 
     if args.warmup_steps is not None:
@@ -73,7 +88,12 @@ def get_scheduler_optimizer(
         + 0.5
         * (1 - args.lr_min_fact)
         * (
-            1 + math.cos(max(0, x - warmup_steps) / (args.max_train_steps - warmup_steps) * math.pi)
+            1
+            + math.cos(
+                max(0, x - warmup_steps)
+                / (args.max_train_steps - warmup_steps)
+                * math.pi
+            )
         ),
     )
     lr_scheduler = LambdaLR(optimizer, lambda x: scheduler(x))

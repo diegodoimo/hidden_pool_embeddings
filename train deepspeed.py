@@ -15,10 +15,15 @@ from torch.utils.data.distributed import DistributedSampler
 from argparse import ArgumentParser
 from transformers import AutoModel, AutoTokenizer
 from peft import LoraConfig, get_peft_model
-from torch.nn.parallel import DistributedDataParallel as DDP
 
 from utils.arguments import parse_args
-from utils.helpers import print_memory_consumed, save_model, get_cpt_steps
+from utils.helpers import (
+    print_memory_consumed,
+    save_model,
+    get_cpt_steps,
+    get_train_ds_config,
+    get_eval_ds_config,
+)
 from models.t5gemma2model import get_model_t5gemma2_model
 from utils.optimizer import get_scheduler_optimizer
 from utils.create_datasets import (
@@ -55,6 +60,9 @@ from models.modules import last_token_pool, add_pooling_layers, mean_pool
 from datetime import timedelta
 from tasks import RETRIEVAL_SUBSET, NAME_TO_TASK_TYPE
 from tasks.task_categories import BINARY_CLASSIFICATION_TASKS
+
+import deepspeed
+from transformers.integrations import HfDeepSpeedConfig
 
 
 class CudaDataPrefetcher:
@@ -126,6 +134,24 @@ class Trainer:
         if self.rank == 0:
             os.makedirs(args.output_dir, exist_ok=True)
 
+        ds_config = get_train_ds_config(
+            train_batch_size=args.batch_size,
+            per_device_train_batch_size=args.per_device_train_batch_size,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            stage=2,
+            max_norm=args.grad_norm,
+        )
+
+        # Costa: MAGIC: it's actually needed to initialize this `dschf`, so
+        # https://huggingface.co/docs/transformers/deepspeed#non-trainer-deepspeed-integration
+        # next line instructs transformers to partition the model directly over multiple gpus using
+        # deepspeed.zero.Init when model's `from_pretrained` method is called.
+        if ds_config is not None and ds_config["zero_optimization"]["stage"] == 3:
+            dschf = HfDeepSpeedConfig(ds_config)
+        else:
+            dschf = None
+        print(f"{dschf=}")
+
         if args.activation_checkpointing:
             # Resolve the underlying transformer model for checkpointing.
             # EmbeddingT5Gemma2* variants expose it as .encoder;
@@ -161,23 +187,23 @@ class Trainer:
         print_memory_consumed(message="memory consumed before loading model")
 
         # 3. Move your model to the device
-        self.model = self.model.to(self.device)
-        self.model = DDP(
-            self.model,
-            device_ids=[self.local_rank],
-            static_graph=True,  # cache allreduce schedule (graph never changes)
-            gradient_as_bucket_view=True,  # avoid gradient-to-bucket copy
-        )
-
-        self.model = torch.compile(self.model)
-        print_memory_consumed(message="memory consumed after loading model")
 
         self.optimizer, self.lr_scheduler = get_scheduler_optimizer(
             self.model,
             args,
             len_dataloader,
-            fused=True,
         )
+
+        print_memory_consumed(message="before model intialize\n")
+        self.model, self.optimizer, _, self.lr_scheduler = deepspeed.initialize(
+            model=self.model,
+            optimizer=self.optimizer,
+            config=ds_config,
+            lr_scheduler=self.lr_scheduler,
+            dist_init_required=False,
+        )
+        self.model.train()
+        print_memory_consumed(message="after model initialized")
 
     def train(
         self,
@@ -310,55 +336,43 @@ class Trainer:
                 query_ids = batch["query_ids"]
                 num_neg = batch["num_hard_negatives"]
 
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-
-                    # --- OLD: separate model forward + eager loss ---
-                    B = query_inputs.shape[0]
-                    query_embeddings = self.model(
-                        input_ids=query_inputs, attention_mask=query_mask
-                    )
-
-                    all_doc_embeddings = self.model(
-                        input_ids=all_doc_inputs, attention_mask=all_doc_mask
-                    )
-                    doc_embeddings = all_doc_embeddings[:B]
-                    neg_embeddings = all_doc_embeddings[B:].view(B, num_neg, -1)
-
-                    if is_f2llm:
-                        ds_name = batch.get("dataset_name", "")
-                        _ib = ds_name in _inbatch_tasks
-                        loss = loss_fn(
-                            query_embeddings=query_embeddings,
-                            doc_embeddings=doc_embeddings,
-                            hard_neg_embeddings=neg_embeddings,
-                            doc_ids=doc_ids,
-                            query_ids=query_ids,
-                            use_inbatch=_ib,
-                        )
-                    else:
-                        loss = loss_fn(
-                            query_embeddings=query_embeddings,
-                            doc_embeddings=doc_embeddings,
-                            hard_neg_embeddings=neg_embeddings,
-                            doc_ids=doc_ids,
-                            query_ids=query_ids,
-                        )
-
-                loss.backward()
-                total_loss += loss.detach().float()
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), args.clip_grad_thresh
+                B = query_inputs.shape[0]
+                query_embeddings = self.model(
+                    input_ids=query_inputs, attention_mask=query_mask
                 )
-                self.optimizer.step()
-                self.lr_scheduler.step()
-                # OLD: self.optimizer.zero_grad()
-                self.optimizer.zero_grad(set_to_none=True)
 
+                all_doc_embeddings = self.model(
+                    input_ids=all_doc_inputs, attention_mask=all_doc_mask
+                )
+                doc_embeddings = all_doc_embeddings[:B]
+                neg_embeddings = all_doc_embeddings[B:].view(B, num_neg, -1)
+
+                if is_f2llm:
+                    ds_name = batch.get("dataset_name", "")
+                    _ib = ds_name in _inbatch_tasks
+                    loss = loss_fn(
+                        query_embeddings=query_embeddings,
+                        doc_embeddings=doc_embeddings,
+                        hard_neg_embeddings=neg_embeddings,
+                        doc_ids=doc_ids,
+                        query_ids=query_ids,
+                        use_inbatch=_ib,
+                    )
+                else:
+                    loss = loss_fn(
+                        query_embeddings=query_embeddings,
+                        doc_embeddings=doc_embeddings,
+                        hard_neg_embeddings=neg_embeddings,
+                        doc_ids=doc_ids,
+                        query_ids=query_ids,
+                    )
+
+                self.model.backward(loss)
+                self.model.step()
+                total_loss += loss.detach().float()
                 completed_steps += 1
-                # index += 1
-                # batch = prefetcher.next()
 
-                if completed_steps in log_steps or completed_steps == 10:
+                if completed_steps in log_steps:
 
                     if WORLD_SIZE > 1:
                         total_loss = total_loss.reshape(1)
