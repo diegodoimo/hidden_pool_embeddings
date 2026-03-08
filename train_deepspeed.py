@@ -176,14 +176,14 @@ class Trainer:
             # interval=2 checkpoints every other layer, halving recompute cost
             # while still cutting peak activation memory roughly in half vs
             # no checkpointing.  GradientCheckpointingLayer exposes a per-
-            # instance _gradient_checkpointing flag we can flip individually.
+            # instance gradient_checkpointing flag we can flip individually.
             interval = getattr(args, "checkpoint_layers_interval", 1)
             if interval > 1 and hasattr(_base, "layers"):
                 for i, layer in enumerate(_base.layers):
                     if i % interval != 0:
-                        layer._gradient_checkpointing = False
+                        layer.gradient_checkpointing = False
                 n_ckpt = sum(
-                    getattr(l, "_gradient_checkpointing", False) for l in _base.layers
+                    getattr(l, "gradient_checkpointing", False) for l in _base.layers
                 )
                 print(
                     f"Selective activation checkpointing: {n_ckpt}/{len(_base.layers)} "

@@ -152,9 +152,9 @@ class Trainer:
             if interval > 1 and hasattr(_base, "layers"):
                 for i, layer in enumerate(_base.layers):
                     if i % interval != 0:
-                        layer._gradient_checkpointing = False
+                        layer.gradient_checkpointing = False
                 n_ckpt = sum(
-                    getattr(l, "_gradient_checkpointing", False) for l in _base.layers
+                    getattr(l, "gradient_checkpointing", False) for l in _base.layers
                 )
                 print(
                     f"Selective activation checkpointing: {n_ckpt}/{len(_base.layers)} "
