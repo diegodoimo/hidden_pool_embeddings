@@ -9,7 +9,7 @@
 #SBATCH --mem=200G                   
 #SBATCH --job-name=test
 
-source /u/area/ddoimo/anaconda3/bin/activate ./env_a100
+source /u/area/ddoimo/anaconda3/bin/activate ../env_a100
 # module load cuda/12.8 
 # export CUDA_HOME=$CUDA_PATH
 
