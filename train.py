@@ -357,7 +357,7 @@ class Trainer:
                 # index += 1
                 # batch = prefetcher.next()
 
-                if completed_steps in log_steps:
+                if completed_steps in log_steps or completed_steps == 10:
 
                     if WORLD_SIZE > 1:
                         total_loss = total_loss.reshape(1)

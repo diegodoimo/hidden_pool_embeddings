@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --time=48:00:00            
 #SBATCH --ntasks-per-node=1       
-#SBATCH --cpus-per-task=112  #32          
+#SBATCH --cpus-per-task=112           
 #SBATCH --mem=800G                   
 #SBATCH --job-name=test
 #SBATCH --gres=gpu:H100:8
@@ -18,7 +18,17 @@ export CUDA_HOME=$CUDA_PATH
 source /u/area/ddoimo/anaconda3/bin/activate ./env_h100 
 
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True" 
-export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+
+
+GPU_NUMBER=$(echo $CUDA_VISIBLE_DEVICES | tr ',' ' ' | wc -w)
+export WORKERS_PER_RANK=$(( SLURM_CPUS_PER_TASK / GPU_NUMBER ))
+
+#the threads are multiplied by the number of processes we need to scale them down 
+export OMP_NUM_THREADS=$WORKERS_PER_RANK
+export NUMEXPR_MAX_THREADS=$WORKERS_PER_RANK
+export OPENBLAS_NUM_THREADS=$WORKERS_PER_RANK   
+export MKL_NUM_THREADS=$WORKERS_PER_RANK         
+
 export PYTHONUNBUFFERED=1
 #export TRANSFORMERS_OFFLINE=1
 export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
@@ -26,8 +36,7 @@ export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
 nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 head_node=${nodes[0]}
 head_node_ip=$(getent hosts "$head_node" | awk '{ print $1 }')
-GPU_NUMBER=$(echo $CUDA_VISIBLE_DEVICES | tr ',' ' ' | wc -w)
-WORKERS_PER_RANK=$(( SLURM_CPUS_PER_TASK / GPU_NUMBER ))
+
 
 # ---------------------------------------------------------------------------
 # F2LLM training with Qwen3-Embedding-0.6B
@@ -54,6 +63,8 @@ WORKERS_PER_RANK=$(( SLURM_CPUS_PER_TASK / GPU_NUMBER ))
 # hard-codes (0.9, 0.999).  If exact reproduction is needed, edit
 # utils/optimizer.py to accept a --betas argument.
 # ---------------------------------------------------------------------------
+
+#--model_name_or_path Qwen/Qwen3-Embedding-0.6B \
 torchrun \
     --nnodes=$SLURM_NTASKS \
     --node-rank=$SLURM_NODEID \
@@ -85,7 +96,13 @@ torchrun \
     --logging_steps 100 \
     --eval_steps 5 \
     --output_dir "./results/train" \
-    #--activation_checkpointing \
-    #--model_name_or_path Qwen/Qwen3-Embedding-0.6B \
-    # --save_checkpoint \
-    # --eval_only \
+|| true
+
+torchrun \
+    --nnodes=$SLURM_NTASKS \
+    --node-rank=$SLURM_NODEID \
+    --nproc-per-node=$GPU_NUMBER \
+    --rdzv-id=$SLURM_PROCID \
+    --rdzv-backend=c10d \
+    --rdzv-endpoint=$head_node:0 \
+    filler.py
