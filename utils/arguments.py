@@ -146,7 +146,11 @@ def parse_args():
             "calls at training time."
         ),
     )
-
+    parser.add_argument(
+        "--no_compile",
+        action="store_true",
+        help="Disable torch.compile (useful to avoid long first-step compilation hangs with DDP).",
+    )
     parser.add_argument(
         "--deepspeed",
         action="store_true",

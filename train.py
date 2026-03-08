@@ -234,7 +234,12 @@ class Trainer:
                 gradient_as_bucket_view=True,  # avoid gradient-to-bucket copy
             )
 
-            self.model = torch.compile(self.model)
+            if not args.no_compile:
+                if RANK == 0:
+                    print(
+                        "wrapping with torch.compile (actual compilation deferred to first forward pass)..."
+                    )
+                self.model = torch.compile(self.model)
             print_memory_consumed(message="memory consumed after loading model")
 
             self.optimizer, self.lr_scheduler = get_scheduler_optimizer(
@@ -379,6 +384,10 @@ class Trainer:
 
             # --- Non-blocking H2D transfer (overlaps with previous step's compute) ---
             for index, batch in enumerate(train_loader):
+                if index == 0 and epoch == 0 and RANK == 0:
+                    print(
+                        "first batch received from dataloader, entering forward pass..."
+                    )
                 batch = {
                     key: (
                         val.to(self.device, non_blocking=True)
@@ -437,6 +446,9 @@ class Trainer:
 
                 total_loss += loss.detach().float()
                 completed_steps += 1
+
+                if completed_steps == 1 and RANK == 0:
+                    print(f"first step completed in {time.time()-start:.1f}s")
 
                 if completed_steps in log_steps or completed_steps == 10:
 
