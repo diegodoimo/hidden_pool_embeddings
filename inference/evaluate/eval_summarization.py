@@ -128,7 +128,7 @@ def _prepare_summarization(
 
 @torch.inference_mode()
 def evaluate_one_summarization(task_data, model, batch_size, eval_context: EvalContext):
-    model = model.eval()
+    model.eval()
     dataset = task_data["dataset"]
     main_score = task_data["main_score"]
 

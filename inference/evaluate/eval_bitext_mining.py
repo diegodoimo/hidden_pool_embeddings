@@ -83,7 +83,7 @@ def _prepare_bitext_mining(
 
 @torch.inference_mode()
 def evaluate_one_bitext_mining(task_data, model, batch_size, eval_context: EvalContext):
-    model = model.eval()
+    model.eval()
     dataset = task_data["dataset"]
     task_obj = task_data["task_obj"]
     main_score = task_data["main_score"]

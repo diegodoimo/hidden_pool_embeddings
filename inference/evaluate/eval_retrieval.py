@@ -121,7 +121,7 @@ def evaluate_one(
 
     if top_k is None:
         top_k = max(k_values)
-    model = model.eval()
+    model.eval()
 
     collate_fn = make_collate_fn(
         eval_context.tokenizer,

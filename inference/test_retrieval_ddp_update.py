@@ -295,7 +295,7 @@ class evaluate_retrieval:
 
     def evaluate(self, model, batch_size=64):
 
-        model = model.eval()
+        model.eval()
         
         results = defaultdict(list)
         eval_context = EvalContext(
