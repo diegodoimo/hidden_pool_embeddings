@@ -60,6 +60,7 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train_deepspeed.py \
+    --checkpoint_layers_interval 4 \
     --train_subset retrieval \
     --out_filename f2llm_retrieval_improved_loss \
     --num_hard_negatives 7 \

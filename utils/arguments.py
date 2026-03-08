@@ -38,6 +38,14 @@ def parse_args():
     parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--clip_grad_thresh", type=float, default=1.0)
     parser.add_argument("--activation_checkpointing", action="store_true")
+    parser.add_argument(
+        "--checkpoint_layers_interval",
+        type=int,
+        default=1,
+        help="Checkpoint one in every N layers. 1 = every layer (most memory-efficient, "
+        "most recompute), 2 = every other layer, etc. Only used when "
+        "--activation_checkpointing is set.",
+    )
 
     parser.add_argument("--warmup_steps", type=int, default=None)
     parser.add_argument("--warmup_ratio", type=float, default=0)
