@@ -54,23 +54,6 @@ from datasets import Dataset
 import time
 import warnings
 
-<<<<<<< HEAD
-
-def _inner_path_for_dataset(ds_name: str) -> str:
-    """Build canonical inner path from NAME_TO_TASK_SUBTASK_PATH.
-
-    Returns e.g. "retrieval/general_retrieval/arguana" or "nli/snli".
-    """
-    info = NAME_TO_TASK_SUBTASK_PATH[ds_name]
-    parent = info["parent_folder"]
-    subparent = info["subparent_folder"]
-    if subparent is not None:
-        return os.path.join(parent, subparent, ds_name)
-    return os.path.join(parent, ds_name)
-
-
-=======
->>>>>>> 7a3a3e6d0dbd1c94ba0c5112efee6bc0fe2e9d60
 INSTRUCTION_TEMPLATES = {
     "qwen3": (instruction_template_qwen3, False),
     "embeddinggemma": (instruction_template_embeddinggemma, True),
