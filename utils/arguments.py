@@ -147,5 +147,18 @@ def parse_args():
         ),
     )
 
+    parser.add_argument(
+        "--deepspeed",
+        action="store_true",
+        help="Use DeepSpeed (ZeRO) instead of DDP for distributed training.",
+    )
+    parser.add_argument(
+        "--deepspeed_stage",
+        type=int,
+        default=2,
+        choices=[1, 2, 3],
+        help="DeepSpeed ZeRO stage to use when --deepspeed is set (default: 2).",
+    )
+
     args = parser.parse_args()
     return args

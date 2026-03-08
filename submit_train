@@ -59,9 +59,8 @@ torchrun \
     --rdzv-id=$SLURM_PROCID \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
-    train_deepspeed.py \
-    --activation_checkpointing \
-    --checkpoint_layers_interval 1 \
+    train.py \
+    --use_deepspeed \
     --train_subset retrieval \
     --out_filename f2llm_retrieval_improved_loss \
     --num_hard_negatives 7 \
@@ -73,7 +72,7 @@ torchrun \
     --max_seq_len 1024  \
     --attention_dim 256 \
     --num_workers $WORKERS_PER_RANK \
-    --per_device_train_batch_size 32 \
+    --per_device_train_batch_size 16 \
     --per_device_eval_batch_size 128 \
     --learning_rate 1e-5 \
     --lr_min_fact 0.01 \

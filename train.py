@@ -1,3 +1,4 @@
+import contextlib
 import torch
 import os
 
@@ -18,7 +19,12 @@ from peft import LoraConfig, get_peft_model
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from utils.arguments import parse_args
-from utils.helpers import print_memory_consumed, save_model, get_cpt_steps
+from utils.helpers import (
+    print_memory_consumed,
+    save_model,
+    get_cpt_steps,
+    get_train_ds_config,
+)
 from models.t5gemma2model import get_model_t5gemma2_model
 from utils.optimizer import get_scheduler_optimizer
 from utils.create_datasets import (
@@ -45,6 +51,14 @@ import torch.nn.functional as TF
 from functools import partial
 
 from huggingface_hub import login as hf_login
+
+try:
+    import deepspeed
+    from transformers.integrations import HfDeepSpeedConfig
+
+    _DEEPSPEED_AVAILABLE = True
+except ImportError:
+    _DEEPSPEED_AVAILABLE = False
 
 from inference.test_retrieval_ddp_update import evaluate_retrieval
 from utils.create_datasets import (
@@ -175,24 +189,86 @@ class Trainer:
 
         print_memory_consumed(message="memory consumed before loading model")
 
-        # 3. Move your model to the device
-        self.model = self.model.to(self.device)
-        self.model = DDP(
-            self.model,
-            device_ids=[self.local_rank],
-            static_graph=True,  # cache allreduce schedule (graph never changes)
-            gradient_as_bucket_view=True,  # avoid gradient-to-bucket copy
+        self.use_deepspeed = getattr(args, "deepspeed", False)
+
+        if self.use_deepspeed:
+            if not _DEEPSPEED_AVAILABLE:
+                raise ImportError("--deepspeed requires the 'deepspeed' package.")
+
+            ds_config = get_train_ds_config(
+                train_batch_size=args.batch_size,
+                per_device_train_batch_size=args.per_device_train_batch_size,
+                gradient_accumulation_steps=args.gradient_accumulation_steps,
+                stage=getattr(args, "deepspeed_stage", 2),
+                max_norm=args.clip_grad_thresh,
+            )
+
+            # Required for ZeRO-3 to partition the model during from_pretrained.
+            # Must be created before deepspeed.initialize().
+            if ds_config["zero_optimization"]["stage"] == 3:
+                _dschf = HfDeepSpeedConfig(ds_config)  # noqa: F841 (kept alive)
+
+            self.optimizer, self.lr_scheduler = get_scheduler_optimizer(
+                self.model,
+                args,
+                len_dataloader,
+            )
+
+            print_memory_consumed(message="before deepspeed.initialize")
+            self.model, self.optimizer, _, self.lr_scheduler = deepspeed.initialize(
+                model=self.model,
+                optimizer=self.optimizer,
+                config=ds_config,
+                lr_scheduler=self.lr_scheduler,
+                dist_init_required=False,
+            )
+            self.model.train()
+            print_memory_consumed(message="after deepspeed.initialize")
+        else:
+            # 3. Move your model to the device
+            self.model = self.model.to(self.device)
+            self.model = DDP(
+                self.model,
+                device_ids=[self.local_rank],
+                static_graph=True,  # cache allreduce schedule (graph never changes)
+                gradient_as_bucket_view=True,  # avoid gradient-to-bucket copy
+            )
+
+            self.model = torch.compile(self.model)
+            print_memory_consumed(message="memory consumed after loading model")
+
+            self.optimizer, self.lr_scheduler = get_scheduler_optimizer(
+                self.model,
+                args,
+                len_dataloader,
+                fused=True,
+            )
+
+        # DeepSpeed handles mixed precision internally; DDP uses torch.autocast.
+        self.autocast_ctx = (
+            contextlib.nullcontext()
+            if self.use_deepspeed
+            else torch.autocast(device_type="cuda", dtype=torch.bfloat16)
         )
 
-        self.model = torch.compile(self.model)
-        print_memory_consumed(message="memory consumed after loading model")
-
-        self.optimizer, self.lr_scheduler = get_scheduler_optimizer(
-            self.model,
-            args,
-            len_dataloader,
-            fused=True,
+        # Bind the correct backward implementation once at init so the hot loop
+        # dispatches with a direct attribute lookup — no branch per step.
+        self._backward_step = (
+            self._backward_step_ds if self.use_deepspeed else self._backward_step_ddp
         )
+
+    def _backward_step_ds(self, loss: torch.Tensor, args) -> None:
+        """DeepSpeed backward + update (clip/zero_grad/lr_step handled internally)."""
+        self.model.backward(loss)
+        self.model.step()
+
+    def _backward_step_ddp(self, loss: torch.Tensor, args) -> None:
+        """DDP backward + update."""
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.clip_grad_thresh)
+        self.optimizer.step()
+        self.lr_scheduler.step()
+        self.optimizer.zero_grad(set_to_none=True)
 
     def train(
         self,
@@ -212,7 +288,7 @@ class Trainer:
         checkpointing_steps, _ = get_cpt_steps(
             args.checkpointing_steps, args.max_train_steps, logspace=False
         )
-        log_steps, log_interval = get_cpt_steps(
+        log_steps, _ = get_cpt_steps(
             int(args.logging_steps), args.max_train_steps, logspace=False
         )
 
@@ -269,6 +345,7 @@ class Trainer:
         completed_steps = 0
         total_loss = 0
         total_time = 0
+        previous_cpt = 0  # used by deepspeed path for per-interval loss averaging
 
         is_f2llm = isinstance(loss_fn, F2LLMLoss)
         # Pre-compute set of retrieval task names for per-batch inbatch decision
@@ -325,14 +402,11 @@ class Trainer:
                 query_ids = batch["query_ids"]
                 num_neg = batch["num_hard_negatives"]
 
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-
-                    # --- OLD: separate model forward + eager loss ---
+                with self.autocast_ctx:
                     B = query_inputs.shape[0]
                     query_embeddings = self.model(
                         input_ids=query_inputs, attention_mask=query_mask
                     )
-
                     all_doc_embeddings = self.model(
                         input_ids=all_doc_inputs, attention_mask=all_doc_mask
                     )
@@ -359,19 +433,10 @@ class Trainer:
                             query_ids=query_ids,
                         )
 
-                loss.backward()
-                total_loss += loss.detach().float()
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), args.clip_grad_thresh
-                )
-                self.optimizer.step()
-                self.lr_scheduler.step()
-                # OLD: self.optimizer.zero_grad()
-                self.optimizer.zero_grad(set_to_none=True)
+                self._backward_step(loss, args)
 
+                total_loss += loss.detach().float()
                 completed_steps += 1
-                # index += 1
-                # batch = prefetcher.next()
 
                 if completed_steps in log_steps or completed_steps == 10:
 
@@ -379,7 +444,12 @@ class Trainer:
                         total_loss = total_loss.reshape(1)
                         dist.all_reduce(total_loss)
 
-                    avg_loss = total_loss.item() / WORLD_SIZE / log_interval
+                    avg_loss = (
+                        total_loss.item()
+                        / WORLD_SIZE
+                        / (completed_steps - previous_cpt)
+                    )
+                    previous_cpt = completed_steps
                     total_loss = 0
 
                     if RANK == 0:
@@ -468,6 +538,14 @@ def main():
     rank = dist.get_rank()
     torch.cuda.set_device(LOCAL_RANK)
     torch.set_float32_matmul_precision("high")
+
+    if args.use_deepspeed:
+        # need activation checkpointing otherwise oom
+        args.activation_checkpointing = True
+        args.per_device_train_batch_size = min(32, args.per_device_train_batch_size)
+        if RANK == 0:
+            print("USE DEEPSPEED: set activation checkpointing to TRUE")
+            print("USE DEEPSPEED: set min batch_size to 32")
 
     args.batch_size = WORLD_SIZE * args.per_device_train_batch_size
     args.gradient_accumulation_steps = 1
@@ -686,8 +764,6 @@ def main():
             multiprocessing_context="spawn" if args.num_workers > 0 else None,
         )
 
-    # **************************************
-
     eval_tasks = get_eval_tasks(args.eval_set)
     evaluator = evaluate_retrieval(
         tasks=eval_tasks,
@@ -699,8 +775,6 @@ def main():
         max_samples=1_000_000,
     )
 
-    # Initialize loss (not compiled here; model+loss are compiled as one
-    # graph inside Trainer.train()).
     if args.loss_type == "f2llm":
         loss_fn = F2LLMLoss(temperature=args.f2llm_temperature)
     else:
@@ -710,12 +784,10 @@ def main():
         if WORLD_SIZE > 1 and args.distributed_loss:
             loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
 
-    # Compile loss standalone (alternative to unified model+loss compilation):
-    # loss_fn = torch.compile(loss_fn, mode="max-autotune")
-
     dist.barrier()
 
-    suffix = f"{model_name}_train-{teacher_model}_gpus{WORLD_SIZE}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_{args.batch_strategy}"
+    _ds_prefix = "deepspeed_" if getattr(args, "deepspeed", False) else ""
+    suffix = f"{_ds_prefix}{model_name}_train-{teacher_model}_gpus{WORLD_SIZE}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_{args.batch_strategy}"
     if args.out_filename:
         args.out_filename = f"{args.out_filename}_{suffix}"
     else:
