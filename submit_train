@@ -51,7 +51,7 @@ head_node_ip=$(getent hosts "$head_node" | awk '{ print $1 }')
 # --model_name_or_path Qwen/Qwen3-Embedding-0.6B \
 #benchmark_collate_fn_pretokenized.py \
 
-#--activation_checkpointing \
+#
 torchrun \
     --nnodes=$SLURM_NTASKS \
     --node-rank=$SLURM_NODEID \
@@ -60,6 +60,7 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train_deepspeed.py \
+    --activation_checkpointing \
     --checkpoint_layers_interval 4 \
     --train_subset retrieval \
     --out_filename f2llm_retrieval_improved_loss \
@@ -83,7 +84,6 @@ torchrun \
     --logging_steps 50 \
     --eval_steps 5 \
     --output_dir "./results/train" \
-    --measure_baselines \
 # || true
 
 # torchrun \
