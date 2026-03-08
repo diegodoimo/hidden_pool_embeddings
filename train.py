@@ -540,8 +540,6 @@ def main():
         train_list = DATASET_SUBSET
     elif args.train_subset == "retrieval":
         train_list = RETRIEVAL_SUBSET
-    elif args.train_subset is not None:
-        raise ValueError("train_subset_misspelled")
 
     teacher_model = args.negatives_dir.split("/")[-1]
 

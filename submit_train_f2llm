@@ -2,14 +2,14 @@
 #SBATCH --partition=H100
 ##SBATCH --partition=DGX
 #SBATCH --account=lade
-##SBATCH --nodelist=dgx002
+##SBATCH --nodelist=dgx003
 #SBATCH --nodes=1
 #SBATCH --time=48:00:00            
 #SBATCH --ntasks-per-node=1       
-#SBATCH --cpus-per-task=56  #32          
-#SBATCH --mem=300G                   
-#SBATCH --job-name=f2llm_train
-#SBATCH --gres=gpu:H100:4
+#SBATCH --cpus-per-task=112  #32          
+#SBATCH --mem=800G                   
+#SBATCH --job-name=test
+#SBATCH --gres=gpu:H100:8
 
 #source /u/area/ddoimo/anaconda3/bin/activate ./env_a100
 module load cuda/12.8 
@@ -63,7 +63,6 @@ torchrun \
     --rdzv-endpoint=$head_node:0 \
     train.py \
     --model_name_or_path google/t5gemma-2-270m-270m  \
-    --train_subset full \
     --out_filename f2llm_t5gemma-2 \
     --negatives_dir results/datasets_tokenized/f2llm/qwen3_600m-teacher_embeddinggemma-prompt_t5gemma-2-tok \
     --loss_type f2llm \
@@ -82,11 +81,11 @@ torchrun \
     --weight_decay 0.01 \
     --clip_grad_thresh 1.0 \
     --num_train_epochs 2 \
-    --activation_checkpointing \
     --checkpointing_steps 100 \
     --logging_steps 100 \
     --eval_steps 5 \
     --output_dir "./results/train" \
+    #--activation_checkpointing \
     #--model_name_or_path Qwen/Qwen3-Embedding-0.6B \
     # --save_checkpoint \
     # --eval_only \
