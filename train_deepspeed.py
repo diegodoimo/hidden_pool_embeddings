@@ -300,6 +300,7 @@ class Trainer:
         )
 
         start = time.time()
+        previous_cpt = 0
         for epoch in range(args.num_train_epochs):
 
             self.model.train()
@@ -372,13 +373,14 @@ class Trainer:
                 completed_steps += 1
 
                 if completed_steps in log_steps or completed_steps == 10:
-
+                    
                     if WORLD_SIZE > 1:
                         total_loss = total_loss.reshape(1)
                         dist.all_reduce(total_loss)
 
-                    avg_loss = total_loss.item() / WORLD_SIZE / log_interval
+                    avg_loss = total_loss.item() / WORLD_SIZE / (completed_steps-previous_cpt)
                     total_loss = 0
+                    previous_cpt = completed_steps
 
                     if RANK == 0:
                         stats["loss"][completed_steps] = avg_loss

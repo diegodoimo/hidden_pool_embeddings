@@ -82,6 +82,7 @@ torchrun \
     --logging_steps 50 \
     --eval_steps 5 \
     --output_dir "./results/train" \
+    --measure_baselines \
     
 || true
 
