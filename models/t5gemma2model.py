@@ -260,6 +260,10 @@ class EmbeddingT5Gemma2(nn.Module):
         self.projection = Projection(input_dim=h, hidden_dim=4 * h)
         self.normalize = Normalize()
 
+    @property
+    def device(self):
+        return next(self.encoder.parameters()).device
+
     def forward(
         self,
         input_ids=None,
@@ -306,6 +310,11 @@ class EmbeddingT5Gemma2HiddenPool(nn.Module):
         )
         self.projection = Projection(input_dim=h, hidden_dim=4 * h)
         self.normalize = Normalize()
+
+    # use to call model.device deepspeed needs it
+    @property
+    def device(self):
+        return next(self.encoder.parameters()).device
 
     def forward(
         self,
@@ -357,6 +366,10 @@ class EmbeddingT5Gemma2HiddenPoolCLS(nn.Module):
         )
         self.projection = Projection(input_dim=h, hidden_dim=4 * h)
         self.normalize = Normalize()
+
+    @property
+    def device(self):
+        return next(self.encoder.parameters()).device
 
     def forward(
         self,

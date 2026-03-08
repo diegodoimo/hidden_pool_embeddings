@@ -22,7 +22,6 @@ from utils.helpers import (
     save_model,
     get_cpt_steps,
     get_train_ds_config,
-    get_eval_ds_config,
 )
 from models.t5gemma2model import get_model_t5gemma2_model
 from utils.optimizer import get_scheduler_optimizer
@@ -714,7 +713,7 @@ def main():
 
     dist.barrier()
 
-    suffix = f"{model_name}_train-{teacher_model}_gpus{WORLD_SIZE}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_{args.batch_strategy}"
+    suffix = f"deepspeed_{model_name}_train-{teacher_model}_gpus{WORLD_SIZE}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_{args.batch_strategy}"
     if args.out_filename:
         args.out_filename = f"{args.out_filename}_{suffix}"
     else:
