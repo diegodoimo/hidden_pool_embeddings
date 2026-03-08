@@ -188,6 +188,7 @@ class Projection(nn.Module):
         )
 
     def forward(self, hidden_states):
+        hidden_states = hidden_states.to(self.up.weight.dtype)
         hidden_states = self.up(hidden_states)
         hidden_states = self.down(hidden_states)
         return hidden_states
@@ -209,8 +210,9 @@ class MeanPooling(nn.Module):
         Returns:
             pooled: (batch_size, hidden_dim)
         """
-        # Expand mask to match hidden_states dimensions
-        mask = attention_mask.unsqueeze(-1)  # (B, L, 1)
+        # Expand mask to match hidden_states dimensions, cast to same dtype
+        # to avoid float32 promotion when attention_mask is int64
+        mask = attention_mask.unsqueeze(-1).to(hidden_states.dtype)  # (B, L, 1)
 
         # Compute masked sum
         masked_sum = (hidden_states * mask).sum(dim=1)  # (B, H)

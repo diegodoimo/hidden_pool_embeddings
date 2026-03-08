@@ -650,7 +650,7 @@ class T5Gemma2Encoder(T5Gemma2PreTrainedModel):
         if not isinstance(self_attn_mask_mapping := attention_mask, dict):
             mask_kwargs = {
                 "config": self.config,
-                "input_embeds": inputs_embeds,
+                "inputs_embeds": inputs_embeds,
                 "attention_mask": attention_mask,
             }
             self_attn_mask_mapping = {
