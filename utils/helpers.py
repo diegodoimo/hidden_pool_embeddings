@@ -184,11 +184,13 @@ def get_train_ds_config(
             }
         )
 
-    # we enable torch autocast within deepspeed.
-    # Check whether this matches the F2LLM behaviour (the rely on accelerate)
+    # bf16: {enabled: True} is sufficient because all models are loaded in
+    # bfloat16 (torch_dtype=torch.bfloat16). DeepSpeed keeps parameters,
+    # activations, and ZeRO communication in bf16 without needing torch_autocast.
+    # This matches F2LLM's setup (accelerate mixed_precision: bf16).
+    # NOTE: torch_autocast and bf16 cannot coexist in the same DeepSpeed config.
     ds_config = {
         "bf16": {"enabled": True},
-        "torch_autocast": {"enabled": True, "dtype": "bfloat16"},
         "zero_optimization": zero_opt,
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "gradient_clipping": max_norm,
@@ -198,26 +200,6 @@ def get_train_ds_config(
         "wall_clock_breakdown": False,
         "prescale_gradients": False,
     }
-
-    # ALREADY INITIALIZED EXTERNALLY
-    # "optimizer": {
-    #     "type": "AdamW",
-    #     "params": {
-    #         "lr": "auto",
-    #         "betas": "auto",
-    #         "eps": "auto",
-    #         "weight_decay": "auto"
-    #     }
-    # },
-    # "scheduler": {
-    # "type": "WarmupDecayLR",
-    # "params": {
-    #     "total_num_steps": "auto",
-    #     "warmup_min_lr": "auto",
-    #     "warmup_max_lr": "auto",
-    #     "warmup_num_steps": "auto"
-    #     }
-    # },
 
     return ds_config
 

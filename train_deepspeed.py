@@ -224,7 +224,7 @@ class Trainer:
             args.checkpointing_steps, args.max_train_steps, logspace=False
         )
         log_steps, log_interval = get_cpt_steps(
-            int(args.logging_steps), args.max_train_steps, logspace=False
+            int(args.logging_steps), args.max_train_steps, logspace=True
         )
 
         stats = defaultdict(dict)
