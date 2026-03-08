@@ -336,7 +336,7 @@ class Trainer:
                 query_ids = batch["query_ids"]
                 num_neg = batch["num_hard_negatives"]
 
-                #with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                     B = query_inputs.shape[0]
                     query_embeddings = self.model(
                         input_ids=query_inputs, attention_mask=query_mask
