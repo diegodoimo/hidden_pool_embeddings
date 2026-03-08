@@ -118,10 +118,10 @@ def save_model(model, output_dir, RANK, dist_type="ddp"):
     changed = True
     while changed:
         changed = False
-        if hasattr(model, "_orig_mod"):          # torch.compile
+        if hasattr(model, "_orig_mod"):  # torch.compile
             model = model._orig_mod
             changed = True
-        if isinstance(model, ddp_types):         # DDP / DataParallel
+        if isinstance(model, ddp_types):  # DDP / DataParallel
             model = model.module
             changed = True
 
@@ -144,3 +144,148 @@ def save_model(model, output_dir, RANK, dist_type="ddp"):
 
     if dist.is_initialized():
         dist.barrier()
+
+
+def get_train_ds_config(
+    train_batch_size,
+    per_device_train_batch_size,
+    gradient_accumulation_steps,
+    stage=2,
+    max_norm=1.0,
+):
+    """Return a DeepSpeed config aligned with CodeFuse-Embeddings F2LLM.
+
+    F2LLM reference (accelerate_config.yaml):
+        zero_stage: 2, gradient_clipping: 1.0, mixed_precision: bf16,
+        offload_optimizer_device: none, offload_param_device: none,
+        zero3_init_flag: false.
+    """
+
+    zero_opt = {
+        "stage": stage,
+        "overlap_comm": True,
+        "contiguous_gradients": True,
+        "reduce_bucket_size": "auto",
+        # Explicit no-offloading (matches F2LLM)
+        "offload_optimizer": {"device": "none", "pin_memory": False},
+        "offload_param": {"device": "none", "pin_memory": False},
+    }
+
+    # Stage-3-only knobs — only added when actually using stage 3
+    if stage == 3:
+        zero_opt.update(
+            {
+                "sub_group_size": 1e9,
+                "stage3_prefetch_bucket_size": "auto",
+                "stage3_param_persistence_threshold": "auto",
+                "stage3_max_live_parameters": 1e9,
+                "stage3_max_reuse_distance": 1e9,
+                "stage3_gather_16bit_weights_on_model_save": True,
+            }
+        )
+
+    ds_config = {
+        "bf16": {"enabled": True},
+        "zero_optimization": zero_opt,
+        "gradient_accumulation_steps": gradient_accumulation_steps,
+        "gradient_clipping": max_norm,
+        "steps_per_print": 1e3,
+        "train_batch_size": train_batch_size,
+        "train_micro_batch_size_per_gpu": per_device_train_batch_size,
+        "wall_clock_breakdown": False,
+        "prescale_gradients": False,
+    }
+
+    # ALREADY INITIALIZED EXTERNALLY
+    # "optimizer": {
+    #     "type": "AdamW",
+    #     "params": {
+    #         "lr": "auto",
+    #         "betas": "auto",
+    #         "eps": "auto",
+    #         "weight_decay": "auto"
+    #     }
+    # },
+    # "scheduler": {
+    # "type": "WarmupDecayLR",
+    # "params": {
+    #     "total_num_steps": "auto",
+    #     "warmup_min_lr": "auto",
+    #     "warmup_max_lr": "auto",
+    #     "warmup_num_steps": "auto"
+    #     }
+    # },
+
+    return ds_config
+
+
+def get_eval_ds_config(
+    offload,
+    stage=0,
+    bf16=True,
+):
+    zero_opt_dict = {
+        "stage": stage,
+        "stage3_param_persistence_threshold": "auto",
+        "offload_param": {
+            "device": "cpu" if offload else "none",
+            "pin_memory": True,
+        },
+    }
+    return {
+        "steps_per_print": 100,
+        "zero_optimization": zero_opt_dict,
+        "bf16": {
+            "enabled": bf16,
+        },
+        "prescale_gradients": False,
+        "wall_clock_breakdown": False,
+    }
+
+
+# def get_train_ds_config(
+#     offload,
+#     train_batch_size,
+#     per_device_train_batch_size=1,
+#     adam_offload=False,
+#     stage=0,
+#     bf16=True,
+#     max_norm=1.0,
+#     grad_accum_dtype=None,
+#     disable_trace_cache=True,
+# ):
+#     device = "cpu" if offload else "none"
+#     zero_opt_dict = {
+#         "stage": stage,
+#         "offload_param": {"device": device},
+#         "offload_optimizer": {
+#             "device": "cpu" if adam_offload else "none",
+#             "pin_memory": True,
+#         },
+#         "sub_group_size": "auto",
+#         "stage3_max_live_parameters": "auto",
+#         "stage3_max_reuse_distance": "auto",
+#         "stage3_param_persistence_threshold": "auto",
+#         "stage3_prefetch_bucket_size": "auto",
+#         "reduce_bucket_size": "auto",
+#     }
+#     if disable_trace_cache:
+#         zero_opt_dict["stage3_prefetch_bucket_size"] = 0
+#         zero_opt_dict["stage3_max_live_parameters"] = 0
+#         zero_opt_dict["stage3_max_reuse_distance"] = 0
+
+#     config = {
+#         "steps_per_print": 100,
+#         "zero_optimization": zero_opt_dict,
+#         "bf16": {
+#             "enabled": bf16,
+#         },
+#         "gradient_clipping": max_norm,
+#         "prescale_gradients": False,
+#         "wall_clock_breakdown": False,
+#         "data_types": {"grad_accum_dtype": grad_accum_dtype if grad_accum_dtype else "fp32"},
+#         "train_micro_batch_size_per_gpu": per_device_train_batch_size,
+#         "train_batch_size": train_batch_size,
+#     }
+
+#     return config
