@@ -1,4 +1,5 @@
-from utils import accelerate_train, CLASSIFICATION_DATASETS
+from f2llm_repro.f2llm_utils import accelerate_train, CLASSIFICATION_DATASETS
+from f2llm_repro.model import F2LLM
 from transformers import AutoTokenizer, set_seed, get_scheduler
 import os, json, random
 from datasets import load_dataset
@@ -9,7 +10,7 @@ from accelerate.utils import DeepSpeedPlugin
 import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.optim import AdamW
-from model import F2LLM
+
 import argparse
 from functools import partial
 
@@ -135,6 +136,7 @@ def parse_args():
     parser.add_argument("--log_steps", type=int, default=100)
     parser.add_argument("--eval_steps", type=int, default=100)
     parser.add_argument("--validation_interval", type=int, default=100)
+    parser.add_argument("--test_interval", type=int, default=10**9)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument(
         "--measure_baselines",
@@ -193,11 +195,14 @@ def main():
             json.dump(vars(args), f, indent=2)
 
     train_datasets, valid_datasets = [], []
+    accelerator.print("loading datasets")
     with accelerator.main_process_first():
         for f in sorted(
             f for f in os.listdir(args.train_data_path) if f.endswith(".parquet")
         ):
             dataset_name = f.split(".parquet")[0]
+            accelerator.print(f"loading {dataset_name}")
+
             dataset = load_dataset(
                 "parquet",
                 data_files=os.path.join(args.train_data_path, f),
@@ -208,7 +213,7 @@ def main():
             train_datasets.append((dataset_name, dataset["train"]))
             valid_datasets.append((dataset_name, dataset["test"]))
 
-    collate_fn = partial(
+    collate_fn_partial = partial(
         collate_fn,
         args=args,
         _stack=_stack,
@@ -221,7 +226,7 @@ def main():
             ds,
             shuffle=True,
             batch_size=args.train_batch_size,
-            collate_fn=collate_fn,
+            collate_fn=collate_fn_partial,
             num_workers=args.num_workers,
             pin_memory=True,
         )
@@ -232,7 +237,7 @@ def main():
             ds,
             shuffle=False,
             batch_size=args.train_batch_size,
-            collate_fn=collate_fn,
+            collate_fn=collate_fn_partial,
             num_workers=args.num_workers,
             pin_memory=True,
         )
@@ -250,6 +255,8 @@ def main():
     accelerator.print(
         f"******************************** Training step before prepare: {args.train_steps} ********************************"
     )
+
+    accelerator.print("loading model")
     model = F2LLM(args.model_path, args.max_seq_length, args=args)
     model.lm.gradient_checkpointing_enable()
     # set seed again to make sure that different models share the same seed
@@ -273,6 +280,7 @@ def main():
         "train_micro_batch_size_per_gpu"
     ] = args.train_batch_size
 
+    accelerator.print("preparing model")
     model.lm, optimizer, lr_scheduler = accelerator.prepare(
         model.lm, optimizer, lr_scheduler
     )
@@ -303,6 +311,8 @@ def main():
         eot_id=tokenizer.pad_token_id,
         max_samples=1_000_000,
     )
+
+    accelerator.print("start training")
 
     accelerate_train(
         args,
