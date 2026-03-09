@@ -60,15 +60,14 @@ torchrun \
     --num_workers 4 \
     --output_dir ./f2llm_repro/results/train \
     --tb_dir ./f2llm_repro/results/tensorboard \
-    --cache_dir cache \
+    --cache_dir ./f2llm/cache \
     --train_batch_size 16 \
-    --checkpointing_steps 5000 \
-    --validation_steps 5000 \
     --max_seq_length 1024 \
     --learning_rate 8e-6 \
     --min_lr 1e-7 \
     --weight_decay 0.01 \
     --warmup_steps 500 \
     --train_epochs 1 \
-    --log_interval 100 \
+    --log_interval 500 \
+    --validation_interval 5000 \
     --num_hard_neg 7
