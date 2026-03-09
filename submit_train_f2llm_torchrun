@@ -14,7 +14,7 @@
 module load cuda/12.8
 export CUDA_HOME=$CUDA_PATH
 
-source /u/area/ddoimo/anaconda3/bin/activate ./env_h100
+source /u/area/ddoimo/anaconda3/bin/activate ./env_f2llm
 
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 export PYTHONUNBUFFERED=1
@@ -53,13 +53,13 @@ torchrun \
     --rdzv-id=$SLURM_PROCID \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
-    run.py \
+    ./f2llm_repro/run.py \
     --model_path Qwen/Qwen3-0.6B \
     --experiment_id trial \
-    --train_data_path ./results/datasets_tokenized/f2llm/qwen3_600m-teacher_f2llm-prompt_qwen3-tok \
+    --train_data_path ./f2llm_repro/results/datasets_tokenized/f2llm/qwen3_600m-teacher_f2llm-prompt_qwen3-tok \
     --num_workers 4 \
-    --output_dir ./results/train \
-    --tb_dir ./results/tensorboard \
+    --output_dir ./f2llm_repro/results/train \
+    --tb_dir ./f2llm_repro/results/tensorboard \
     --cache_dir cache \
     --train_batch_size 16 \
     --checkpointing_steps 5000 \
