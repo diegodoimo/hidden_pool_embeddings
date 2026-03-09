@@ -459,6 +459,7 @@ def accelerate_train(
                         and k.endswith("training_loss_hard")
                     ]
                 ).mean()
+
                 train_log_dict["Avg/global/training_loss_in_batch"] = train_log_dict[
                     "Avg/retrieval/training_loss_in_batch"
                 ]
@@ -541,13 +542,14 @@ def accelerate_train(
                     key = f"mteb_eng_v2_full_{completed_steps}"
                     accelerator.print(f"[MTEB epoch {epoch + 1}] {summary}")
                     stats[key] = summary
-                    with open(os.path.join(args.output_dir, "train_logs.json"), "w") as f:
+                    with open(
+                        os.path.join(args.output_dir, "train_logs.json"), "w"
+                    ) as f:
                         json.dump(stats, f, indent=4)
 
                 # Restore the original eval set for the next mid-training evals
                 restore_tasks = get_eval_tasks(args.eval_set)
                 evaluator.update_datasets(restore_tasks)
-
 
             if completed_steps >= args.train_steps:
                 break
