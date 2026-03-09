@@ -7,6 +7,34 @@ from torch.nn import CrossEntropyLoss
 import os
 import json
 from utils.helpers import get_cpt_steps
+from utils.create_datasets import get_eval_tasks
+
+
+class F2LLMEvalWrapper(torch.nn.Module):
+    """Thin nn.Module that wraps F2LLM.lm and applies last-token pooling,
+    matching the ``(input_ids, attention_mask) -> embeddings`` interface
+    expected by ``evaluate_retrieval``."""
+
+    def __init__(self, lm, device):
+        super().__init__()
+        self._lm = lm
+        self._device = device
+
+    @property
+    def device(self):
+        return self._device
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self._lm(input_ids=input_ids, attention_mask=attention_mask)
+        # Last non-padding token index for each sequence
+        seq_lens = attention_mask.sum(dim=1)  # [B]
+        last_idx = seq_lens - 1  # [B]
+        embeddings = outputs.last_hidden_state[
+            torch.arange(input_ids.size(0), device=input_ids.device),
+            last_idx,
+        ]  # [B, d]
+        return embeddings
+
 
 CLASSIFICATION_DATASETS = [
     "amazon_counterfactual",
@@ -243,6 +271,8 @@ def accelerate_train(
     optimizer,
     lr_scheduler,
     num_train_samples,
+    evaluator=None,
+    per_device_eval_batch_size=8,
 ):
     accelerator.print(
         "**************************************** Start training ****************************************"
@@ -274,7 +304,7 @@ def accelerate_train(
     # summary_writer = (
     #     SummaryWriter(log_dir=args.tb_dir) if accelerator.is_main_process else None
     # )
-    stats = {"train": {}, "valid": {}}
+    stats = {"train": {}, "valid": {}, "test_perf": {}}
     criterion = CrossEntropyLoss(reduction="none")
     pbar = tqdm(range(args.train_steps), disable=not accelerator.is_local_main_process)
     completed_steps = 0
@@ -306,6 +336,19 @@ def accelerate_train(
     #     int(args.logging_steps), args.max_train_steps, logspace=False
     # )
     # ***************************************************************
+
+    if args.measure_baselines and evaluator is not None:
+        model.lm.eval()
+        unwrapped_lm = accelerator.unwrap_model(model.lm)
+        eval_device = torch.device(f"cuda:{accelerator.local_process_index}")
+        eval_wrapper = F2LLMEvalWrapper(unwrapped_lm, eval_device)
+        _, summary = evaluator.evaluate(eval_wrapper, batch_size=per_device_eval_batch_size)
+        model.lm.train()
+        stats["test_perf"][0] = summary
+        if accelerator.is_main_process:
+            accelerator.print(f"[Baseline] Step = 0: {summary}")
+            with open(os.path.join(args.output_dir, "train_logs.json"), "w") as f:
+                json.dump(stats, f, indent=4)
 
     model.lm.train()
     for epoch in range(args.train_epochs):
@@ -436,33 +479,54 @@ def accelerate_train(
                     completed_steps,
                     stats,
                 )
-                model.lm.train()
 
-            # step checkpoint
-            # if (
-            #     args.checkpointing_steps and completed_steps in checkpointing_steps
-            # ):  # % args.checkpointing_steps == 0
-            #     output_dir = os.path.join(args.output_dir, f"step_{completed_steps}")
-            #     save_checkpoint(args, accelerator, model, output_dir, lr_scheduler)
+                unwrapped_lm = accelerator.unwrap_model(model.lm)
+                eval_device = torch.device(f"cuda:{accelerator.local_process_index}")
+
+                eval_wrapper = F2LLMEvalWrapper(unwrapped_lm, eval_device)
+                _, summary = evaluator.evaluate(
+                    eval_wrapper, batch_size=per_device_eval_batch_size
+                )
+                model.lm.train()
+                if accelerator.is_main_process:
+                    accelerator.print(f"[MTEB] Step = {completed_steps}: {summary}")
+                    stats["test_perf"][completed_steps] = summary
+                    with open(
+                        os.path.join(args.output_dir, "train_logs.json"), "w"
+                    ) as f:
+                        json.dump(stats, f, indent=4)
 
             if completed_steps >= args.train_steps:
                 break
 
-        # epoch checkpoint
-        # output_dir = os.path.join(args.output_dir, f"epoch_{epoch+1}")
-        # save_checkpoint(args, accelerator, model, output_dir, lr_scheduler)
-        if completed_steps % args.validation_steps != 0:
+        # Full MTEB end-of-epoch evaluation (mirrors train.py epoch-end logic)
+        if evaluator is not None:
             model.lm.eval()
-            validate(
-                args,
-                accelerator,
-                model,
-                valid_loader_dict,
-                criterion,
-                completed_steps,
-                stats,
+            unwrapped_lm = accelerator.unwrap_model(model.lm)
+            eval_device = torch.device(f"cuda:{accelerator.local_process_index}")
+            eval_wrapper = F2LLMEvalWrapper(unwrapped_lm, eval_device)
+
+            # Switch to the full mteb_eng_v2 suite for the end-of-epoch run
+            full_eval_tasks = get_eval_tasks(
+                "mteb_eng_v2",
+                task_types=["Retrieval", "Summarization", "STS", "Reranking"],
+            )
+            evaluator.update_datasets(full_eval_tasks)
+            _, summary = evaluator.evaluate(
+                eval_wrapper, batch_size=per_device_eval_batch_size
             )
             model.lm.train()
+
+            if accelerator.is_main_process:
+                key = f"mteb_eng_v2_full_epoch_{epoch + 1}"
+                accelerator.print(f"[MTEB epoch {epoch + 1}] {summary}")
+                stats[key] = summary
+                with open(os.path.join(args.output_dir, "train_logs.json"), "w") as f:
+                    json.dump(stats, f, indent=4)
+
+            # Restore the original eval set for the next mid-training evals
+            restore_tasks = get_eval_tasks(args.eval_set)
+            evaluator.update_datasets(restore_tasks)
 
     # if summary_writer:
     #     summary_writer.close()

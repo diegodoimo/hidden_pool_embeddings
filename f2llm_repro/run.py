@@ -13,6 +13,13 @@ from model import F2LLM
 import argparse
 from functools import partial
 
+from inference.test_retrieval_ddp_update import evaluate_retrieval as EvaluateRetrieval
+from utils.create_datasets import (
+    get_eval_tasks,
+    instruction_template_qwen3,
+    instruction_template_embeddinggemma,
+)
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
@@ -129,7 +136,31 @@ def parse_args():
     parser.add_argument("--eval_steps", type=int, default=100)
     parser.add_argument("--validation_interval", type=int, default=100)
     parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument(
+        "--measure_baselines",
+        action="store_true",
+        help="Evaluate model at step 0 before any training",
+    )
     parser.add_argument("--num_processes", type=int, default=0)
+    parser.add_argument(
+        "--eval_set",
+        type=str,
+        default="mteb_retrieval_subset",
+        help="Name of the eval task set passed to get_eval_tasks() for mid-training MTEB evals.",
+    )
+    parser.add_argument(
+        "--per_device_eval_batch_size",
+        type=int,
+        default=32,
+        help="Batch size (per device) used during MTEB evaluation.",
+    )
+    parser.add_argument(
+        "--instruction_template",
+        type=str,
+        default="qwen3",
+        choices=["qwen3", "embeddinggemma"],
+        help="Instruction-template style used when encoding text for MTEB evaluation.",
+    )
     args = parser.parse_args()
     args.output_dir = f"{args.output_dir}/{args.experiment_id}"
     args.tb_dir = f"{args.tb_dir}/{args.experiment_id}"
@@ -257,6 +288,22 @@ def main():
         f"******************************** Training step after prepare: {args.train_steps} ********************************"
     )
 
+    # ------------------------------------------------------------------
+    # Build MTEB evaluator (only when eval_steps > 0).
+    # evaluate_retrieval internally calls dist.get_rank() / dist.get_world_size()
+    # which work because accelerate with DeepSpeed initialises torch.distributed.
+    # ------------------------------------------------------------------
+    eval_tasks = get_eval_tasks(args.eval_set)
+    evaluator = EvaluateRetrieval(
+        tasks=eval_tasks,
+        tokenizer=tokenizer,
+        instruction_template=instruction_template_qwen3,
+        padding_side="right",
+        add_special_tokens=False,
+        eot_id=tokenizer.pad_token_id,
+        max_samples=1_000_000,
+    )
+
     accelerate_train(
         args,
         accelerator,
@@ -266,6 +313,8 @@ def main():
         optimizer,
         lr_scheduler,
         sum(len(d[1]) for d in train_datasets),
+        evaluator=evaluator,
+        per_device_eval_batch_size=args.per_device_eval_batch_size,
     )
 
 
