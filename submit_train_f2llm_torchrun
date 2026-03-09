@@ -2,14 +2,14 @@
 #SBATCH --partition=H100
 ##SBATCH --partition=DGX
 #SBATCH --account=lade
-##SBATCH --nodelist=dgx002
+#SBATCH --nodelist=dgx004
 #SBATCH --nodes=1
 #SBATCH --time=48:00:00
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=56
-#SBATCH --mem=200G
+#SBATCH --cpus-per-task=104
+#SBATCH --mem=800G
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:4
+#SBATCH --gres=gpu:H100:8
 
 module load cuda/12.8
 export CUDA_HOME=$CUDA_PATH
@@ -60,7 +60,7 @@ torchrun \
     --num_workers 4 \
     --output_dir ./f2llm_repro/results/train \
     --tb_dir ./f2llm_repro/results/tensorboard \
-    --cache_dir ./f2llm/cache \
+    --cache_dir ./f2llm_repro/cache \
     --train_batch_size 16 \
     --max_seq_length 1024 \
     --learning_rate 1e-5 \
