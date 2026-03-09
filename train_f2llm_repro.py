@@ -319,6 +319,7 @@ def main():
         _eval_instruction_template = instruction_template_qwen3
         _eval_add_special_tokens = False
         _eval_eot_id = tokenizer.pad_token_id
+
     evaluator = EvaluateRetrieval(
         tasks=eval_tasks,
         tokenizer=tokenizer,
