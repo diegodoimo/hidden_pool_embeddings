@@ -164,6 +164,7 @@ def parse_args():
         help="Instruction-template style used when encoding text for MTEB evaluation.",
     )
     args = parser.parse_args()
+
     args.output_dir = f"{args.output_dir}/{args.experiment_id}"
     args.tb_dir = f"{args.tb_dir}/{args.experiment_id}"
     return args
@@ -173,16 +174,16 @@ def main():
 
     args = parse_args()
 
-    deepspeed_plugin = DeepSpeedPlugin(
-        zero_stage=2,
-        gradient_accumulation_steps=1,
-        gradient_clipping=1.0,
-    )
-    accelerator = Accelerator(
-        mixed_precision="bf16",
-        gradient_accumulation_steps=1,
-        deepspeed_plugin=deepspeed_plugin,
-    )
+    # deepspeed_plugin = DeepSpeedPlugin(
+    #     zero_stage=2,
+    #     gradient_accumulation_steps=1,
+    #     gradient_clipping=1.0,
+    # )
+    # accelerator = Accelerator(
+    #     mixed_precision="bf16",
+    #     gradient_accumulation_steps=1,
+    #     deepspeed_plugin=deepspeed_plugin,
+    # )
     args.num_processes = accelerator.num_processes
     accelerator.print(args)
 

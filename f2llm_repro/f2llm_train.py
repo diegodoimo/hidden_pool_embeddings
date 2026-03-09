@@ -350,7 +350,7 @@ def accelerate_train(
     # ***************************************************************
 
     if args.measure_baselines and evaluator is not None:
-        accelerator.print("evaluating baselin performaces")
+        accelerator.print("evaluating baseline performaces")
         model.lm.eval()
         unwrapped_lm = accelerator.unwrap_model(model.lm)
         eval_device = torch.device(f"cuda:{accelerator.local_process_index}")
