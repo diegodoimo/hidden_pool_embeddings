@@ -199,7 +199,7 @@ def validate(
     completed_steps,
     stats,
 ):
-    eval_log_dict = {}
+    _per_ds = {}
     for dataset_name, valid_dataloader in valid_loader_dict.items():
         loss_ls, loss_hard_ls = [], []
         for batch in valid_dataloader:
@@ -224,15 +224,16 @@ def validate(
 
         accelerator.wait_for_everyone()
         loss_hard_ls = torch.cat(loss_hard_ls)
-        eval_log_dict[f"{dataset_name}/valid_loss_hard"] = loss_hard_ls.mean()
+        _per_ds[f"{dataset_name}/valid_loss_hard"] = loss_hard_ls.mean()
         if dataset_name in RETRIEVAL_DATASETS:
             loss_ls = torch.cat(loss_ls)
-            eval_log_dict[f"{dataset_name}/valid_loss_in_batch"] = loss_ls.mean()
+            _per_ds[f"{dataset_name}/valid_loss_in_batch"] = loss_ls.mean()
 
+    eval_log_dict = {}
     eval_log_dict["Avg/retrieval/valid_loss_in_batch"] = torch.tensor(
         [
             v
-            for k, v in eval_log_dict.items()
+            for k, v in _per_ds.items()
             if k.split("/")[0] in RETRIEVAL_DATASETS
             and k.endswith("valid_loss_in_batch")
         ]
@@ -240,19 +241,30 @@ def validate(
     eval_log_dict["Avg/retrieval/valid_loss_hard"] = torch.tensor(
         [
             v
-            for k, v in eval_log_dict.items()
+            for k, v in _per_ds.items()
             if k.split("/")[0] in RETRIEVAL_DATASETS and k.endswith("valid_loss_hard")
         ]
     ).mean()
     eval_log_dict["Avg/classification/valid_loss_hard"] = torch.tensor(
         [
             v
-            for k, v in eval_log_dict.items()
+            for k, v in _per_ds.items()
             if k.split("/")[0] in CLASSIFICATION_DATASETS
+            and k.endswith("valid_loss_hard")
         ]
     ).mean()
     eval_log_dict["Avg/clustering/valid_loss_hard"] = torch.tensor(
-        [v for k, v in eval_log_dict.items() if k.split("/")[0] in CLUSTERING_DATASETS]
+        [
+            v
+            for k, v in _per_ds.items()
+            if k.split("/")[0] in CLUSTERING_DATASETS and k.endswith("valid_loss_hard")
+        ]
+    ).mean()
+    eval_log_dict["Avg/global/valid_loss_in_batch"] = eval_log_dict[
+        "Avg/retrieval/valid_loss_in_batch"
+    ]
+    eval_log_dict["Avg/global/valid_loss_hard"] = torch.tensor(
+        [v for k, v in _per_ds.items() if k.endswith("valid_loss_hard")]
     ).mean()
     if accelerator.is_main_process:
         # write_tensorboard(summary_writer, eval_log_dict, completed_steps)
@@ -342,7 +354,9 @@ def accelerate_train(
         unwrapped_lm = accelerator.unwrap_model(model.lm)
         eval_device = torch.device(f"cuda:{accelerator.local_process_index}")
         eval_wrapper = F2LLMEvalWrapper(unwrapped_lm, eval_device)
-        _, summary = evaluator.evaluate(eval_wrapper, batch_size=per_device_eval_batch_size)
+        _, summary = evaluator.evaluate(
+            eval_wrapper, batch_size=per_device_eval_batch_size
+        )
         model.lm.train()
         stats["test_perf"][0] = summary
         if accelerator.is_main_process:
@@ -398,23 +412,24 @@ def accelerate_train(
             if completed_steps % args.log_interval == 0:
                 pbar.update(args.log_interval)
 
-                train_log_dict = {"lr": optimizer.param_groups[0]["lr"]}
+                _per_ds = {}
                 for k in loss_dict.keys():
                     count = accelerator.gather(count_dict[k]).sum()
                     if count > 0:
-                        train_log_dict[f"{k}/training_loss_in_batch"] = (
+                        _per_ds[f"{k}/training_loss_in_batch"] = (
                             accelerator.gather(loss_dict[k]).sum() / count
                         )
                 for k in loss_hard_dict.keys():
                     count = accelerator.gather(count_hard_dict[k]).sum()
                     if count > 0:
-                        train_log_dict[f"{k}/training_loss_hard"] = (
+                        _per_ds[f"{k}/training_loss_hard"] = (
                             accelerator.gather(loss_hard_dict[k]).sum() / count
                         )
+                train_log_dict = {"lr": optimizer.param_groups[0]["lr"]}
                 train_log_dict["Avg/retrieval/training_loss_in_batch"] = torch.tensor(
                     [
                         v
-                        for k, v in train_log_dict.items()
+                        for k, v in _per_ds.items()
                         if k.split("/")[0] in RETRIEVAL_DATASETS
                         and k.endswith("training_loss_in_batch")
                     ]
@@ -422,7 +437,7 @@ def accelerate_train(
                 train_log_dict["Avg/retrieval/training_loss_hard"] = torch.tensor(
                     [
                         v
-                        for k, v in train_log_dict.items()
+                        for k, v in _per_ds.items()
                         if k.split("/")[0] in RETRIEVAL_DATASETS
                         and k.endswith("training_loss_hard")
                     ]
@@ -430,16 +445,24 @@ def accelerate_train(
                 train_log_dict["Avg/classification/training_loss_hard"] = torch.tensor(
                     [
                         v
-                        for k, v in train_log_dict.items()
+                        for k, v in _per_ds.items()
                         if k.split("/")[0] in CLASSIFICATION_DATASETS
+                        and k.endswith("training_loss_hard")
                     ]
                 ).mean()
                 train_log_dict["Avg/clustering/training_loss_hard"] = torch.tensor(
                     [
                         v
-                        for k, v in train_log_dict.items()
+                        for k, v in _per_ds.items()
                         if k.split("/")[0] in CLUSTERING_DATASETS
+                        and k.endswith("training_loss_hard")
                     ]
+                ).mean()
+                train_log_dict["Avg/global/training_loss_in_batch"] = train_log_dict[
+                    "Avg/retrieval/training_loss_in_batch"
+                ]
+                train_log_dict["Avg/global/training_loss_hard"] = torch.tensor(
+                    [v for k, v in _per_ds.items() if k.endswith("training_loss_hard")]
                 ).mean()
 
                 accelerator.print(f"[Train] Step = {completed_steps}")
