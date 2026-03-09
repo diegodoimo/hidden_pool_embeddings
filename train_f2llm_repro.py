@@ -1,4 +1,4 @@
-from f2llm_repro.f2llm_utils import accelerate_train, CLASSIFICATION_DATASETS
+from f2llm_repro.f2llm_train import accelerate_train, CLASSIFICATION_DATASETS
 from f2llm_repro.model import F2LLM, F2LLMT5Gemma2
 from transformers import AutoTokenizer, set_seed, get_scheduler
 import os, json, random
