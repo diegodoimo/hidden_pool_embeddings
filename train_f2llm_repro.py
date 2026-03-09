@@ -1,5 +1,5 @@
 from f2llm_repro.f2llm_utils import accelerate_train, CLASSIFICATION_DATASETS
-from f2llm_repro.model import F2LLM
+from f2llm_repro.model import F2LLM, F2LLMT5Gemma2
 from transformers import AutoTokenizer, set_seed, get_scheduler
 import os, json, random
 from datasets import load_dataset
@@ -186,6 +186,9 @@ def main():
     args.num_processes = accelerator.num_processes
     accelerator.print(args)
 
+    # Detect model family once; drives model class + evaluator settings.
+    is_t5gemma2 = "t5gemma-2" in args.model_path.lower()
+
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
 
     set_seed(0)
@@ -257,7 +260,10 @@ def main():
     )
 
     accelerator.print("loading model")
-    model = F2LLM(args.model_path, args.max_seq_length, args=args)
+    if is_t5gemma2:
+        model = F2LLMT5Gemma2(args.model_path, args.max_seq_length, args=args)
+    else:
+        model = F2LLM(args.model_path, args.max_seq_length, args=args)
     model.lm.gradient_checkpointing_enable()
     # set seed again to make sure that different models share the same seed
     set_seed(0)
@@ -302,13 +308,24 @@ def main():
     # which work because accelerate with DeepSpeed initialises torch.distributed.
     # ------------------------------------------------------------------
     eval_tasks = get_eval_tasks(args.eval_set)
+    # Evaluator settings depend on whether the model is a causal LM (qwen-style,
+    # last-token pooling, no special tokens added by tokenizer) or a bidirectional
+    # encoder (T5Gemma2-style, mean pooling, tokenizer adds BOS/EOS itself).
+    if is_t5gemma2:
+        _eval_instruction_template = instruction_template_embeddinggemma
+        _eval_add_special_tokens = True
+        _eval_eot_id = None
+    else:
+        _eval_instruction_template = instruction_template_qwen3
+        _eval_add_special_tokens = False
+        _eval_eot_id = tokenizer.pad_token_id
     evaluator = EvaluateRetrieval(
         tasks=eval_tasks,
         tokenizer=tokenizer,
-        instruction_template=instruction_template_qwen3,
+        instruction_template=_eval_instruction_template,
         padding_side="right",
-        add_special_tokens=False,
-        eot_id=tokenizer.pad_token_id,
+        add_special_tokens=_eval_add_special_tokens,
+        eot_id=_eval_eot_id,
         max_samples=1_000_000,
     )
 
