@@ -7,18 +7,56 @@ from tqdm.auto import tqdm
 import argparse
 
 
-tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-max_seq_length = 1023
+# ---- globals set by main() before any worker fork ----
+tokenizer = None
+max_seq_length = None
+_add_special_tokens = None
+_append_eos = None
+
+
+# Model-type presets:
+#   qwen3      – add_special_tokens=False, manually append eos_token_id,
+#                max_seq_length reserves 1 slot for that EOS.
+#   t5-gemma2  – add_special_tokens=True (tokenizer handles BOS/EOS),
+#                no manual EOS append.
+MODEL_TYPE_PRESETS = {
+    "qwen3": {"add_special_tokens": False, "append_eos": True, "seq_len_reserve": 1},
+    "t5-gemma2": {
+        "add_special_tokens": True,
+        "append_eos": False,
+        "seq_len_reserve": 0,
+    },
+}
+
+
+def _infer_model_type(tokenizer_path: str) -> str:
+    """Infer model type from the tokenizer path string."""
+    path_lower = tokenizer_path.lower()
+    if "t5gemma" in path_lower or "t5-gemma" in path_lower:
+        return "t5-gemma2"
+    if "qwen" in path_lower:
+        return "qwen3"
+    raise ValueError(
+        f"Cannot infer model type from tokenizer_path '{tokenizer_path}'. "
+        f"Expected the path to contain 'qwen' or 't5gemma'. "
+        f"Known model types: {list(MODEL_TYPE_PRESETS.keys())}"
+    )
 
 
 def process_sent(sentence):
 
-    # We make sure there's always an eos token at the end of each sequence
     tokenizer_outputs = tokenizer(
-        sentence, max_length=max_seq_length, truncation=True, add_special_tokens=False
+        sentence,
+        max_length=max_seq_length,
+        truncation=True,
+        add_special_tokens=_add_special_tokens,
     )
 
-    return np.array(tokenizer_outputs.input_ids + [tokenizer.eos_token_id])
+    ids = tokenizer_outputs.input_ids
+    if _append_eos:
+        ids = ids + [tokenizer.eos_token_id]
+
+    return np.array(ids)
 
 
 def process_sent_batch(s):
@@ -85,12 +123,41 @@ if __name__ == "__main__":
         parser.add_argument(
             "--num_workers",
             type=int,
-            help="Root directory for tokenized output (e.g. datasets_tokenized)",
+            help="Number of parallel workers for tokenization",
+        )
+        parser.add_argument(
+            "--tokenizer_path",
+            type=str,
+            required=True,
+            help="HuggingFace model path for the tokenizer (e.g. Qwen/Qwen3-0.6B or google/t5gemma-2-270m-270m)",
+        )
+        parser.add_argument(
+            "--max_seq_len",
+            type=int,
+            default=1024,
+            help="Maximum total sequence length including any special tokens (default: 1024)",
         )
         args = parser.parse_args()
 
         return args
 
     args = parse_args()
+
+    # ---- configure globals before forking workers ----
+    model_type = _infer_model_type(args.tokenizer_path)
+    preset = MODEL_TYPE_PRESETS[model_type]
+    _add_special_tokens = preset["add_special_tokens"]
+    _append_eos = preset["append_eos"]
+    max_seq_length = args.max_seq_len - preset["seq_len_reserve"]
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.tokenizer_path, trust_remote_code=True
+    )
+    print(
+        f"Tokenizer : {args.tokenizer_path}\n"
+        f"Model type: {model_type}\n"
+        f"add_special_tokens={_add_special_tokens}, append_eos={_append_eos}, "
+        f"max_seq_length={max_seq_length} (total cap {args.max_seq_len})"
+    )
 
     main(args)
