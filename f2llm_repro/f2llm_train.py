@@ -33,6 +33,7 @@ class F2LLMEvalWrapper(torch.nn.Module):
             torch.arange(input_ids.size(0), device=input_ids.device),
             last_idx,
         ]  # [B, d]
+        embeddings = F.normalize(embeddings, p=2, dim=1)
         return embeddings
 
 
@@ -529,7 +530,7 @@ def accelerate_train(
 
                 # Switch to the full mteb_eng_v2 suite for the end-of-epoch run
                 full_eval_tasks = get_eval_tasks("mteb_eng_v2")
-                
+
                 evaluator.update_datasets(full_eval_tasks)
                 _, summary = evaluator.evaluate(
                     eval_wrapper, batch_size=per_device_eval_batch_size
