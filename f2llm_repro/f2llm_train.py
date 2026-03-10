@@ -528,10 +528,8 @@ def accelerate_train(
                 eval_wrapper = F2LLMEvalWrapper(unwrapped_lm, eval_device)
 
                 # Switch to the full mteb_eng_v2 suite for the end-of-epoch run
-                full_eval_tasks = get_eval_tasks(
-                    "mteb_eng_v2",
-                    task_types=["Retrieval", "Summarization", "STS", "Reranking"],
-                )
+                full_eval_tasks = get_eval_tasks("mteb_eng_v2")
+                
                 evaluator.update_datasets(full_eval_tasks)
                 _, summary = evaluator.evaluate(
                     eval_wrapper, batch_size=per_device_eval_batch_size
@@ -562,10 +560,7 @@ def accelerate_train(
             eval_wrapper = F2LLMEvalWrapper(unwrapped_lm, eval_device)
 
             # Switch to the full mteb_eng_v2 suite for the end-of-epoch run
-            full_eval_tasks = get_eval_tasks(
-                "mteb_eng_v2",
-                task_types=["Retrieval", "Summarization", "STS", "Reranking"],
-            )
+            full_eval_tasks = get_eval_tasks("mteb_eng_v2")
             evaluator.update_datasets(full_eval_tasks)
             _, summary = evaluator.evaluate(
                 eval_wrapper, batch_size=per_device_eval_batch_size
