@@ -156,7 +156,10 @@ def get_eval_tasks(eval_set, task_types=None):
         tasks = list(benchmark.tasks)
     elif eval_set == "mteb_eng_v2_reduced":
         task_names = TASK_DICT["mteb_eng_v2_reduced"]
-        tasks = [mteb.get_task(name) for name in task_names]
+
+        benchmark = mteb.get_benchmark("MTEB(eng, v2)")
+        all_tasks = list(benchmark.tasks)
+        tasks = [task for task in all_tasks if task.metadata.name in task_names]
     else:
         raise ValueError(f"Unknown eval_set: {eval_set}")
 

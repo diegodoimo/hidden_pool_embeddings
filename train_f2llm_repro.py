@@ -174,7 +174,6 @@ def main():
 
     args = parse_args()
 
-<<<<<<< HEAD
     deepspeed_plugin = DeepSpeedPlugin(
         zero_stage=2,
         gradient_accumulation_steps=1,
@@ -185,20 +184,8 @@ def main():
         gradient_accumulation_steps=1,
         deepspeed_plugin=deepspeed_plugin,
     )
-=======
-    # deepspeed_plugin = DeepSpeedPlugin(
-    #     zero_stage=2,
-    #     gradient_accumulation_steps=1,
-    #     gradient_clipping=1.0,
-    # )
-    # accelerator = Accelerator(
-    #     mixed_precision="bf16",
-    #     gradient_accumulation_steps=1,
-    #     deepspeed_plugin=deepspeed_plugin,
-    # )
     accelerator = Accelerator()
 
->>>>>>> a49272f0c6115bb296bb927ad4b1c5a8a495a563
     args.num_processes = accelerator.num_processes
     accelerator.print(args)
 
