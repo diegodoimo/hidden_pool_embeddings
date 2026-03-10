@@ -184,6 +184,8 @@ def main():
     #     gradient_accumulation_steps=1,
     #     deepspeed_plugin=deepspeed_plugin,
     # )
+    accelerator = Accelerator()
+
     args.num_processes = accelerator.num_processes
     accelerator.print(args)
 

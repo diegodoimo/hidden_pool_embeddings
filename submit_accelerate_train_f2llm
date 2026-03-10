@@ -35,4 +35,4 @@ nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 head_node=${nodes[0]}
 head_node_ip=$(getent hosts "$head_node" | awk '{ print $1 }')
 
-accelerate launch --config_file ./f2llm_repro/configs/accelerate_config.yaml run.py --config ./f2llm_repro/configs/config.json
+accelerate launch --config_file ./f2llm_repro/configs/accelerate_config.yaml train_f2llm_repro.py --config ./f2llm_repro/configs/config.json
