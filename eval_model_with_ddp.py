@@ -10,6 +10,7 @@ from utils.create_datasets import (
     instruction_template_qwen3,
     instruction_template_embeddinggemma,
 )
+from utils.create_datasets import TASK_DICT
 
 from models.modules import add_pooling_layers, last_token_pool, mean_pool
 import mteb
@@ -61,13 +62,20 @@ def main():
     bench_dict = {
         "mteb_multilingual_v2": "MTEB(Multilingual, v2)",
         "mteb_eng_v2": "MTEB(eng, v2)",
+        "mteb_eng_v2_subset": "MTEB(eng, v2)"
     }
+
 
     if args.benchmark:
         benchmark = mteb.get_benchmark(bench_dict[args.benchmark])
         tasks = []
-        for task in benchmark.tasks:
-            tasks.append(task)
+        if args.benchmark == "mteb_eng_v2_subset":
+            for task in benchmark.tasks:
+                if task.metadata.name in TASK_DICT["mteb_eng_v2_reduced"]:
+                    tasks.append(task)
+        else:
+            for task in benchmark.tasks:
+                tasks.append(task)
     else:
         tasks = [mteb.get_task(args.task_name)]
 
@@ -76,8 +84,6 @@ def main():
         tokenizer=tokenizer,
         instruction_template=instruction_template,
         padding_side="right",
-        new_inference_mode=True,
-        pool_fn=pool_fn,
         add_special_tokens=add_special_tokens,
         eot_id=eot_id,
     )
@@ -86,10 +92,10 @@ def main():
         args.model_name_or_path,
         dtype=torch.bfloat16,
     ).to("cuda")
+    model = add_pooling_layers(model, pool_fn=pool_fn)
 
     model = DDP(model, device_ids=[LOCAL_RANK])
     model = torch.compile(model)
-    model = add_pooling_layers(model, pool_fn)
 
     results, summary = retrieval_evaluator.evaluate(model, batch_size=64)
 

@@ -400,7 +400,7 @@ def accelerate_train(
             loss_total = loss + loss_hard
 
             # backward, optimizer, scheduler
-            #accelerator.backward(loss_total)
+            accelerator.backward(loss_total)
             optimizer.step()
             lr_scheduler.step()
             optimizer.zero_grad()
