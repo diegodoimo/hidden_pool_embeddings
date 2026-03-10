@@ -33,6 +33,7 @@ class F2LLMEvalWrapper(torch.nn.Module):
             torch.arange(input_ids.size(0), device=input_ids.device),
             last_idx,
         ]  # [B, d]
+        # crucial embeddings should be normalized
         embeddings = F.normalize(embeddings, p=2, dim=1)
         return embeddings
 

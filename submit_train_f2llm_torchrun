@@ -2,14 +2,14 @@
 #SBATCH --partition=H100
 ##SBATCH --partition=DGX
 #SBATCH --account=lade
-##SBATCH --nodelist=dgx004
+##SBATCH --nodelist=dgx003
 #SBATCH --nodes=1
-#SBATCH --time=48:00:00
+#SBATCH --time=0:30:00
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=28
-#SBATCH --mem=100G
+#SBATCH --cpus-per-task=56
+#SBATCH --mem=300G
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:2
+#SBATCH --gres=gpu:H100:4
 
 module load cuda/12.8
 export CUDA_HOME=$CUDA_PATH
@@ -45,7 +45,7 @@ head_node_ip=$(getent hosts "$head_node" | awk '{ print $1 }')
 #     --gradient_clipping 1.0 \
 #     run.py --config configs/config.json
 
-#--model_path Qwen/Qwen3-0.6B \
+#--model_path Qwen/Qwen3-Embedding-0.6B \
 torchrun \
     --nnodes=$SLURM_NTASKS \
     --node-rank=$SLURM_NODEID \
@@ -54,23 +54,23 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train_f2llm_repro.py \
-    --model_path Qwen/Qwen3-Embedding-0.6B  \
+    --model_path Qwen/Qwen3-0.6B  \
     --experiment_id trial \
     --train_data_path ./f2llm_repro/results/datasets_tokenized/f2llm/qwen3_600m-teacher_f2llm-prompt_qwen3-tok \
-    --num_workers 4 \
+    --num_workers $WORKERS_PER_RANK \
     --output_dir ./f2llm_repro/results/train \
     --tb_dir ./f2llm_repro/results/tensorboard \
     --cache_dir ./f2llm_repro/cache \
-    --train_batch_size 16 \
+    --train_batch_size 24 \
     --max_seq_length 1024 \
     --learning_rate 1e-5 \
     --min_lr 1e-7 \
     --weight_decay 0.01 \
     --warmup_steps 500 \
     --train_epochs 1 \
-    --log_interval 500 \
-    --validation_interval 5000 \
-    --test_interval 5 \
+    --log_interval 200 \
+    --validation_interval 2000 \
+    --test_interval 10000 \
     --num_hard_neg 7 \
     --measure_baselines \
     --eval_set mteb_eng_v2_reduced \
