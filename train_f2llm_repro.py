@@ -23,6 +23,14 @@ from utils.create_datasets import (
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-Embedding-0.6B")
+
+
+print(tokenizer.pad_token_id)
+print(tokenizer.eos_token_id)
+
 
 class MultiLoader:
     """
@@ -184,7 +192,6 @@ def main():
         gradient_accumulation_steps=1,
         deepspeed_plugin=deepspeed_plugin,
     )
-    accelerator = Accelerator()
 
     args.num_processes = accelerator.num_processes
     accelerator.print(args)
@@ -321,7 +328,8 @@ def main():
     else:
         _eval_instruction_template = instruction_template_qwen3
         _eval_add_special_tokens = False
-        _eval_eot_id = tokenizer.pad_token_id
+        # in qwen embedding is the pad_token
+        _eval_eot_id = tokenizer.eos_token_id
 
     evaluator = EvaluateRetrieval(
         tasks=eval_tasks,
