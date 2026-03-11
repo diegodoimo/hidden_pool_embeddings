@@ -61,7 +61,7 @@ torchrun \
     --output_dir ./f2llm_repro/results/train \
     --tb_dir ./f2llm_repro/results/tensorboard \
     --cache_dir ./f2llm_repro/cache \
-    --train_batch_size 24 \
+    --train_batch_size 64 \
     --max_seq_length 1024 \
     --learning_rate 1e-5 \
     --min_lr 1e-7 \
