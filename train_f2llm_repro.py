@@ -23,15 +23,6 @@ from utils.create_datasets import (
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-from transformers import AutoTokenizer
-
-tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-Embedding-0.6B")
-
-
-print(tokenizer.pad_token_id)
-print(tokenizer.eos_token_id)
-
-
 class MultiLoader:
     """
     Iterates over a dict(name -> DataLoader) and returns complete batches.

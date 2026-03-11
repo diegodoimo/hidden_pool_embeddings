@@ -2,7 +2,7 @@
 #SBATCH --partition=H100
 ##SBATCH --partition=DGX
 #SBATCH --account=lade
-##SBATCH --nodelist=dgx003
+#SBATCH --nodelist=dgx004
 #SBATCH --nodes=1
 #SBATCH --time=48:00:00
 #SBATCH --ntasks-per-node=1
