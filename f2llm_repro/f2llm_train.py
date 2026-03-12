@@ -38,6 +38,30 @@ class F2LLMEvalWrapper(torch.nn.Module):
         return embeddings
 
 
+class EmbeddingModelEvalWrapper(torch.nn.Module):
+    """Thin nn.Module for models that already return L2-normalised embeddings
+    directly from their forward pass (e.g. EmbeddingT5Gemma2 which applies
+    MeanPooling -> Projection -> Normalize internally).
+
+    This wrapper simply forwards (input_ids, attention_mask) to the module,
+    matching the ``(input_ids, attention_mask) -> embeddings`` interface
+    expected by ``evaluate_retrieval``.  No additional pooling or normalisation
+    is applied here because the module already handles both.
+    """
+
+    def __init__(self, module, device):
+        super().__init__()
+        self._module = module
+        self._device = device
+
+    @property
+    def device(self):
+        return self._device
+
+    def forward(self, input_ids, attention_mask):
+        return self._module(input_ids=input_ids, attention_mask=attention_mask)
+
+
 CLASSIFICATION_DATASETS = [
     "amazon_counterfactual",
     "amazon_polarity",
@@ -271,7 +295,12 @@ def validate(
     if accelerator.is_main_process:
         # write_tensorboard(summary_writer, eval_log_dict, completed_steps)
         stats["valid"][completed_steps] = _to_serializable(eval_log_dict)
-        with open(os.path.join(args.output_dir, "train_logs.json"), "w") as f:
+        _filename = (
+            "_" + args.out_filename if getattr(args, "out_filename", "") != "" else ""
+        )
+        with open(
+            os.path.join(args.output_dir, f"train_logs{_filename}.json"), "w"
+        ) as f:
             json.dump(stats, f, indent=4)
     accelerator.print(f"[Validation] Step = {completed_steps}")
 
@@ -287,7 +316,10 @@ def accelerate_train(
     num_train_samples,
     evaluator=None,
     per_device_eval_batch_size=8,
+    eval_wrapper_class=None,
 ):
+    if eval_wrapper_class is None:
+        eval_wrapper_class = F2LLMEvalWrapper
     accelerator.print(
         "**************************************** Start training ****************************************"
     )
@@ -301,6 +333,9 @@ def accelerate_train(
     accelerator.print(f" Total training steps = {args.train_steps}")
     accelerator.print(
         "************************************************************************************************"
+    )
+    filename = (
+        "_" + args.out_filename if getattr(args, "out_filename", "") != "" else ""
     )
     global RETRIEVAL_DATASETS, CLASSIFICATION_DATASETS, CLUSTERING_DATASETS
     RETRIEVAL_DATASETS = [
@@ -356,7 +391,7 @@ def accelerate_train(
         model.lm.eval()
         unwrapped_lm = accelerator.unwrap_model(model.lm)
         eval_device = torch.device(f"cuda:{accelerator.local_process_index}")
-        eval_wrapper = F2LLMEvalWrapper(unwrapped_lm, eval_device)
+        eval_wrapper = eval_wrapper_class(unwrapped_lm, eval_device)
         _, summary = evaluator.evaluate(
             eval_wrapper, batch_size=per_device_eval_batch_size
         )
@@ -364,7 +399,9 @@ def accelerate_train(
         stats["test_perf"][0] = summary
         if accelerator.is_main_process:
             accelerator.print(f"[Baseline] Step = 0: {summary}")
-            with open(os.path.join(args.output_dir, "train_logs.json"), "w") as f:
+            with open(
+                os.path.join(args.output_dir, f"train_logs{filename}.json"), "w"
+            ) as f:
                 json.dump(stats, f, indent=4)
 
     model.lm.train()
@@ -474,7 +511,7 @@ def accelerate_train(
                     # write_tensorboard(summary_writer, train_log_dict, completed_steps)
                     stats["train"][completed_steps] = _to_serializable(train_log_dict)
                     with open(
-                        os.path.join(args.output_dir, "train_logs.json"), "w"
+                        os.path.join(args.output_dir, f"train_logs{filename}.json"), "w"
                     ) as f:
                         json.dump(stats, f, indent=4)
                 loss_dict = {
@@ -510,7 +547,7 @@ def accelerate_train(
                 unwrapped_lm = accelerator.unwrap_model(model.lm)
                 eval_device = torch.device(f"cuda:{accelerator.local_process_index}")
 
-                eval_wrapper = F2LLMEvalWrapper(unwrapped_lm, eval_device)
+                eval_wrapper = eval_wrapper_class(unwrapped_lm, eval_device)
                 _, summary = evaluator.evaluate(
                     eval_wrapper, batch_size=per_device_eval_batch_size
                 )
@@ -519,7 +556,7 @@ def accelerate_train(
                     accelerator.print(f"[MTEB] Step = {completed_steps}: {summary}")
                     stats["test_perf"][completed_steps] = summary
                     with open(
-                        os.path.join(args.output_dir, "train_logs.json"), "w"
+                        os.path.join(args.output_dir, f"train_logs{filename}.json"), "w"
                     ) as f:
                         json.dump(stats, f, indent=4)
 
@@ -527,7 +564,7 @@ def accelerate_train(
                 model.lm.eval()
                 unwrapped_lm = accelerator.unwrap_model(model.lm)
                 eval_device = torch.device(f"cuda:{accelerator.local_process_index}")
-                eval_wrapper = F2LLMEvalWrapper(unwrapped_lm, eval_device)
+                eval_wrapper = eval_wrapper_class(unwrapped_lm, eval_device)
 
                 # Switch to the full mteb_eng_v2 suite for the end-of-epoch run
                 full_eval_tasks = get_eval_tasks("mteb_eng_v2")
@@ -543,7 +580,7 @@ def accelerate_train(
                     accelerator.print(f"[MTEB epoch {epoch + 1}] {summary}")
                     stats[key] = summary
                     with open(
-                        os.path.join(args.output_dir, "train_logs.json"), "w"
+                        os.path.join(args.output_dir, f"train_logs{filename}.json"), "w"
                     ) as f:
                         json.dump(stats, f, indent=4)
 
@@ -559,7 +596,7 @@ def accelerate_train(
             model.lm.eval()
             unwrapped_lm = accelerator.unwrap_model(model.lm)
             eval_device = torch.device(f"cuda:{accelerator.local_process_index}")
-            eval_wrapper = F2LLMEvalWrapper(unwrapped_lm, eval_device)
+            eval_wrapper = eval_wrapper_class(unwrapped_lm, eval_device)
 
             # Switch to the full mteb_eng_v2 suite for the end-of-epoch run
             full_eval_tasks = get_eval_tasks("mteb_eng_v2")
@@ -573,7 +610,9 @@ def accelerate_train(
                 key = f"mteb_eng_v2_full_epoch_{epoch + 1}"
                 accelerator.print(f"[MTEB epoch {epoch + 1}] {summary}")
                 stats[key] = summary
-                with open(os.path.join(args.output_dir, "train_logs.json"), "w") as f:
+                with open(
+                    os.path.join(args.output_dir, f"train_logs{filename}.json"), "w"
+                ) as f:
                     json.dump(stats, f, indent=4)
 
             # Restore the original eval set for the next mid-training evals

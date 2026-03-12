@@ -11,8 +11,7 @@ import torch
 import torch.nn as nn
 from transformers import AutoModel, AutoTokenizer
 
-from models.t5gemma2model import load_t5gemma2_encoder
-from models.modules import mean_pool
+from models.t5gemma2model import get_model_t5gemma2_model
 
 
 class F2LLM:
@@ -72,37 +71,51 @@ class F2LLM:
 
 class F2LLMT5Gemma2:
     """
-    Drop-in replacement for F2LLM that uses the T5Gemma2 bidirectional encoder
-    (loaded via load_t5gemma2_encoder) instead of a causal LM.
+    Drop-in replacement for F2LLM that uses EmbeddingT5Gemma2 (built by
+    get_model_t5gemma2_model) as the backbone instead of a raw causal LM.
 
-    The forward interface is identical to F2LLM: it accepts the same batch dict
-    and returns the same dict of {query, passage, negative}_passage_features.
+    Compared to the previous implementation this adds:
+    - A learned Projection FFN between mean-pooled encoder output and L2
+      normalisation, trained end-to-end through the contrastive loss.
+    - Optional gated-attention pooling over per-layer hidden states
+      (attention_pooling=True / cls_query_pooling=True via args).
 
-    Key differences vs F2LLM:
-    - Mean pooling is used instead of last-token pooling, which is more
-      appropriate for a bidirectional encoder.
-    - `seq_lens` in the batch is not used (mean pooling uses attention_mask).
-    - The underlying model is stored as `self.encoder` instead of `self.lm`.
-      An `lm` property is provided for compatibility with F2LLMEvalWrapper.
+    Interface contract:
+    - self.lm   : the EmbeddingT5Gemma2 nn.Module, passed to
+                  accelerator.prepare so the full encoder + projection +
+                  normalise stack is moved to GPU / wrapped by DeepSpeed.
+    - forward() : accepts the stacked batch dict, calls self.lm, and
+                  returns the {query,passage,negative}_passage_features dict
+                  expected by accelerate_train.
+    - Eval      : use EmbeddingModelEvalWrapper (in f2llm_train.py) which
+                  calls self.lm(input_ids, attention_mask) directly, since
+                  EmbeddingT5Gemma2 already returns L2-normalised embeddings.
     """
 
     def __init__(
         self,
-        model_path,
+        model_path: str,
         max_seq_length: int = 512,
         args=None,
         attn_implementation: str = "sdpa",
     ):
         self.args = args
-        self.dtype = torch.bfloat16
         self.device = None  # set after accelerator.prepare
 
-        self.encoder = load_t5gemma2_encoder(
+        attention_pooling = getattr(args, "attention_pooling", False)
+        cls_query_pooling = getattr(args, "cls_query_pooling", False)
+        attention_dim = getattr(args, "attention_dim", None)
+
+        # Build EmbeddingT5Gemma2 (encoder + MeanPooling + Projection + Normalize)
+        self._embedding_model, _, _ = get_model_t5gemma2_model(
             model_name_or_path=model_path,
-            torch_dtype=self.dtype,
+            activation_checkpointing=False,  # enabled separately after accelerator.prepare
+            attention_pooling=attention_pooling,
+            cls_query_pooling=cls_query_pooling,
+            attention_dim=attention_dim,
             attn_implementation=attn_implementation,
         )
-        self.encoder.config.use_cache = False
+        self._embedding_model.encoder.config.use_cache = False
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.max_seq_length = max_seq_length
@@ -110,33 +123,37 @@ class F2LLMT5Gemma2:
     # ------------------------------------------------------------------ compat
     @property
     def lm(self):
-        """Alias so that F2LLMEvalWrapper (which expects `.lm`) still works."""
-        return self.encoder
+        """The EmbeddingT5Gemma2 nn.Module; passed to accelerator.prepare."""
+        return self._embedding_model
+
+    @lm.setter
+    def lm(self, value):
+        """Allows `model.lm, opt, sched = accelerator.prepare(model.lm, ...)` to
+        update the reference after accelerate wraps it."""
+        self._embedding_model = value
 
     # ------------------------------------------------------------------
     def set_device(self):
-        self.device = next(self.encoder.parameters()).device
+        self.device = next(iter(self._embedding_model.parameters())).device
 
     def forward(self, batch):
         bs = batch["bs"]
         num_hard_neg = int((len(batch["input_ids"]) - 2 * bs) / bs)
 
-        outputs = self.encoder(
+        # EmbeddingT5Gemma2.forward returns (total_batch, H) L2-normalised embeddings
+        embeddings = self._embedding_model(
             input_ids=batch["input_ids"],
             attention_mask=batch["attention_mask"],
-        )
+        )  # (total_batch, H)
 
-        # Mean-pool the full token sequence (bidirectional encoder)
-        hidden_states = outputs.last_hidden_state  # (total_batch, seq_len, H)
-        pooled = mean_pool(hidden_states, batch["attention_mask"])  # (total_batch, H)
-
-        # Unsqueeze to match F2LLM's (N, 1, H) convention for query/passage
         return {
-            "query_passage_features": pooled[:bs].unsqueeze(1),  # (bs, 1, H)
-            "passage_passage_features": pooled[bs : 2 * bs].unsqueeze(1),  # (bs, 1, H)
+            "query_passage_features": embeddings[:bs].unsqueeze(1),  # (bs, 1, H)
+            "passage_passage_features": embeddings[bs : 2 * bs].unsqueeze(
+                1
+            ),  # (bs, 1, H)
             "negative_passage_features": (
                 None
                 if num_hard_neg == 0
-                else pooled[2 * bs :].view(bs, num_hard_neg, -1)  # (bs, n_neg, H)
+                else embeddings[2 * bs :].view(bs, num_hard_neg, -1)  # (bs, n_neg, H)
             ),
         }

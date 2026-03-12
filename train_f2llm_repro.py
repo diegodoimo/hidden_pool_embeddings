@@ -1,4 +1,8 @@
-from f2llm_repro.f2llm_train import accelerate_train, CLASSIFICATION_DATASETS
+from f2llm_repro.f2llm_train import (
+    accelerate_train,
+    CLASSIFICATION_DATASETS,
+    EmbeddingModelEvalWrapper,
+)
 from f2llm_repro.model import F2LLM, F2LLMT5Gemma2
 from transformers import AutoTokenizer, set_seed, get_scheduler
 import os, json, random
@@ -22,6 +26,7 @@ from utils.create_datasets import (
 )
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 
 class MultiLoader:
     """
@@ -119,7 +124,7 @@ def parse_args():
     parser.add_argument("--experiment_id", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--tb_dir", type=str, required=True)
-    parser.add_argument("--cache_dir", type=str, required=True)
+    parser.add_argument("--cache_dir", type=str, default=None)
     parser.add_argument("--train_data_path", type=str, required=True)
     parser.add_argument("--train_batch_size", type=int, default=8)
     parser.add_argument("--max_seq_length", type=int, default=2048)
@@ -162,6 +167,12 @@ def parse_args():
         choices=["qwen3", "embeddinggemma"],
         help="Instruction-template style used when encoding text for MTEB evaluation.",
     )
+    parser.add_argument(
+        "--out_filename",
+        type=str,
+        default="",
+        help="Optional label appended to the output log file: train_logs_<name>.json. Defaults to train_logs.json when empty.",
+    )
     args = parser.parse_args()
 
     args.output_dir = f"{args.output_dir}/{args.experiment_id}"
@@ -189,6 +200,13 @@ def main():
 
     # Detect model family once; drives model class + evaluator settings.
     is_t5gemma2 = "t5gemma-2" in args.model_path.lower()
+
+    # Hard-coded cache directories per model family (overridable via --cache_dir).
+    if args.cache_dir is None:
+        if is_t5gemma2:
+            args.cache_dir = "./f2llm_repro/cache/f2llm-prompt_t5gemma-2"
+        else:
+            args.cache_dir = "./f2llm_repro/cache/f2llm-prompt_qwen3"
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
 
@@ -263,9 +281,11 @@ def main():
     accelerator.print("loading model")
     if is_t5gemma2:
         model = F2LLMT5Gemma2(args.model_path, args.max_seq_length, args=args)
+        # gradient_checkpointing must target the underlying T5Gemma2Encoder
+        model.lm.encoder.gradient_checkpointing_enable()
     else:
         model = F2LLM(args.model_path, args.max_seq_length, args=args)
-    model.lm.gradient_checkpointing_enable()
+        model.lm.gradient_checkpointing_enable()
     # set seed again to make sure that different models share the same seed
     set_seed(0)
 
@@ -314,11 +334,11 @@ def main():
     # encoder (T5Gemma2-style, mean pooling, tokenizer adds BOS/EOS itself).
     _eval_instruction_template = instruction_template_qwen3
     if is_t5gemma2:
-       # _eval_instruction_template = instruction_template_embeddinggemma
+        # _eval_instruction_template = instruction_template_embeddinggemma
         _eval_add_special_tokens = True
         _eval_eot_id = None
     else:
-        #_eval_instruction_template = instruction_template_qwen3
+        # _eval_instruction_template = instruction_template_qwen3
         _eval_add_special_tokens = False
         # in qwen embedding is the pad_token
         _eval_eot_id = tokenizer.eos_token_id
@@ -335,6 +355,22 @@ def main():
 
     accelerator.print("start training")
 
+    model_name = (
+        "t5gemma2" if is_t5gemma2 else os.path.basename(args.model_path.rstrip("/"))
+    )
+    train_data_name = os.path.basename(args.train_data_path.rstrip("/"))
+    suffix = (
+        f"deepspeed_{model_name}_train-{train_data_name}"
+        f"_gpus{args.num_processes}"
+        f"_bs{args.train_batch_size * args.num_processes}"
+        f"_lr{args.learning_rate}"
+        f"_wd{args.weight_decay}"
+    )
+    if args.out_filename:
+        args.out_filename = f"{args.out_filename}_{suffix}"
+    else:
+        args.out_filename = suffix
+
     accelerate_train(
         args,
         accelerator,
@@ -346,6 +382,7 @@ def main():
         sum(len(d[1]) for d in train_datasets),
         evaluator=evaluator,
         per_device_eval_batch_size=args.per_device_eval_batch_size,
+        eval_wrapper_class=EmbeddingModelEvalWrapper if is_t5gemma2 else None,
     )
 
 
