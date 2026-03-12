@@ -617,7 +617,6 @@ def main():
 
         model_name = "embeddinggemma"
         instruction_template = instruction_template_embeddinggemma
-        pool_fn = mean_pool
         add_special_tokens = True
         eot_id = None
 
