@@ -312,12 +312,13 @@ def main():
     # Evaluator settings depend on whether the model is a causal LM (qwen-style,
     # last-token pooling, no special tokens added by tokenizer) or a bidirectional
     # encoder (T5Gemma2-style, mean pooling, tokenizer adds BOS/EOS itself).
+    _eval_instruction_template = instruction_template_qwen3
     if is_t5gemma2:
-        _eval_instruction_template = instruction_template_embeddinggemma
+       # _eval_instruction_template = instruction_template_embeddinggemma
         _eval_add_special_tokens = True
         _eval_eot_id = None
     else:
-        _eval_instruction_template = instruction_template_qwen3
+        #_eval_instruction_template = instruction_template_qwen3
         _eval_add_special_tokens = False
         # in qwen embedding is the pad_token
         _eval_eot_id = tokenizer.eos_token_id

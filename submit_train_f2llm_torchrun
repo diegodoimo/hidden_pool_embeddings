@@ -56,12 +56,12 @@ torchrun \
     train_f2llm_repro.py \
     --model_path Qwen/Qwen3-0.6B  \
     --experiment_id trial \
-    --train_data_path ./f2llm_repro/results/datasets_tokenized/f2llm/qwen3_600m-teacher_f2llm-prompt_qwen3-tok \
+    --train_data_path ./f2llm_repro/results/datasets_tokenized/f2llm/f2llm-prompt_t5gemma-2-tok \
     --num_workers $WORKERS_PER_RANK \
     --output_dir ./f2llm_repro/results/train \
     --tb_dir ./f2llm_repro/results/tensorboard \
-    --cache_dir ./f2llm_repro/cache \
-    --train_batch_size 64 \
+    --cache_dir ./f2llm_repro/cache/f2llm-prompt_t5gemma-2 \
+    --train_batch_size 24 \
     --max_seq_length 1024 \
     --learning_rate 1e-5 \
     --min_lr 1e-7 \
@@ -74,3 +74,4 @@ torchrun \
     --num_hard_neg 7 \
     --eval_set mteb_eng_v2_reduced \
     #--measure_baselines \
+    #--train_data_path ./f2llm_repro/results/datasets_tokenized/f2llm/qwen3_600m-teacher_f2llm-prompt_qwen3-tok \
