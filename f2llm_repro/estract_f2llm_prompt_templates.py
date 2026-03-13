@@ -24,9 +24,7 @@ prompts = defaultdict(set)
 
 
 def main(args):
-    for ds_name in tqdm(
-        sorted(f for f in os.listdir(args.root_dir) if f.endswith(".parquet"))
-    ):
+    for ds_name in sorted(f for f in os.listdir(args.root_dir) if f.endswith(".parquet")):
         print(ds_name, flush=True)
 
         df = pd.read_parquet(f"{args.root_dir}/{ds_name}")
@@ -47,7 +45,7 @@ if __name__ == "__main__":
             type=str,
             help="Root directory containing hard-negative datasets (e.g. datasets_negatives)",
         )
-
+        args = parser.parse_args()
         return args
 
     args = parse_args()
