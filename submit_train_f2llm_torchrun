@@ -6,10 +6,10 @@
 #SBATCH --nodes=1
 #SBATCH --time=48:00:00
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=56
-#SBATCH --mem=450G
+#SBATCH --cpus-per-task=104
+#SBATCH --mem=850G
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:4
+#SBATCH --gres=gpu:H100:8
 
 module load cuda/12.8
 export CUDA_HOME=$CUDA_PATH
@@ -54,13 +54,13 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train_f2llm_repro.py \
-    --model_path google/t5gemma-2-270m-270m  \
+    --model_path Qwen/Qwen3-0.6B  \
     --experiment_id trial \
-    --train_data_path ./f2llm_repro/results/datasets_tokenized/f2llm/f2llm-prompt_t5gemma-2-tok \
+    --train_data_path ./f2llm_repro/results/datasets_tokenized/f2llm/qwen3_600m-teacher_f2llm-prompt_qwen3-tok \
     --num_workers $WORKERS_PER_RANK \
     --output_dir ./f2llm_repro/results/train \
     --tb_dir ./f2llm_repro/results/tensorboard \
-    --train_batch_size 64 \
+    --train_batch_size 32 \
     --max_seq_length 1024 \
     --learning_rate 1e-5 \
     --min_lr 1e-7 \
@@ -69,9 +69,10 @@ torchrun \
     --train_epochs 1 \
     --log_interval 500 \
     --validation_interval 4000 \
-    --test_interval 20000 \
     --num_hard_neg 7 \
     --eval_set mteb_eng_v2_reduced \
+    --only_retireval \
+    --out_filename "retrieval" \
     #--measure_baselines \
-    #--model_path Qwen/Qwen3-0.6B  \
-    #--train_data_path ./f2llm_repro/results/datasets_tokenized/f2llm/qwen3_600m-teacher_f2llm-prompt_qwen3-tok \
+    #--model_path google/t5gemma-2-270m-270m  \
+    #--train_data_path ./f2llm_repro/results/datasets_tokenized/f2llm/f2llm-prompt_t5gemma-2-tok \

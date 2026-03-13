@@ -1,6 +1,7 @@
 from f2llm_repro.f2llm_train import (
     accelerate_train,
     CLASSIFICATION_DATASETS,
+    RETRIEVAL_DATASETS,
     EmbeddingModelEvalWrapper,
 )
 from f2llm_repro.model import F2LLM, F2LLMT5Gemma2
@@ -142,11 +143,8 @@ def parse_args():
     parser.add_argument("--validation_interval", type=int, default=100)
     parser.add_argument("--test_interval", type=int, default=10**9)
     parser.add_argument("--num_workers", type=int, default=0)
-    parser.add_argument(
-        "--measure_baselines",
-        action="store_true",
-        help="Evaluate model at step 0 before any training",
-    )
+    parser.add_argument("--measure_baselines", action="store_true")
+    parser.add_argument("--only_retrieval", action="store_true")
     parser.add_argument("--num_processes", type=int, default=0)
     parser.add_argument(
         "--eval_set",
@@ -223,6 +221,9 @@ def main():
             f for f in os.listdir(args.train_data_path) if f.endswith(".parquet")
         ):
             dataset_name = f.split(".parquet")[0]
+            if dataset_name not in RETRIEVAL_DATASETS and args.only_retrieval:
+                continue
+
             accelerator.print(f"loading {dataset_name}")
 
             dataset = load_dataset(
