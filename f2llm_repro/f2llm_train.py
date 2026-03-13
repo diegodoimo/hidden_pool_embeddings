@@ -560,34 +560,6 @@ def accelerate_train(
                     ) as f:
                         json.dump(stats, f, indent=4)
 
-            if completed_steps % args.test_interval == 0:
-                model.lm.eval()
-                unwrapped_lm = accelerator.unwrap_model(model.lm)
-                eval_device = torch.device(f"cuda:{accelerator.local_process_index}")
-                eval_wrapper = eval_wrapper_class(unwrapped_lm, eval_device)
-
-                # Switch to the full mteb_eng_v2 suite for the end-of-epoch run
-                full_eval_tasks = get_eval_tasks("mteb_eng_v2")
-
-                evaluator.update_datasets(full_eval_tasks)
-                _, summary = evaluator.evaluate(
-                    eval_wrapper, batch_size=per_device_eval_batch_size
-                )
-                model.lm.train()
-
-                if accelerator.is_main_process:
-                    key = f"mteb_eng_v2_full_{completed_steps}"
-                    accelerator.print(f"[MTEB epoch {epoch + 1}] {summary}")
-                    stats[key] = summary
-                    with open(
-                        os.path.join(args.output_dir, f"train_logs{filename}.json"), "w"
-                    ) as f:
-                        json.dump(stats, f, indent=4)
-
-                # Restore the original eval set for the next mid-training evals
-                restore_tasks = get_eval_tasks(args.eval_set)
-                evaluator.update_datasets(restore_tasks)
-
             if completed_steps >= args.train_steps:
                 break
 
