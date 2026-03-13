@@ -24,6 +24,7 @@ from utils.create_datasets import (
     get_eval_tasks,
     instruction_template_qwen3,
     instruction_template_embeddinggemma,
+    instruction_template_f2llm,
 )
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -334,7 +335,8 @@ def main():
     # Evaluator settings depend on whether the model is a causal LM (qwen-style,
     # last-token pooling, no special tokens added by tokenizer) or a bidirectional
     # encoder (T5Gemma2-style, mean pooling, tokenizer adds BOS/EOS itself).
-    _eval_instruction_template = instruction_template_qwen3
+
+    _eval_instruction_template = instruction_template_f2llm
     if is_t5gemma2:
         # _eval_instruction_template = instruction_template_embeddinggemma
         _eval_add_special_tokens = True
