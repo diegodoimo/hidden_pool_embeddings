@@ -355,12 +355,14 @@ def main():
 
     accelerator.print("start training")
 
-    model_name = (
-        "t5gemma2" if is_t5gemma2 else os.path.basename(args.model_path.rstrip("/"))
-    )
+    if is_t5gemma2:
+        model_name = "t5gemma2"
+    elif "qwen3" in args.model_path.lower():
+        model_name = "qwen3"
+
     train_data_name = os.path.basename(args.train_data_path.rstrip("/"))
     suffix = (
-        f"deepspeed_{model_name}_train-{train_data_name}"
+        f"deepspeed_{model_name}"
         f"_gpus{args.num_processes}"
         f"_bs{args.train_batch_size * args.num_processes}"
         f"_lr{args.learning_rate}"

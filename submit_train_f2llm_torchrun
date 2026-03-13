@@ -2,12 +2,12 @@
 #SBATCH --partition=H100
 ##SBATCH --partition=DGX
 #SBATCH --account=lade
-#SBATCH --nodelist=dgx004
+##SBATCH --nodelist=dgx004
 #SBATCH --nodes=1
 #SBATCH --time=48:00:00
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=56
-#SBATCH --mem=500G
+#SBATCH --mem=450G
 #SBATCH --job-name=test
 #SBATCH --gres=gpu:H100:4
 
@@ -54,20 +54,20 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train_f2llm_repro.py \
-    --model_name_or_path google/t5gemma-2-270m-270m  \
+    --model_path google/t5gemma-2-270m-270m  \
     --experiment_id trial \
     --train_data_path ./f2llm_repro/results/datasets_tokenized/f2llm/f2llm-prompt_t5gemma-2-tok \
     --num_workers $WORKERS_PER_RANK \
     --output_dir ./f2llm_repro/results/train \
     --tb_dir ./f2llm_repro/results/tensorboard \
-    --train_batch_size 24 \
+    --train_batch_size 64 \
     --max_seq_length 1024 \
     --learning_rate 1e-5 \
     --min_lr 1e-7 \
     --weight_decay 0.01 \
     --warmup_steps 500 \
     --train_epochs 1 \
-    --log_interval 200 \
+    --log_interval 500 \
     --validation_interval 4000 \
     --test_interval 20000 \
     --num_hard_neg 7 \
