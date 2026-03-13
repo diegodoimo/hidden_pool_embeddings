@@ -329,7 +329,8 @@ def main():
     # evaluate_retrieval internally calls dist.get_rank() / dist.get_world_size()
     # which work because accelerate with DeepSpeed initialises torch.distributed.
     # ------------------------------------------------------------------
-    eval_tasks = get_eval_tasks(args.eval_set)
+    task_types = "Retrieval" if args.only_retrieval else None
+    eval_tasks = get_eval_tasks(args.eval_set, task_types)
     # Evaluator settings depend on whether the model is a causal LM (qwen-style,
     # last-token pooling, no special tokens added by tokenizer) or a bidirectional
     # encoder (T5Gemma2-style, mean pooling, tokenizer adds BOS/EOS itself).

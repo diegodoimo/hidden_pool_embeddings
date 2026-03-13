@@ -534,15 +534,6 @@ def accelerate_train(
             # validation
             if completed_steps % args.validation_interval == 0:
                 model.lm.eval()
-                # validate(
-                #     args,
-                #     accelerator,
-                #     model,
-                #     valid_loader_dict,
-                #     criterion,
-                #     completed_steps,
-                #     stats,
-                # )
 
                 unwrapped_lm = accelerator.unwrap_model(model.lm)
                 eval_device = torch.device(f"cuda:{accelerator.local_process_index}")
