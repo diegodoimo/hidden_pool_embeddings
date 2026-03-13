@@ -2,14 +2,14 @@
 #SBATCH --partition=H100
 ##SBATCH --partition=DGX
 #SBATCH --account=lade
-#SBATCH --nodelist=dgx004
+##SBATCH --nodelist=dgx004
 #SBATCH --nodes=1
 #SBATCH --time=48:00:00
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=104
-#SBATCH --mem=850G
+#SBATCH --cpus-per-task=28
+#SBATCH --mem=150G
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:8
+#SBATCH --gres=gpu:H100:2
 
 module load cuda/12.8
 export CUDA_HOME=$CUDA_PATH
@@ -60,7 +60,7 @@ torchrun \
     --num_workers $WORKERS_PER_RANK \
     --output_dir ./f2llm_repro/results/train \
     --tb_dir ./f2llm_repro/results/tensorboard \
-    --train_batch_size 32 \
+    --train_batch_size 48 \
     --max_seq_length 1024 \
     --learning_rate 1e-5 \
     --min_lr 1e-7 \
@@ -72,7 +72,7 @@ torchrun \
     --num_hard_neg 7 \
     --eval_set mteb_eng_v2_reduced \
     --only_retrieval \
-    --out_filename "retrieval" \
-    #--measure_baselines \
+    --out_filename "trial" \
+    --measure_baselines \
     #--model_path google/t5gemma-2-270m-270m  \
     #--train_data_path ./f2llm_repro/results/datasets_tokenized/f2llm/f2llm-prompt_t5gemma-2-tok \
