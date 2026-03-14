@@ -79,17 +79,21 @@ class BatchMetadataRecorder:
     - data_index (list for the batch)
     """
 
-    def __init__(self, output_dir, rank, flush_every=200):
+    def __init__(self, output_dir, rank, run_label="", flush_every=200):
         self.output_dir = output_dir
         self.rank = int(rank)
+        self.run_label = str(run_label).strip()
         self.flush_every = max(1, int(flush_every))
         self.buffer = []
         self.batch_id = 0
 
         os.makedirs(self.output_dir, exist_ok=True)
-        self.file_path = os.path.join(
-            self.output_dir, f"batch_sample_map_rank{self.rank}.jsonl"
+        filename = (
+            f"batch_sample_map_{self.run_label}_rank{self.rank}.jsonl"
+            if self.run_label
+            else f"batch_sample_map_rank{self.rank}.jsonl"
         )
+        self.file_path = os.path.join(self.output_dir, filename)
         self._fh = open(self.file_path, "w")
 
     def record(self, batch):
@@ -347,6 +351,25 @@ def main():
         )
         override_train_step = True
 
+    if is_t5gemma2:
+        model_name = "t5gemma2"
+    elif "qwen3" in args.model_path.lower():
+        model_name = "qwen3"
+    else:
+        model_name = "model"
+
+    suffix = (
+        f"deepspeed_{model_name}"
+        f"_gpus{args.num_processes}"
+        f"_bs{args.train_batch_size * args.num_processes}"
+        f"_lr{args.learning_rate}"
+        f"_wd{args.weight_decay}"
+    )
+    if args.out_filename:
+        args.out_filename = f"{args.out_filename}_{suffix}"
+    else:
+        args.out_filename = suffix
+
     accelerator.print(
         f"******************************** Training step before prepare: {args.train_steps} ********************************"
     )
@@ -389,6 +412,7 @@ def main():
     batch_recorder = BatchMetadataRecorder(
         output_dir=os.path.join(args.output_dir, "batch_sample_map"),
         rank=accelerator.process_index,
+        run_label=args.out_filename,
     )
     train_dataloader = MultiLoader(
         train_loaders, accelerator, batch_recorder=batch_recorder
@@ -441,24 +465,6 @@ def main():
     )
 
     accelerator.print("start training")
-
-    if is_t5gemma2:
-        model_name = "t5gemma2"
-    elif "qwen3" in args.model_path.lower():
-        model_name = "qwen3"
-
-    train_data_name = os.path.basename(args.train_data_path.rstrip("/"))
-    suffix = (
-        f"deepspeed_{model_name}"
-        f"_gpus{args.num_processes}"
-        f"_bs{args.train_batch_size * args.num_processes}"
-        f"_lr{args.learning_rate}"
-        f"_wd{args.weight_decay}"
-    )
-    if args.out_filename:
-        args.out_filename = f"{args.out_filename}_{suffix}"
-    else:
-        args.out_filename = suffix
 
     try:
         accelerate_train(
