@@ -114,8 +114,7 @@ class BatchMetadataRecorder:
         self.batch_id += 1
 
         if len(self.buffer) >= self.flush_every:
-            # Keep hot path CPU-only to avoid distributed stalls from shared FS I/O.
-            return
+            self.flush()
 
     def flush(self):
         if not self.buffer:
@@ -123,6 +122,7 @@ class BatchMetadataRecorder:
         if self._fh is None:
             self._fh = open(self.file_path, "w")
         self._fh.write("\n".join(json.dumps(rec) for rec in self.buffer) + "\n")
+        self._fh.flush()
         self.buffer = []
 
     def close(self):
@@ -241,6 +241,12 @@ def parse_args():
         type=str,
         default="",
         help="Optional label appended to the output log file: train_logs_<name>.json. Defaults to train_logs.json when empty.",
+    )
+    parser.add_argument(
+        "--batch_map_flush_every",
+        type=int,
+        default=200,
+        help="Flush batch metadata to disk every N batches per rank.",
     )
     args = parser.parse_args()
 
@@ -415,6 +421,7 @@ def main():
         output_dir=os.path.join(args.output_dir, "batch_sample_map"),
         rank=accelerator.process_index,
         run_label=args.out_filename,
+        flush_every=args.batch_map_flush_every,
     )
     train_dataloader = MultiLoader(
         train_loaders, accelerator, batch_recorder=batch_recorder
