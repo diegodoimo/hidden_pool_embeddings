@@ -94,7 +94,7 @@ class BatchMetadataRecorder:
             else f"batch_sample_map_rank{self.rank}.jsonl"
         )
         self.file_path = os.path.join(self.output_dir, filename)
-        self._fh = open(self.file_path, "w")
+        self._fh = None
 
     def record(self, batch):
         data_indices = batch.get("data_indices", None)
@@ -114,13 +114,15 @@ class BatchMetadataRecorder:
         self.batch_id += 1
 
         if len(self.buffer) >= self.flush_every:
-            self.flush()
+            # Keep hot path CPU-only to avoid distributed stalls from shared FS I/O.
+            return
 
     def flush(self):
         if not self.buffer:
             return
+        if self._fh is None:
+            self._fh = open(self.file_path, "w")
         self._fh.write("\n".join(json.dumps(rec) for rec in self.buffer) + "\n")
-        self._fh.flush()
         self.buffer = []
 
     def close(self):
