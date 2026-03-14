@@ -26,6 +26,7 @@ from utils.create_datasets import (
     instruction_template_embeddinggemma,
     instruction_template_f2llm,
 )
+from torch.utils.data import RandomSampler
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -37,8 +38,9 @@ class MultiLoader:
     the epoch ends when every loader is exhausted once.
     """
 
-    def __init__(self, loader_dict, accelerator):
+    def __init__(self, loader_dict, accelerator, batch_recorder=None):
         self.loader_dict = loader_dict
+        self.batch_recorder = batch_recorder
         for k, v in self.loader_dict.items():
             self.loader_dict[k] = accelerator.prepare(v)
 
@@ -58,11 +60,70 @@ class MultiLoader:
             ]  # pick a data-source at random
             try:
                 batch = next(self.iters[name])
+                if self.batch_recorder is not None:
+                    self.batch_recorder.record(batch)
                 yield batch
             except StopIteration:
                 idx = self.names.index(name)
                 self.names.pop(idx)  # this dataset has no batch left
                 self.weights.pop(idx)
+
+
+class BatchMetadataRecorder:
+    """Buffered writer for per-batch sample metadata.
+
+    Writes one JSON object per line with:
+    - batch_id
+    - data_name
+    - rank
+    - data_index (list for the batch)
+    """
+
+    def __init__(self, output_dir, rank, flush_every=200):
+        self.output_dir = output_dir
+        self.rank = int(rank)
+        self.flush_every = max(1, int(flush_every))
+        self.buffer = []
+        self.batch_id = 0
+
+        os.makedirs(self.output_dir, exist_ok=True)
+        self.file_path = os.path.join(
+            self.output_dir, f"batch_sample_map_rank{self.rank}.jsonl"
+        )
+        self._fh = open(self.file_path, "w")
+
+    def record(self, batch):
+        data_indices = batch.get("data_indices", None)
+        if data_indices is None:
+            return
+        if isinstance(data_indices, torch.Tensor):
+            data_indices = data_indices.detach().cpu().tolist()
+
+        self.buffer.append(
+            {
+                "batch_id": self.batch_id,
+                "data_name": batch.get("dataset_name", None),
+                "rank": self.rank,
+                "data_index": data_indices,
+            }
+        )
+        self.batch_id += 1
+
+        if len(self.buffer) >= self.flush_every:
+            self.flush()
+
+    def flush(self):
+        if not self.buffer:
+            return
+        self._fh.write("\n".join(json.dumps(rec) for rec in self.buffer) + "\n")
+        self._fh.flush()
+        self.buffer = []
+
+    def close(self):
+        self.flush()
+        if self._fh is not None:
+            self._fh.close()
+            self._fh = None
 
 
 def _stack(input_ids, max_len, tokenizer):
@@ -117,6 +178,9 @@ def collate_fn(batch_raw, args, _stack, tokenizer, classification_datasets):
         "attention_mask": attention_masks,
         "bs": len(batch_raw),
         "dataset_name": batch_raw[0]["dataset_name"],
+        "data_indices": torch.tensor(
+            [int(sample["data_index"]) for sample in batch_raw], dtype=torch.long
+        ),
     }
 
 
@@ -210,8 +274,8 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
 
     set_seed(0)
+    os.makedirs(f"{args.output_dir}", exist_ok=True)
     if accelerator.is_main_process:
-        os.makedirs(f"{args.output_dir}", exist_ok=True)
         with open(os.path.join(args.output_dir, "args.json"), "w") as f:
             json.dump(vars(args), f, indent=2)
 
@@ -232,7 +296,13 @@ def main():
                 data_files=os.path.join(args.train_data_path, f),
                 cache_dir=args.cache_dir,
             )["train"]
+
             dataset = dataset.add_column("dataset_name", [dataset_name] * len(dataset))
+            dataset = dataset.map(
+                lambda _, idx: {"data_index": idx},
+                with_indices=True,
+                desc=f"adding data_index to {dataset_name}",
+            )
             dataset = dataset.train_test_split(train_size=0.99, shuffle=True, seed=0)
             train_datasets.append((dataset_name, dataset["train"]))
             valid_datasets.append((dataset_name, dataset["test"]))
@@ -246,9 +316,10 @@ def main():
     )
 
     train_loaders = {
+        # shuffle=True,
         name: DataLoader(
             ds,
-            shuffle=True,
+            sampler=RandomSampler(ds, generator=torch.Generator().manual_seed(0)),
             batch_size=args.train_batch_size,
             collate_fn=collate_fn_partial,
             num_workers=args.num_workers,
@@ -314,7 +385,15 @@ def main():
         model.lm, optimizer, lr_scheduler
     )
     model.set_device()
-    train_dataloader = MultiLoader(train_loaders, accelerator)
+
+    batch_recorder = BatchMetadataRecorder(
+        output_dir=os.path.join(args.output_dir, "batch_sample_map"),
+        rank=accelerator.process_index,
+    )
+    train_dataloader = MultiLoader(
+        train_loaders, accelerator, batch_recorder=batch_recorder
+    )
+
     for k, v in valid_loaders.items():
         valid_loaders[k] = accelerator.prepare(v)
 
@@ -381,19 +460,22 @@ def main():
     else:
         args.out_filename = suffix
 
-    accelerate_train(
-        args,
-        accelerator,
-        model,
-        train_dataloader,
-        valid_loaders,
-        optimizer,
-        lr_scheduler,
-        sum(len(d[1]) for d in train_datasets),
-        evaluator=evaluator,
-        per_device_eval_batch_size=args.per_device_eval_batch_size,
-        eval_wrapper_class=EmbeddingModelEvalWrapper if is_t5gemma2 else None,
-    )
+    try:
+        accelerate_train(
+            args,
+            accelerator,
+            model,
+            train_dataloader,
+            valid_loaders,
+            optimizer,
+            lr_scheduler,
+            sum(len(d[1]) for d in train_datasets),
+            evaluator=evaluator,
+            per_device_eval_batch_size=args.per_device_eval_batch_size,
+            eval_wrapper_class=EmbeddingModelEvalWrapper if is_t5gemma2 else None,
+        )
+    finally:
+        batch_recorder.close()
 
 
 if __name__ == "__main__":
