@@ -217,7 +217,7 @@ def get_eval_tasks(eval_set, task_types=None):
             MultilabelClassification, BitextMining, STS, Summarization, InstructionRetrieval.
     """
     import mteb  # lazy import: mteb is slow to load; only needed here
-    assert task_types == list
+    assert isinstance(task_types,list)
     
     if eval_set == "mteb_multilingual_v2":
         benchmark = mteb.get_benchmark("MTEB(Multilingual, v2)")
@@ -236,6 +236,7 @@ def get_eval_tasks(eval_set, task_types=None):
     if task_types:
         task_types_set = set(task_types)
         tasks = [t for t in tasks if t.metadata.type in task_types_set]
+    assert len(tasks) > 0
     return tasks
 
 

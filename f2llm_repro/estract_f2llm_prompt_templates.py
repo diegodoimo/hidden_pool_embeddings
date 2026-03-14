@@ -8,8 +8,11 @@ import mteb
 
 benchmark = mteb.get_benchmark("MTEB(eng, v2)")
 tasks = list(benchmark.tasks)
+tasks_set = set()
 for task in tasks:
-    print(task.metadata.name)
+    tasks_set.add(task.metadata.type)
+tasks_set
+
 # root_dir = "/home/diego/.cache/huggingface/hub/datasets--codefuse-ai--F2LLM/snapshots/c8158be982d16202dda93211c1f7a542159acc3e"
 
 # df = pd.read_parquet(f"{root_dir}/arguana.parquet")
