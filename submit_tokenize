@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --partition=EPYC
+#SBATCH --partition=GENOA
 ##SBATCH --nodelist=dgx001
 #SBATCH --account=lade
 #SBATCH --nodes=1
 #SBATCH --time=24:00:00            
 #SBATCH --ntasks-per-node=1       
-#SBATCH --cpus-per-task=64  #32          
-#SBATCH --mem=200G                   
+#SBATCH --cpus-per-task=32  #32          
+#SBATCH --mem=100G                   
 #SBATCH --job-name=test
 
 source /u/area/ddoimo/anaconda3/bin/activate ./env_a100
@@ -24,6 +24,8 @@ export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
 python tokenize_data.py \
     --tokenizer_path google/t5gemma-2-270m-270m \
     --force_recompute \
+    --f2llm \
+    --save_raw_data_only
     #--f2llm \
     #--data_subset bioasq 
     # --data_subset fever \

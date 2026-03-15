@@ -628,7 +628,7 @@ def main():
 
     for i, item in enumerate(items):
 
-        print(f"\nProcessing [{i + 1}/{len(items)}]")
+        print(f"\nProcessing [{i + 1}/{len(items)}] {item}")
         t0 = time.time()
         # ------------------------------------------------------------------
         # Load raw dataset.
