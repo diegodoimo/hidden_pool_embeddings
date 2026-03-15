@@ -551,7 +551,7 @@ def main():
     torch.cuda.set_device(LOCAL_RANK)
     torch.set_float32_matmul_precision("high")
 
-    if args.use_deepspeed:
+    if getattr(args, "deepspeed", False):
         # need activation checkpointing otherwise oom
         args.activation_checkpointing = True
         args.per_device_train_batch_size = min(32, args.per_device_train_batch_size)

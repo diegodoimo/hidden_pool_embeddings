@@ -153,6 +153,8 @@ def parse_args():
     )
     parser.add_argument(
         "--deepspeed",
+        "--use_deepspeed",
+        dest="deepspeed",
         action="store_true",
         help="Use DeepSpeed (ZeRO) instead of DDP for distributed training.",
     )
