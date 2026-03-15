@@ -53,6 +53,8 @@ from utils.load_f2llm_data import get_f2llm_sources, load_f2llm
 from datasets import Dataset
 import time
 import warnings
+import re
+
 
 INSTRUCTION_TEMPLATES = {
     "qwen3": (instruction_template_qwen3, False),
@@ -162,6 +164,37 @@ def parse_args():
         "--force_recompute",
         action="store_true",
         help="Recompute tokenization even when the output file already exists.",
+    )
+    parser.add_argument(
+        "--save_raw_data",
+        action="store_true",
+        help=(
+            "Save the raw dataset with the same split/folder/file structure before tokenization. "
+            "For --f2llm this keeps the post-conversion raw columns (including query_id/positive_id)."
+        ),
+    )
+    parser.add_argument(
+        "--raw_output_dir",
+        type=str,
+        default="results/datasets_raw",
+        help="Root directory where raw-data parquet files are written when --save_raw_data is enabled.",
+    )
+    parser.add_argument(
+        "--dont_tokenize",
+        action="store_true",
+        help="Load/process data but skip tokenization and tokenized parquet writing.",
+    )
+    parser.add_argument(
+        "--f2llm_prompt",
+        action="store_true",
+        help=(
+            "For --f2llm, keep original query text as-is (do not strip the F2LLM instruct template)."
+        ),
+    )
+    parser.add_argument(
+        "--save_raw_data_only",
+        action="store_true",
+        help="Shortcut for --save_raw_data --dont_tokenize.",
     )
     args = parser.parse_args()
     return args
@@ -404,26 +437,18 @@ def _finalize_and_save(
     return n_rows
 
 
-def _strip_f2llm_prompt(text: str, prompt: str) -> str:
-    """Remove F2LLM prompt template from the start of text if present."""
-    if not text or not prompt:
-        assert False
-    text = text.strip()
-    # Try exact prompt prefix (with optional trailing space/newline/punctuation)
-    prefix = "Instruct: " + prompt.strip() + "\nQuery:"
-    if text.startswith(prefix):
-        rest = text[len(prefix) :].strip()
-        return rest
-    else:
-        assert False, text
+_INSTRUCT_RE = re.compile(r"^Instruct:.*?\nQuery:", re.DOTALL)
+
+
+def _filter_f2llm_batch(batch: dict) -> list[bool]:
+    """Filter out examples whose query does not follow the Instruct/Query pattern."""
+    return [bool(_INSTRUCT_RE.match(query)) for query in batch["query"]]
 
 
 def _convert_f2llm_batch(
-    f2llm_prompt: str,
     num_hard_negatives: int,
     batch: dict,
 ) -> dict:
-    assert False, "bugged the f2llm_prompt is not comprehensive enough. There are multiple paraphrases of it."
     """Step 1 for F2LLM: strip the instruct-prefix from queries, reshape negatives.
 
     Input columns : query, passage, negative_1 … negative_<N>  (1-indexed).
@@ -436,9 +461,9 @@ def _convert_f2llm_batch(
     passages = batch["passage"]
     batch_size = len(queries)
 
-    prefix = "Instruct: " + f2llm_prompt.strip() + "\nQuery:"
-
-    stripped_queries = [query[len(prefix) :].strip() for query in queries]
+    stripped_queries = [
+        _INSTRUCT_RE.sub("", query, count=1).strip() for query in queries
+    ]
     stripped_passages = list(passages)
 
     # Outer loop = example index, inner loop = negative slot (1-indexed columns).
@@ -455,13 +480,6 @@ def _convert_f2llm_batch(
         "positive_text": stripped_passages,
         "negative_text": stripped_negs,
     }
-
-
-
-
-
-
-
 
 
 def _assign_dedup_ids(ds) -> "Dataset":
@@ -481,6 +499,19 @@ def _assign_dedup_ids(ds) -> "Dataset":
     ds = ds.add_column("query_id", query_ids)
     ds = ds.add_column("positive_id", positive_ids)
     return ds
+
+
+def save_raw_data(ds, output_path: str) -> int:
+    """Save raw dataset to parquet preserving column order, row order, and schema.
+
+    The dataset content is written exactly as currently represented in ``ds``.
+    This allows saving the same dataset structure/name/format as read, while
+    changing only the destination root folder.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    table: pa.Table = ds.data.table
+    pq.write_table(table, output_path, compression="snappy")
+    return table.num_rows
 
 
 def get_f2llm_paths(subset_list):
@@ -563,31 +594,12 @@ def get_data_paths(root_folder, subset_list, teacher_model):
 def main():
     args = parse_args()
 
-    if args.f2llm_prompt:
-        args.instruction_template = None
-
-    if args.instruction_template not in INSTRUCTION_TEMPLATES:
-        raise ValueError(
-            f"Unknown instruction_template '{args.instruction_template}'. "
-            f"Choices: {list(INSTRUCTION_TEMPLATES.keys())}"
-        )
-    instruction_template, add_special_tokens = INSTRUCTION_TEMPLATES[
-        args.instruction_template
-    ]
-
-    # use_fast=True (default): Rust fast tokenizer is 10-100× faster than the
-    # pure-Python fallback.  trust_remote_code is kept for custom model repos.
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.tokenizer_path, trust_remote_code=True
-    )
+    raw_output_folder = os.path.join(args.raw_output_dir, "f2llm_data")
 
     if "t5gemma-2" in args.tokenizer_path.lower():
         tokenizer_name = "t5gemma-2"
     else:
         raise ValueError("wrong model name")
-    if args.num_workers > 1:
-        # Prevent Rust tokenizer threads from being forked inside worker processes.
-        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
     if args.f2llm:
         # items: list of F2LLM source-name strings (e.g. "arguana", "amazon_qa")
@@ -603,7 +615,6 @@ def main():
         )
         output_folder = os.path.join(args.output_dir, "hiddengemma")
         middle_folder = f"{args.teacher_model}-teacher_{args.instruction_template}-prompt-{tokenizer_name}-tok"
-
     if not items:
         print("No datasets to process. Exiting.")
         return
@@ -616,57 +627,40 @@ def main():
     total_rows = 0
     processed = 0
     start0 = time.time()
+
     for i, item in enumerate(items):
-        # ------------------------------------------------------------------
-        # Resolve ds_name (leaf, e.g. "arguana") and inner_path
-        # (e.g. "retrieval/general_retrieval/arguana/data.parquet").
-        # ------------------------------------------------------------------
-        if args.f2llm:
-            f2llm_source: str = item
-            ds_name = TRANSLATE_F2LLM_NAME[f2llm_source]
-            # inner_path is the dataset directory, e.g.
-            # "retrieval/general_retrieval/arguana"
-            # inner_path = _inner_path_for_ds(ds_name)
 
-            if ds_name in NAME_TO_TASK_SUBTASK_PATH:
-                inner_path = task_name_to_inner_path(ds_name)
-            else:
-                print(f"{ds_name} NOT FULL TASKS ADD IT TO PROCESS IT")
-                continue
-
-        else:
-            input_path: str = item
-            ds_name = os.path.basename(os.path.dirname(input_path))
-            # Strip the teacher-model prefix and the trailing "data.parquet" so
-            # inner_path is the dataset directory only, e.g.
-            # "retrieval/general_retrieval/arguana"
-            inner_path = os.path.relpath(
-                os.path.dirname(input_path),
-                os.path.join(args.input_dir, args.teacher_model),
-            )
-
-        # Always write to a consistently named parquet file.
-        output_path = os.path.join(
-            output_folder, middle_folder, inner_path, "data.parquet"
-        )
-        if os.path.isfile(output_path) and not args.force_recompute:
-            print(f"Skipping [{i + 1}/{len(items)}] {inner_path} (output exists)")
-            continue
-
-        print(f"\nProcessing [{i + 1}/{len(items)}] {inner_path}")
+        print(f"\nProcessing [{i + 1}/{len(items)}]")
         t0 = time.time()
         # ------------------------------------------------------------------
         # Load raw dataset.
         # ------------------------------------------------------------------
         if args.f2llm:
-            f2llm_prompt = TASK_TO_PROMPT.get(ds_name)
-            ds = load_f2llm(sources=[f2llm_source])
+            # ueless there are many paraphrases:
+            # f2llm_prompt = TASK_TO_PROMPT.get(ds_name)
+            ds = load_f2llm(sources=[item])
             # Step 1: strip F2LLM instruct-prefix from queries via parallel map.
 
             if not args.f2llm_prompt:
-                convert_fn = partial(
-                    _convert_f2llm_batch, f2llm_prompt, args.num_hard_negatives
+
+                filter_fn = _filter_f2llm_batch
+
+                total_len = len(ds)
+
+                ds = ds.filter(
+                    filter_fn,
+                    batched=True,
+                    batch_size=10000,
+                    num_proc=args.num_workers,
                 )
+                if len(ds) != total_len:
+                    print(
+                        f"dataset {item}: {total_len-len(ds)} rows removed due to wrong instruct template."
+                    )
+                if args.num_hard_negatives is None:
+                    ds.columns
+
+                convert_fn = partial(_convert_f2llm_batch, args.num_hard_negatives)
 
                 ds = ds.map(
                     convert_fn,
@@ -675,97 +669,163 @@ def main():
                     num_proc=args.num_workers,
                     remove_columns=ds.column_names,
                 )
-                # Step 2: assign query_id / positive_id via fast pandas deduplication.
-                # Same-text queries / positives across the whole source receive the
-                # same ID, consistent with the hard-negative parquet convention.
+
             ds = _assign_dedup_ids(ds)
         else:
-            ds = _load_parquet_safe(input_path)
+            ds = _load_parquet_safe(item)
 
-        t1 = time.time()
-        print(f"dataset loaded in {(t1-t0)/60:.1f}min")
+        if args.f2llm:
+            f2llm_source: str = item
+            ds_name = TRANSLATE_F2LLM_NAME[f2llm_source]
+        else:
+            input_path: str = item
+            ds_name = os.path.basename(os.path.dirname(input_path))
 
-        # ------------------------------------------------------------------
-        # Step 3: build prompts and tokenize.
-        #
-        # 'batch'  — build + tokenize in a single Dataset.map() pass
-        #            (best when passage reuse is low).
-        # 'dedup'  — build prompts first, then deduplicate across the full
-        #            dataset and tokenize each unique string exactly once,
-        #            remapping results back to every row.  Best for datasets
-        #            with heavy passage reuse (MSMARCO, NQ, …).
-        # ------------------------------------------------------------------
-        task_metadata = _get_task_metadata(ds_name)
-        n_rows_raw = len(ds)
+        if args.save_raw_data_only and args.f2llm:
+            raw_output_path = os.path.join(raw_output_folder, f"{f2llm_source}.parquet")
+            n_raw = save_raw_data(ds, raw_output_path)
+            print(f"  [{ds_name}] raw data saved: {n_raw:,} rows -> {raw_output_path}")
 
-        # --- Step 3a: build prompts only (no tokenization) ---
-        build_fn = partial(
-            _build_prompts_hard_negatives_batch,
-            tokenizer=tokenizer,
-            instruction_template=instruction_template,
-            task_metadata=task_metadata,
-            num_hard_negatives=args.num_hard_negatives,
+        else:
+
+            # ------------------------------------------------------------------
+            # Resolve ds_name (leaf, e.g. "arguana") and inner_path
+            # (e.g. "retrieval/general_retrieval/arguana/data.parquet").
+            # ------------------------------------------------------------------
+            if args.f2llm:
+                # inner_path is the dataset directory, e.g.
+                # "retrieval/general_retrieval/arguana"
+                # inner_path = _inner_path_for_ds(ds_name)
+
+                if ds_name in NAME_TO_TASK_SUBTASK_PATH:
+                    inner_path = task_name_to_inner_path(ds_name)
+                else:
+                    print(f"{ds_name} NOT FULL TASKS ADD IT TO PROCESS IT")
+                    continue
+
+            else:
+                # Strip the teacher-model prefix and the trailing "data.parquet" so
+                # inner_path is the dataset directory only, e.g.
+                # "retrieval/general_retrieval/arguana"
+                inner_path = os.path.relpath(
+                    os.path.dirname(input_path),
+                    os.path.join(args.input_dir, args.teacher_model),
+                )
+
+            # Always write to a consistently named parquet file.
+            output_path = os.path.join(
+                output_folder, middle_folder, inner_path, "data.parquet"
+            )
+            if os.path.isfile(output_path) and not args.force_recompute:
+                print(f"Skipping [{i + 1}/{len(items)}] {inner_path} (output exists)")
+                continue
+
+            if args.f2llm_prompt:
+                args.instruction_template = None
+
+            if args.instruction_template not in INSTRUCTION_TEMPLATES:
+                raise ValueError(
+                    f"Unknown instruction_template '{args.instruction_template}'. "
+                    f"Choices: {list(INSTRUCTION_TEMPLATES.keys())}"
+                )
+            instruction_template, add_special_tokens = INSTRUCTION_TEMPLATES[
+                args.instruction_template
+            ]
+
+            # use_fast=True (default): Rust fast tokenizer is 10-100× faster than the
+            # pure-Python fallback.  trust_remote_code is kept for custom model repos.
+            tokenizer = AutoTokenizer.from_pretrained(
+                args.tokenizer_path, trust_remote_code=True
+            )
+
+            if args.num_workers > 1:
+                # Prevent Rust tokenizer threads from being forked inside worker processes.
+                os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+            t1 = time.time()
+            print(f"dataset loaded in {(t1-t0)/60:.1f}min")
+
+            # ------------------------------------------------------------------
+            # Step 3: build prompts and tokenize.
+            #
+            # 'batch'  — build + tokenize in a single Dataset.map() pass
+            #            (best when passage reuse is low).
+            # 'dedup'  — build prompts first, then deduplicate across the full
+            #            dataset and tokenize each unique string exactly once,
+            #            remapping results back to every row.  Best for datasets
+            #            with heavy passage reuse (MSMARCO, NQ, …).
+            # ------------------------------------------------------------------
+            task_metadata = _get_task_metadata(ds_name)
+            n_rows_raw = len(ds)
+
+            # --- Step 3a: build prompts only (no tokenization) ---
+            build_fn = partial(
+                _build_prompts_hard_negatives_batch,
+                tokenizer=tokenizer,
+                instruction_template=instruction_template,
+                task_metadata=task_metadata,
+                num_hard_negatives=args.num_hard_negatives,
+            )
+            ds = ds.map(
+                build_fn,
+                batched=True,
+                batch_size=10000,
+                num_proc=args.num_workers,
+            )
+
+            t2 = time.time()
+            print(f"prompts built in {(t2-t1)/60:.1f}min")
+
+            # Capture pre-filter prompt lists (used for metadata stats).
+            q_prompts: list = ds["query_prompt"]
+            p_prompts: list = ds["positive_prompt"]
+            neg_prompts_lists: list = ds["negative_prompts"]
+            neg_flat: list = [p for row in neg_prompts_lists for p in row]
+
+            # --- Step 3b: dedup across the full dataset, tokenize once ---
+            q_ids, p_ids, n_ids, _ = _tokenize_dedup(
+                tokenizer,
+                add_special_tokens,
+                ds_name,
+                q_prompts,
+                p_prompts,
+                neg_prompts_lists,
+            )
+
+            t3 = time.time()
+            print(f"tokenization done in {(t3-t2)/60:.1f}min")
+
+            # Apply optional seq-len filter before saving.
+            ds, q_ids, p_ids, n_ids, total_length = _apply_seq_len_filter(
+                ds, q_ids, p_ids, n_ids, args.max_seq_len, ds_name
+            )
+
+            n = _finalize_and_save(
+                ds,
+                output_path,
+                ds_name,
+                n_rows_raw,
+                q_ids,
+                p_ids,
+                n_ids,
+                q_prompts,
+                p_prompts,
+                neg_flat,
+                total_length,
+            )
+            total_rows += n
+            if n > 0:
+                processed += 1
+
+            t4 = time.time()
+            print(f"saving done in {(t4-t3)/60:.1f}min")
+            print(f"dataset time {(t4-t0)/60:.1f}min")
+            print(f"total time: {(t4-start0)/60:.1f}min")
+
+        print(
+            f"\nDone. Processed {processed}/{len(items)} datasets, "
+            f"total rows saved: {total_rows:,}"
         )
-        ds = ds.map(
-            build_fn,
-            batched=True,
-            batch_size=10000,
-            num_proc=args.num_workers,
-        )
-
-        t2 = time.time()
-        print(f"prompts built in {(t2-t1)/60:.1f}min")
-
-        # Capture pre-filter prompt lists (used for metadata stats).
-        q_prompts: list = ds["query_prompt"]
-        p_prompts: list = ds["positive_prompt"]
-        neg_prompts_lists: list = ds["negative_prompts"]
-        neg_flat: list = [p for row in neg_prompts_lists for p in row]
-
-        # --- Step 3b: dedup across the full dataset, tokenize once ---
-        q_ids, p_ids, n_ids, _ = _tokenize_dedup(
-            tokenizer,
-            add_special_tokens,
-            ds_name,
-            q_prompts,
-            p_prompts,
-            neg_prompts_lists,
-        )
-
-        t3 = time.time()
-        print(f"tokenization done in {(t3-t2)/60:.1f}min")
-
-        # Apply optional seq-len filter before saving.
-        ds, q_ids, p_ids, n_ids, total_length = _apply_seq_len_filter(
-            ds, q_ids, p_ids, n_ids, args.max_seq_len, ds_name
-        )
-
-        n = _finalize_and_save(
-            ds,
-            output_path,
-            ds_name,
-            n_rows_raw,
-            q_ids,
-            p_ids,
-            n_ids,
-            q_prompts,
-            p_prompts,
-            neg_flat,
-            total_length,
-        )
-        total_rows += n
-        if n > 0:
-            processed += 1
-
-        t4 = time.time()
-        print(f"saving done in {(t4-t3)/60:.1f}min")
-        print(f"dataset time {(t4-t0)/60:.1f}min")
-        print(f"total time: {(t4-start0)/60:.1f}min")
-
-    print(
-        f"\nDone. Processed {processed}/{len(items)} datasets, "
-        f"total rows saved: {total_rows:,}"
-    )
 
 
 if __name__ == "__main__":
