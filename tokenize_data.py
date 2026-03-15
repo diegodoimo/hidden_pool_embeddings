@@ -826,10 +826,10 @@ def main():
             print(f"dataset time {(t4-t0)/60:.1f}min")
             print(f"total time: {(t4-start0)/60:.1f}min")
 
-        print(
-            f"\nDone. Processed {processed}/{len(items)} datasets, "
-            f"total rows saved: {total_rows:,}"
-        )
+            print(
+                f"\nDone. Processed {processed}/{len(items)} datasets, "
+                f"total rows saved: {total_rows:,}"
+            )
 
 
 if __name__ == "__main__":
