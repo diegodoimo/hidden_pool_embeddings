@@ -423,6 +423,7 @@ def _convert_f2llm_batch(
     num_hard_negatives: int,
     batch: dict,
 ) -> dict:
+    assert False, "bugged the f2llm_prompt is not comprehensive enough. There are multiple paraphrases of it."
     """Step 1 for F2LLM: strip the instruct-prefix from queries, reshape negatives.
 
     Input columns : query, passage, negative_1 … negative_<N>  (1-indexed).
@@ -454,6 +455,13 @@ def _convert_f2llm_batch(
         "positive_text": stripped_passages,
         "negative_text": stripped_negs,
     }
+
+
+
+
+
+
+
 
 
 def _assign_dedup_ids(ds) -> "Dataset":

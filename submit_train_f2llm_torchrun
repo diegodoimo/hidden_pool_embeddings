@@ -72,7 +72,7 @@ torchrun \
     --num_hard_neg 7 \
     --eval_set mteb_eng_v2_reduced \
     --only_retrieval \
-    --out_filename "retrieval_f2llm_eval_proompts" \
-    #--measure_baselines \
+    --out_filename "retrieval_f2llm_eval_prompts" \
+    --measure_baselines \
     #--model_path google/t5gemma-2-270m-270m  \
     #--train_data_path ./f2llm_repro/results/datasets_tokenized/f2llm/f2llm-prompt_t5gemma-2-tok \
