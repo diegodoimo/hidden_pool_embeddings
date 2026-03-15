@@ -111,7 +111,7 @@ def parse_args():
     parser.add_argument(
         "--num_hard_negatives",
         type=int,
-        default=15,
+        default=None,
         help="Number of hard negatives per example",
     )
     parser.add_argument(
@@ -176,7 +176,7 @@ def parse_args():
     parser.add_argument(
         "--raw_output_dir",
         type=str,
-        default="results/datasets_raw",
+        default="results/f2llm_data_no_instruct",
         help="Root directory where raw-data parquet files are written when --save_raw_data is enabled.",
     )
     parser.add_argument(
@@ -594,8 +594,6 @@ def get_data_paths(root_folder, subset_list, teacher_model):
 def main():
     args = parse_args()
 
-    raw_output_folder = os.path.join(args.raw_output_dir, "f2llm_data")
-
     if "t5gemma-2" in args.tokenizer_path.lower():
         tokenizer_name = "t5gemma-2"
     else:
@@ -658,7 +656,11 @@ def main():
                         f"dataset {item}: {total_len-len(ds)} rows removed due to wrong instruct template."
                     )
                 if args.num_hard_negatives is None:
-                    ds.columns
+                    args.num_hard_negatives = sum(
+                        1
+                        for key in ds.features.keys()
+                        if key.lower().startswith("negative")
+                    )
 
                 convert_fn = partial(_convert_f2llm_batch, args.num_hard_negatives)
 
@@ -682,7 +684,9 @@ def main():
             ds_name = os.path.basename(os.path.dirname(input_path))
 
         if args.save_raw_data_only and args.f2llm:
-            raw_output_path = os.path.join(raw_output_folder, f"{f2llm_source}.parquet")
+            raw_output_path = os.path.join(
+                args.raw_output_dir, f"{f2llm_source}.parquet"
+            )
             n_raw = save_raw_data(ds, raw_output_path)
             print(f"  [{ds_name}] raw data saved: {n_raw:,} rows -> {raw_output_path}")
 
