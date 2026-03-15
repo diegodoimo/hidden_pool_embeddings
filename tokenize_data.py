@@ -655,7 +655,7 @@ def main():
             ds = load_f2llm(sources=[f2llm_source])
             # Step 1: strip F2LLM instruct-prefix from queries via parallel map.
 
-            if not args.f2llm_prompt
+            if not args.f2llm_prompt:
                 convert_fn = partial(
                     _convert_f2llm_batch, f2llm_prompt, args.num_hard_negatives
                 )
