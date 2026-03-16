@@ -844,11 +844,9 @@ class HardNegativesMiner:
 
             # Get candidate documents for this query
             candidate_indices = top_indices[
-                unique_q_idx, 5:upper_thresholds_relevant_docs
+                unique_q_idx, :upper_thresholds_relevant_docs
             ]
-            candidate_scores = top_scores[
-                unique_q_idx, 5:upper_thresholds_relevant_docs
-            ]
+            candidate_scores = top_scores[unique_q_idx, :upper_thresholds_relevant_docs]
 
             # Threshold based on this specific (query, positive) pair's score
             lower_threshold = min(0.9 * query_positive_scores[qrel_idx], 0.85)

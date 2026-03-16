@@ -54,7 +54,7 @@ from datasets import Dataset
 import time
 import warnings
 import re
-
+import numpy as np
 
 INSTRUCTION_TEMPLATES = {
     "qwen3": (instruction_template_qwen3, False),
@@ -490,14 +490,30 @@ def _assign_dedup_ids(ds) -> "Dataset":
     Uses ``tasks.retrieval_loaders.deduplicate`` which is backed by C-optimised
     pandas hash tables and is significantly faster than a Python loop.
     """
+
     q_series = pd.Series(ds["query_text"])
-    p_series = pd.Series(ds["positive_text"])
-
     query_ids, *_ = deduplicate(q_series, prefix="query")
-    positive_ids, *_ = deduplicate(p_series, prefix="positive")
-
     ds = ds.add_column("query_id", query_ids)
-    ds = ds.add_column("positive_id", positive_ids)
+
+    # p_series = pd.Series(ds["positive_text"])
+    # positive_ids, *_ = deduplicate(p_series, prefix="positive")
+    # ds = ds.add_column("positive_id", positive_ids)
+
+    docs = ds["positive_text"].extend(
+        [n for negatives in ds["negative_text"] for n in negatives]
+    )
+    doc_series = pd.Series(docs)
+    num_samples = len(ds["positive_text"])
+    per_sample_negatives = len(ds["negative_text"][0])
+
+    doc_ids, *_ = deduplicate(doc_series, prefix="doc")
+    ds.add_column("positive_id", doc_ids[:num_samples])
+    negative_ids = doc_ids[num_samples:]
+    negative_ids = [
+        negative_ids[index : index + per_sample_negatives]
+        for index in range(0, num_samples * per_sample_negatives, per_sample_negatives)
+    ]
+    ds.add_column("negative_id", negative_ids)
     return ds
 
 
@@ -676,21 +692,19 @@ def main():
         else:
             ds = _load_parquet_safe(item)
 
-        if args.f2llm:
-            f2llm_source: str = item
-            ds_name = TRANSLATE_F2LLM_NAME[f2llm_source]
-        else:
-            input_path: str = item
-            ds_name = os.path.basename(os.path.dirname(input_path))
-
         if args.save_raw_data_only and args.f2llm:
-            raw_output_path = os.path.join(
-                args.raw_output_dir, f"{f2llm_source}.parquet"
-            )
+            raw_output_path = os.path.join(args.raw_output_dir, f"{item}.parquet")
             n_raw = save_raw_data(ds, raw_output_path)
-            print(f"  [{ds_name}] raw data saved: {n_raw:,} rows -> {raw_output_path}")
+            print(f"data saved: {n_raw} rows -> {raw_output_path}")
 
         else:
+
+            if args.f2llm:
+                f2llm_source: str = item
+                ds_name = TRANSLATE_F2LLM_NAME[f2llm_source]
+            else:
+                input_path: str = item
+                ds_name = os.path.basename(os.path.dirname(input_path))
 
             # ------------------------------------------------------------------
             # Resolve ds_name (leaf, e.g. "arguana") and inner_path

@@ -1,3 +1,5 @@
+# delclared in the paper but not true. There are a lot of paraphrases for a single dataset.
+
 # Dataset name -> prompt
 TASK_TO_PROMPT = {
     # Retrieval — question answering
