@@ -109,10 +109,11 @@ def from_f2llm_parquet(
 
     neg_id_col = df["negative_id"].explode().reset_index(drop=True)
     neg_text_col = df["negative_text"].explode().reset_index(drop=True)
-    neg_df = pd.DataFrame({"id": neg_id_col, "text": neg_text_col}).dropna(subset=["text"])
+    neg_df = pd.DataFrame({"id": neg_id_col, "text": neg_text_col}).dropna(
+        subset=["text"]
+    )
     neg_df = (
-        neg_df
-        .drop_duplicates(subset=["id"], keep="first")
+        neg_df.drop_duplicates(subset=["id"], keep="first")
         .loc[lambda d: ~d["id"].isin(pos_id_set)]
         .reset_index(drop=True)
     )
@@ -123,14 +124,16 @@ def from_f2llm_parquet(
     gc.collect()
 
     if rank == 0 and verbose:
-        print(f"Found {return_formatted(len(neg_ids))} unique negatives not in positives")
+        print(
+            f"Found {return_formatted(len(neg_ids))} unique negatives not in positives"
+        )
 
     # ------------------------------------------------------------------
     # Sanity check before optional limiting.
     # ------------------------------------------------------------------
-    assert set(positive_ids).issubset(set(unique_positive_ids)), (
-        "positive IDs contain entries not found in unique positives — data integrity error"
-    )
+    assert set(positive_ids).issubset(
+        set(unique_positive_ids)
+    ), "positive IDs contain entries not found in unique positives — data integrity error"
 
     # ------------------------------------------------------------------
     # 5. Optional query limiting (mirrors from_one_hf_dataset).
@@ -154,8 +157,12 @@ def from_f2llm_parquet(
         # Recompute which positives are still referenced by surviving pairs.
         referenced_pos = set(positive_ids)
         still_in = [uid in referenced_pos for uid in unique_positive_ids]
-        unique_positive_ids = [uid for uid, m in zip(unique_positive_ids, still_in) if m]
-        unique_positive_texts = [t for t, m in zip(unique_positive_texts, still_in) if m]
+        unique_positive_ids = [
+            uid for uid, m in zip(unique_positive_ids, still_in) if m
+        ]
+        unique_positive_texts = [
+            t for t, m in zip(unique_positive_texts, still_in) if m
+        ]
         n_positives = len(unique_positive_ids)
 
         # Re-filter negatives: an ID that moved from "extra" to "positive" after
@@ -172,9 +179,9 @@ def from_f2llm_parquet(
     document_texts = list(unique_positive_texts) + neg_texts
     document_titles = None  # F2LLM parquets have no title column
 
-    assert set(positive_ids).issubset(set(document_ids)), (
-        "filtered qrels contain positive IDs not in the document list"
-    )
+    assert set(positive_ids).issubset(
+        set(document_ids)
+    ), "filtered qrels contain positive IDs not in the document list"
 
     if rank == 0:
         print(f"Found {return_formatted(len(unique_query_ids))} unique queries")

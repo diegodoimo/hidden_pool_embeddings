@@ -10,7 +10,7 @@ import torch.distributed as dist
 import pyarrow as pa
 import pyarrow.parquet as pq
 from pathlib import Path
-
+import time
 from tasks.load_datasets import load_task_data
 from utils.helpers import print_memory_consumed
 
@@ -103,15 +103,15 @@ class F2LLMValidator(_BaseMiner):
                 # A zero or negative positive score makes the relative-relevance
                 # ratio undefined and the thresholds degenerate.  Emit safe
                 # defaults so every row still gets an entry in every column.
-                false_negatives[key] = []       # no false negatives detectable
-                hard_negatives[key] = []        # no hard negatives detectable
+                false_negatives[key] = []  # no false negatives detectable
+                hard_negatives[key] = []  # no hard negatives detectable
                 log_info_nce[key] = float("nan")  # InfoNCE undefined
-                positive_rank[key] = top_k + 1   # treat as not-found
+                positive_rank[key] = top_k + 1  # treat as not-found
                 continue
-            fn_threshold_false = 0.9*pos_score
-            fn_threshold_hard = min(0.95*pos_score, 0.8) #as in f2llm
+            fn_threshold_false = 0.9 * pos_score
+            fn_threshold_hard = min(0.95 * pos_score, 0.8)  # as in f2llm
 
-            all_scores = top_scores[unique_q_idx]   # shape [top_k], descending
+            all_scores = top_scores[unique_q_idx]  # shape [top_k], descending
             all_indices = top_indices[unique_q_idx]  # shape [top_k]
             candidate_ids = array_ids[all_indices]
 
@@ -130,7 +130,9 @@ class F2LLMValidator(_BaseMiner):
             # taken from the top of the similarity-ranked list.
             hn_mask = (all_scores <= fn_threshold_hard) & (candidate_ids != p_id)
             hn_idx = np.where(hn_mask)[0][:n_hard_negatives]
-            hard_negatives[key] = candidate_ids[hn_idx].tolist() if hn_idx.size > 0 else []
+            hard_negatives[key] = (
+                candidate_ids[hn_idx].tolist() if hn_idx.size > 0 else []
+            )
 
             # ---- log InfoNCE ----------------------------------------------------
             # Use positive + top n_info_nce_negatives non-positive docs.
@@ -144,7 +146,9 @@ class F2LLMValidator(_BaseMiner):
 
             # ---- positive rank --------------------------------------------------
             pos_positions = np.where(candidate_ids == p_id)[0]
-            positive_rank[key] = int(pos_positions[0]) + 1 if pos_positions.size > 0 else top_k + 1
+            positive_rank[key] = (
+                int(pos_positions[0]) + 1 if pos_positions.size > 0 else top_k + 1
+            )
 
         if self.rank == 0:
             n_with_fn = len(false_negatives)
@@ -203,6 +207,7 @@ class F2LLMValidator(_BaseMiner):
             parquet_name = os.path.basename(task.parquet_path)
 
             if self.rank == 0:
+                start = time.time()
                 print(f"\n\nLOADING F2LLM DATASET: {parquet_name}\n")
 
             # ------------------------------------------------------------------
@@ -217,6 +222,8 @@ class F2LLMValidator(_BaseMiner):
             ) = load_task_data(task)
 
             if self.rank == 0:
+                print(f"dataset laoded: {(time.time()-start)/60:.2f}min")
+                start = time.time()
                 print(f"\nPREPARING DATASET: {parquet_name}")
 
             dataset, corpus_dict = self.prepare_dataset(
@@ -229,6 +236,8 @@ class F2LLMValidator(_BaseMiner):
 
             dist.barrier()
             if self.rank == 0:
+                print(f"dataset prpared: {(time.time()-start)/60:.2f}min")
+                start = time.time()
                 print_memory_consumed(rank=self.rank)
 
             # ------------------------------------------------------------------
@@ -252,6 +261,8 @@ class F2LLMValidator(_BaseMiner):
             # ------------------------------------------------------------------
             dist.barrier()
             if self.rank == 0:
+                print(f"representations encoded: {(time.time()-start)/60:.2f}min")
+                start = time.time()
                 print("\nComputing F2LLM annotation columns")
 
             (
@@ -279,6 +290,8 @@ class F2LLMValidator(_BaseMiner):
             # ------------------------------------------------------------------
             dist.barrier()
             if self.rank == 0:
+                print(f"statistics computed: {time.time()-start}")
+                start = time.time()
                 table = pq.read_table(task.parquet_path)
 
                 q_ids = table.column("query_id").to_pylist()
@@ -297,10 +310,12 @@ class F2LLMValidator(_BaseMiner):
                     for qid, pid in zip(q_ids, p_ids)
                 ]
                 fn_type = pa.list_(
-                    pa.struct([
-                        pa.field("doc_id", pa.large_utf8()),
-                        pa.field("score", pa.float32()),
-                    ])
+                    pa.struct(
+                        [
+                            pa.field("doc_id", pa.large_utf8()),
+                            pa.field("score", pa.float32()),
+                        ]
+                    )
                 )
                 table = table.append_column(
                     f"{col_prefix}_false_negatives",
@@ -309,8 +324,7 @@ class F2LLMValidator(_BaseMiner):
 
                 # -- hard_negatives: list of doc_ids (top 24) --
                 hn_rows = [
-                    hard_negatives.get((qid, pid), [])
-                    for qid, pid in zip(q_ids, p_ids)
+                    hard_negatives.get((qid, pid), []) for qid, pid in zip(q_ids, p_ids)
                 ]
                 table = table.append_column(
                     f"{col_prefix}_hard_negatives",
@@ -340,6 +354,8 @@ class F2LLMValidator(_BaseMiner):
                 out_path = os.path.join(output_dir, parquet_name)
                 pq.write_table(table, out_path, compression="snappy")
                 del table
+                print(f"data saved: {(time.time()-start)/60:.2f}min")
+                start = time.time()
                 print(f"Saved annotated dataset → {out_path}")
 
             dist.barrier()

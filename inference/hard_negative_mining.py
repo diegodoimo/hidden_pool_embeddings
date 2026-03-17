@@ -33,6 +33,7 @@ import pyarrow.parquet as pq
 # Module-level helpers
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class TripletStats:
     less_than_24: int = 0
@@ -242,6 +243,7 @@ def save_dataset_dict_to_disk(
 # ---------------------------------------------------------------------------
 # Base class — shared by HardNegativesMiner and F2LLMValidator
 # ---------------------------------------------------------------------------
+
 
 class _BaseMiner:
     """Shared initialisation, dataset preparation, and encode+search backbone.
@@ -477,6 +479,7 @@ class _BaseMiner:
         if self.rank == 0:
             start = time.time()
             print("\nbuilding query embeddings")
+
         query_embeddings = encode(
             model,
             queries_loader,
@@ -490,9 +493,13 @@ class _BaseMiner:
 
         # Extract ID columns from Arrow once — avoids repeated materialisation
         # of millions of Python strings each time dataset[...]["col"] is called.
-        _unique_query_ids = dataset["unique_queries"].data.table.column("id").to_pylist()
+        _unique_query_ids = (
+            dataset["unique_queries"].data.table.column("id").to_pylist()
+        )
         _qrel_query_ids = dataset["qrels"].data.table.column("query_id").to_pylist()
-        _qrel_positive_ids = dataset["qrels"].data.table.column("positive_id").to_pylist()
+        _qrel_positive_ids = (
+            dataset["qrels"].data.table.column("positive_id").to_pylist()
+        )
         _corpus_ids = dataset["corpus"].data.table.column("id").to_pylist()
         unique_query_id_to_idx = {qid: idx for idx, qid in enumerate(_unique_query_ids)}
 
@@ -565,6 +572,7 @@ class _BaseMiner:
 # ---------------------------------------------------------------------------
 # HardNegativesMiner — mines training triplets from MTEB-style tasks
 # ---------------------------------------------------------------------------
+
 
 class HardNegativesMiner(_BaseMiner):
 
@@ -749,7 +757,7 @@ class HardNegativesMiner(_BaseMiner):
 
             threshold = 0.9 * query_positive_scores[qrel_idx]
 
-            all_scores = top_scores[unique_q_idx]   # shape [top_k]
+            all_scores = top_scores[unique_q_idx]  # shape [top_k]
             all_indices = top_indices[unique_q_idx]  # shape [top_k]
             candidate_ids = array_ids[all_indices]
 
@@ -815,7 +823,9 @@ class HardNegativesMiner(_BaseMiner):
         # Pre-extract qrels columns via Arrow — avoids materialising millions
         # of Python strings through HF Dataset.__getitem__ overhead.
         all_qrel_query_ids = dataset["qrels"].data.table.column("query_id").to_pylist()
-        all_qrel_positive_ids = dataset["qrels"].data.table.column("positive_id").to_pylist()
+        all_qrel_positive_ids = (
+            dataset["qrels"].data.table.column("positive_id").to_pylist()
+        )
 
         time_perf = {}
         start = time.time()
