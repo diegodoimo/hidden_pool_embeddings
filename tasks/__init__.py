@@ -438,12 +438,12 @@ CLUSTERING_TASKS = [
 # Datasets sorted by total size (unique_queries + unique_documents), shortest first
 # as they appear in dataset_list.txt
 DATASETS_BY_SIZE = [
-    # "sts12",  #      2,712
-    # "sts22",  #      3,062
-    # "scifact",  #      5,992
-    # "stsbenchmark",  #      6,420
-    # "nfcorpus",  #      6,547
-    # "arguana",  #     28,728
+    "sts12",  #      2,712
+    "sts22",  #      3,062
+    "scifact",  #      5,992
+    "stsbenchmark",  #      6,420
+    "nfcorpus",  #      6,547
+    "arguana",  #     28,728
     # "fiqa2018",  #     63,638
     # "squad",  #    118,846
     # "triviaqa",  #    137,483
@@ -466,18 +466,126 @@ DATASETS_BY_SIZE = [
     # "mrtydi",  #  1,051,025
     # "yahooanswers",  #  2,369,859
     # "amazonqa",  #  3,264,575
-    "gooaq",  #  4,488,520
-    "hotpotqa",  #  5,323,776
-    "fever",  #  5,533,044
-    "xnli",  #  7,253,838
-    "msmarco",  #  9,351,742
-    "stackexchange",  #  9,500,045
+    # "gooaq",  #  4,488,520
+    # "hotpotqa",  #  5,323,776
+    # "fever",  #  5,533,044
+    # "xnli",  #  7,253,838
+    # "msmarco",  #  9,351,742
+    # "stackexchange",  #  9,500,045
     # "bioasq",  # 27,284,021
     # "s2orc_abstract_citation",  # 56,386,121
     # "s2orc_title_citation",  # 65,572,442
     # "paq",  # 73,376,018
     # "s2orc_title_abstract",  # 82,561,651
 ]
+
+
+# All other retrieval tasks (everything not in the above categories)
+def get_retrieval_tasks():
+    """
+    Get all retrieval tasks (excluding STS, NLI, classification, and clustering tasks),
+    sorted by their category group in a consistent order.
+
+    Returns tasks in this order:
+    1. Open Domain QA
+    2. Domain-Specific QA
+    3. General Retrieval
+    4. Fact Verification
+    5. Paraphrase Detection
+    6. Scientific Document Retrieval
+    7. Summarization
+    """
+    # Define the order of retrieval task categories
+    retrieval_categories = [
+        OPEN_DOMAIN_QA,
+        DOMAIN_SPECIFIC_QA,
+        GENERAL_RETRIEVAL,
+        FACT_VERIFICATION,
+        PARAPHRASE_DETECTION,
+        SCIENTIFIC_DOC_RETRIEVAL,
+        SUMMARIZATION,
+    ]
+
+    # Build sorted list of retrieval tasks by category
+    sorted_tasks = []
+    for category in retrieval_categories:
+        sorted_tasks.extend(category)
+
+    return sorted_tasks
+
+
+def filter_tasks_by_type(task_types):
+    """
+    Filter available tasks based on requested task types.
+
+    Args:
+        task_types: List of task type strings ("retrieval", "sts", "nli", "classification", "clustering", "all")
+
+    Returns:
+        List of task names matching the requested types
+    """
+    if "all" in task_types:
+        return list(NAME_TO_TASK.keys())
+
+    selected_tasks = []
+
+    if "retrieval" in task_types:
+        selected_tasks.extend(get_retrieval_tasks())
+
+    if "sts" in task_types:
+        selected_tasks.extend(STS_TASKS)
+
+    if "nli" in task_types:
+        selected_tasks.extend(NLI_TASKS)
+
+    if "classification" in task_types:
+        selected_tasks.extend(BINARY_CLASSIFICATION_TASKS)
+        selected_tasks.extend(CLASSIFICATION_TASKS)
+
+    if "clustering" in task_types:
+        selected_tasks.extend(CLUSTERING_TASKS)
+
+    if "sorted" in task_types:
+        selected_tasks.extend(DATASETS_BY_SIZE)
+
+    # Remove duplicates while preserving order
+    seen = set()
+    result = []
+    for task in selected_tasks:
+        if task not in seen and task in NAME_TO_TASK:
+            seen.add(task)
+            result.append(task)
+
+    return result
+
+
+def validate_and_select_tasks(task_names, task_types):
+    """
+    Validate and select tasks based on task_names or task_types.
+
+    Args:
+        task_names: List of specific task names or None
+        task_types: List of task type strings
+
+    Returns:
+        List of validated task names
+
+    Raises:
+        ValueError: If any task name is invalid
+    """
+    if task_names is not None:
+        # Use specific task names if provided
+        invalid_tasks = [task for task in task_names if task not in NAME_TO_TASK]
+        if invalid_tasks:
+            available_tasks = sorted(NAME_TO_TASK.keys())
+            raise ValueError(
+                f"Invalid task name(s): {invalid_tasks}\n"
+                f"Available tasks: {available_tasks}"
+            )
+        return task_names
+    else:
+        # Fall back to task types
+        return filter_tasks_by_type(task_types)
 
 
 def get_task(name: str):
@@ -489,3 +597,6 @@ def get_task(name: str):
     task = NAME_TO_TASK[name]
 
     return task
+
+
+
