@@ -495,37 +495,46 @@ def _assign_dedup_ids(ds) -> "Dataset":
     query_ids, *_ = deduplicate(q_series, prefix="query")
     ds = ds.add_column("query_id", query_ids)
 
-    # p_series = pd.Series(ds["positive_text"])
-    # positive_ids, *_ = deduplicate(p_series, prefix="positive")
-    # ds = ds.add_column("positive_id", positive_ids)
-
-    docs = ds["positive_text"].extend(
-        [n for negatives in ds["negative_text"] for n in negatives]
-    )
+    docs = list(ds["positive_text"]) + [
+        n for negatives in ds["negative_text"] for n in negatives
+    ]
     doc_series = pd.Series(docs)
     num_samples = len(ds["positive_text"])
     per_sample_negatives = len(ds["negative_text"][0])
 
     doc_ids, *_ = deduplicate(doc_series, prefix="doc")
-    ds.add_column("positive_id", doc_ids[:num_samples])
+    ds = ds.add_column("positive_id", doc_ids[:num_samples])
     negative_ids = doc_ids[num_samples:]
     negative_ids = [
         negative_ids[index : index + per_sample_negatives]
         for index in range(0, num_samples * per_sample_negatives, per_sample_negatives)
     ]
-    ds.add_column("negative_id", negative_ids)
+    ds = ds.add_column("negative_id", negative_ids)
     return ds
 
 
 def save_raw_data(ds, output_path: str) -> int:
     """Save raw dataset to parquet preserving column order, row order, and schema.
 
-    The dataset content is written exactly as currently represented in ``ds``.
-    This allows saving the same dataset structure/name/format as read, while
-    changing only the destination root folder.
+    String columns are cast to large_utf8 (64-bit offsets) and list<string>
+    columns to list<large_utf8> before writing.  HuggingFace Datasets stores
+    strings as utf8 (32-bit offsets); for large datasets whose list-column
+    values exceed 2 GB total (e.g. bioasq negative_text), the 32-bit limit
+    causes PyArrow's scanner to produce chunked array outputs when reading
+    back, which triggers ArrowNotImplementedError.  Using large_utf8 avoids
+    this entirely.  This mirrors the casting done in _finalize_and_save.
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     table: pa.Table = ds.data.table
+    new_fields = []
+    for field in table.schema:
+        if field.type == pa.utf8():
+            new_fields.append(field.with_type(pa.large_utf8()))
+        elif field.type == pa.list_(pa.utf8()):
+            new_fields.append(field.with_type(pa.list_(pa.large_utf8())))
+        else:
+            new_fields.append(field)
+    table = table.cast(pa.schema(new_fields))
     pq.write_table(table, output_path, compression="snappy")
     return table.num_rows
 
@@ -671,14 +680,15 @@ def main():
                     print(
                         f"dataset {item}: {total_len-len(ds)} rows removed due to wrong instruct template."
                     )
-                if args.num_hard_negatives is None:
-                    args.num_hard_negatives = sum(
+                num_hard_negatives = args.num_hard_negatives
+                if num_hard_negatives is None:
+                    num_hard_negatives = sum(
                         1
                         for key in ds.features.keys()
                         if key.lower().startswith("negative")
                     )
 
-                convert_fn = partial(_convert_f2llm_batch, args.num_hard_negatives)
+                convert_fn = partial(_convert_f2llm_batch, num_hard_negatives)
 
                 ds = ds.map(
                     convert_fn,

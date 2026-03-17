@@ -19,6 +19,44 @@ from utils.helpers import print_memory_consumed, return_formatted
 # ***********************************************************************************************
 
 
+def estimate_chunk_sizes(query_embeddings, max_corpus_chunk=5 * 10**4):
+    """Estimate corpus and query chunk sizes to stay within GPU memory.
+
+    When the full query set fits comfortably, *query_chunk_size* equals
+    *n_queries* (i.e. no query chunking).  For very large query sets the
+    function picks a smaller *query_chunk_size* so that the similarity
+    matrix ``[query_chunk, corpus_chunk]`` stays within the memory budget.
+
+    Returns:
+        (corpus_chunk_size, query_chunk_size)
+    """
+    free_mem, _ = torch.cuda.mem_get_info()
+    n_queries = query_embeddings.shape[0]
+    elem_size = query_embeddings.element_size()
+    dim = query_embeddings.shape[1]
+
+    bytes_per_doc = dim * elem_size  # one corpus embedding vector
+    budget = int(0.8 * free_mem)
+
+    bytes_per_sim_col = n_queries * elem_size  # one column of the full sim matrix
+
+    # try without query chunking first
+    corpus_chunk = budget // max(1, bytes_per_doc + bytes_per_sim_col)
+    corpus_chunk = max(1000, min(int(corpus_chunk), max_corpus_chunk))
+
+    total_needed = n_queries * corpus_chunk * elem_size + corpus_chunk * bytes_per_doc
+    if total_needed <= budget:
+        return corpus_chunk, n_queries
+
+    # need query chunking
+    corpus_chunk = min(max_corpus_chunk, 10**4)
+    remaining = budget - corpus_chunk * bytes_per_doc
+    query_chunk = remaining // max(1, corpus_chunk * elem_size)
+    query_chunk = max(10**4, min(int(query_chunk), n_queries))
+
+    return corpus_chunk, query_chunk
+
+
 def abs_task_preprocessing(task, eval_split):
     """Return a list of (data_split, hf_subset) tuples – one per subset."""
 
@@ -70,11 +108,6 @@ def search(
     computation is tiled over query sub-chunks so that the
     ``[query_chunk, corpus_chunk]`` score matrix fits in GPU memory.
 
-    Supports both GPU-resident and CPU-resident *query_embeddings*.  When
-    queries live on CPU, ``top_scores`` / ``top_indices`` are also kept on
-    CPU and query slices are moved to GPU on-the-fly for each matmul.  The
-    final distributed merge is performed in chunks through GPU to avoid OOM.
-
     Args:
         model: The embedding model
         query_embeddings: Pre-computed query embeddings [N_queries, embedding_dim]
@@ -100,18 +133,14 @@ def search(
 
     N_queries = query_embeddings.shape[0]
     N_corpus = len(corpus_dataset)
-    queries_on_cpu = not query_embeddings.is_cuda
     gpu_device = torch.device(f"cuda:{rank}")
 
     if query_chunk_size is None:
         query_chunk_size = N_queries
 
-    # top_scores / top_indices live on the same device as query_embeddings
-    # (CPU for very large query sets, GPU otherwise)
-    result_device = query_embeddings.device
-    top_scores = torch.full((N_queries, top_k), -float("inf"), device=result_device)
+    top_scores = torch.full((N_queries, top_k), -float("inf"), device=gpu_device)
     top_indices = torch.full(
-        (N_queries, top_k), -1, dtype=torch.long, device=result_device
+        (N_queries, top_k), -1, dtype=torch.long, device=gpu_device
     )
 
     # ========================================================================
@@ -151,8 +180,6 @@ def search(
     start = time.time()
     if rank == 0:
         print(f"Using chunk_size: {return_formatted(chunk_size)}")
-        if queries_on_cpu:
-            print("Query embeddings on CPU — top-k bookkeeping also on CPU")
         if query_chunk_size < N_queries:
             print(
                 f"Using query_chunk_size: {return_formatted(query_chunk_size)} "
@@ -224,11 +251,7 @@ def search(
         for q_start in range(0, N_queries, query_chunk_size):
             q_end = min(q_start + query_chunk_size, N_queries)
 
-            # Move query slice to GPU if needed (no-op when already on GPU)
             q_slice = query_embeddings[q_start:q_end]
-            if queries_on_cpu:
-                q_slice = q_slice.to(gpu_device)
-
             scores = torch.matmul(q_slice, local_corpus_chunk.T)
             del q_slice
 
@@ -265,54 +288,22 @@ def search(
 
     # Distributed merging for top-k results
     if world_size > 1:
-        if queries_on_cpu:
-            # Chunked merge through GPU to avoid OOM
-            merge_chunk = max(100_000, query_chunk_size)
-            for q_start in range(0, N_queries, merge_chunk):
-                q_end = min(q_start + merge_chunk, N_queries)
+        scores_list = [torch.empty_like(top_scores) for _ in range(world_size)]
+        indices_list = [torch.empty_like(top_indices) for _ in range(world_size)]
 
-                ts = top_scores[q_start:q_end].to(gpu_device)
-                ti = top_indices[q_start:q_end].to(gpu_device)
+        dist.all_gather(scores_list, top_scores)
+        dist.all_gather(indices_list, top_indices)
 
-                scores_list = [torch.empty_like(ts) for _ in range(world_size)]
-                indices_list = [torch.empty_like(ti) for _ in range(world_size)]
-                dist.all_gather(scores_list, ts)
-                dist.all_gather(indices_list, ti)
+        all_scores = torch.cat(scores_list, dim=1)
+        all_indices = torch.cat(indices_list, dim=1)
 
-                all_scores = torch.cat(scores_list, dim=1)
-                all_indices = torch.cat(indices_list, dim=1)
-
-                merged_scores, merge_idx = torch.topk(
-                    all_scores,
-                    k=top_k,
-                    dim=1,
-                    largest=True,
-                )
-                merged_indices = torch.gather(all_indices, 1, merge_idx)
-
-                top_scores[q_start:q_end] = merged_scores.cpu()
-                top_indices[q_start:q_end] = merged_indices.cpu()
-
-                del ts, ti, scores_list, indices_list
-                del all_scores, all_indices, merged_scores, merge_idx, merged_indices
-                torch.cuda.empty_cache()
-        else:
-            scores_list = [torch.empty_like(top_scores) for _ in range(world_size)]
-            indices_list = [torch.empty_like(top_indices) for _ in range(world_size)]
-
-            dist.all_gather(scores_list, top_scores)
-            dist.all_gather(indices_list, top_indices)
-
-            all_scores = torch.cat(scores_list, dim=1)
-            all_indices = torch.cat(indices_list, dim=1)
-
-            top_scores, top_indices = torch.topk(
-                all_scores,
-                k=top_k,
-                dim=1,
-                largest=True,
-            )
-            top_indices = torch.gather(all_indices, 1, top_indices)
+        top_scores, top_indices = torch.topk(
+            all_scores,
+            k=top_k,
+            dim=1,
+            largest=True,
+        )
+        top_indices = torch.gather(all_indices, 1, top_indices)
 
     dist.barrier()
     torch.cuda.synchronize()
@@ -355,12 +346,6 @@ def update_hard_negatives(
     )
 
     chunk_absolute_indices = local_indices[chunk_top_indices] + chunk_idx
-
-    # Move chunk results to same device as top_scores (may be CPU)
-    target_device = top_scores.device
-    if chunk_top_scores.device != target_device:
-        chunk_top_scores = chunk_top_scores.to(target_device)
-        chunk_absolute_indices = chunk_absolute_indices.to(target_device)
 
     combined_scores = torch.cat([top_scores, chunk_top_scores], dim=1)
     combined_indices = torch.cat([top_indices, chunk_absolute_indices], dim=1)
@@ -429,7 +414,6 @@ def encode(
     world_size,
     prompt_type,
     divided_by_chunks=False,
-    stream_to_cpu=False,
 ):
 
     # distributed sampler will duplicate examples at the end
@@ -441,32 +425,17 @@ def encode(
     num_samples = len(loader.dataset)
     embeddings = []
 
-    # Use CUDA prefetcher to overlap H2D transfer with forward pass
-    # prefetcher = CUDAPrefetcher(loader, device=model.device)
-
     for batch in loader:
         batch = {key: val.to(model.device) for key, val in batch.items()}
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-
             batch_embeddings = model(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
             )
+        embeddings.append(batch_embeddings)
 
-        if stream_to_cpu:
-            embeddings.append(batch_embeddings.float().cpu())
-        else:
-            embeddings.append(batch_embeddings)
-
-    embeddings = torch.cat(embeddings, dim=0)
-    if not stream_to_cpu:
-        embeddings = embeddings.float()
-    # stream_to_cpu: already float32 and on CPU
-
-    if stream_to_cpu:
-        indices = torch.tensor(indices)  # keep on CPU
-    else:
-        indices = torch.tensor(indices, device=embeddings.device)
+    embeddings = torch.cat(embeddings, dim=0).float()
+    indices = torch.tensor(indices, device=embeddings.device)
 
     if prompt_type == PromptType.document and divided_by_chunks:
         # if we are processing documents divided in chunks, we postpone the allgather
@@ -474,31 +443,14 @@ def encode(
         return embeddings, indices
 
     if world_size > 1:
-        if stream_to_cpu:
-            # Chunked all-gather through GPU to avoid GPU OOM
-            device = torch.device(f"cuda:{dist.get_rank()}")
-            embeddings, indices = _chunked_all_gather_to_cpu(
-                embeddings,
-                indices,
-                world_size,
-                num_samples,
-                device,
-            )
-        else:
-            gathered = [torch.zeros_like(embeddings) for _ in range(world_size)]
-            dist.all_gather(gathered, embeddings)
-            # Concatenate across ranks for this batch
-            embeddings = torch.cat(gathered, dim=0)
-            embeddings = embeddings[:num_samples]
+        gathered = [torch.zeros_like(embeddings) for _ in range(world_size)]
+        dist.all_gather(gathered, embeddings)
+        embeddings = torch.cat(gathered, dim=0)[:num_samples]
 
-            # Also gather indices if we tracked them
-            if indices is not None:
-                gathered_indices = [
-                    torch.zeros_like(indices) for _ in range(world_size)
-                ]
-                dist.all_gather(gathered_indices, indices)
-                indices = torch.cat(gathered_indices, dim=0)
-                indices = indices[:num_samples]
+        if indices is not None:
+            gathered_indices = [torch.zeros_like(indices) for _ in range(world_size)]
+            dist.all_gather(gathered_indices, indices)
+            indices = torch.cat(gathered_indices, dim=0)[:num_samples]
 
     # Restore original order
     sorted_positions = torch.argsort(indices)
@@ -506,45 +458,3 @@ def encode(
     return embeddings
 
 
-def _chunked_all_gather_to_cpu(
-    local_embeddings,
-    local_indices,
-    world_size,
-    num_samples,
-    device,
-    chunk_size=500_000,
-):
-    """All-gather CPU tensors from all ranks via GPU in manageable chunks.
-
-    Each chunk is moved to GPU, gathered with NCCL ``all_gather``, then
-    moved back to CPU so that the full gathered result never resides on GPU
-    at once.
-
-    The ordering of rows in the returned tensors differs from a monolithic
-    ``all_gather``, but ``(embedding, index)`` pairs are preserved so the
-    caller can sort by index to recover the original order.
-    """
-    local_n = local_embeddings.shape[0]
-    all_emb_chunks = []
-    all_idx_chunks = []
-
-    for start in range(0, local_n, chunk_size):
-        end = min(start + chunk_size, local_n)
-
-        emb_gpu = local_embeddings[start:end].to(device)
-        idx_gpu = local_indices[start:end].to(device)
-
-        gathered_emb = [torch.empty_like(emb_gpu) for _ in range(world_size)]
-        gathered_idx = [torch.empty_like(idx_gpu) for _ in range(world_size)]
-        dist.all_gather(gathered_emb, emb_gpu)
-        dist.all_gather(gathered_idx, idx_gpu)
-
-        all_emb_chunks.append(torch.cat([g.cpu() for g in gathered_emb], dim=0))
-        all_idx_chunks.append(torch.cat([g.cpu() for g in gathered_idx], dim=0))
-
-        del emb_gpu, idx_gpu, gathered_emb, gathered_idx
-        torch.cuda.empty_cache()
-
-    all_embeddings = torch.cat(all_emb_chunks, dim=0)[:num_samples]
-    all_indices = torch.cat(all_idx_chunks, dim=0)[:num_samples]
-    return all_embeddings, all_indices

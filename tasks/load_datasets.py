@@ -46,21 +46,16 @@ def load_task_data(
         For classification/clustering tasks: ClassificationRawData with texts, labels, and ids
     """
     task_type = task.metadata.type
+    use_hn = getattr(task, "use_hard_negative_mining", False)
 
-    if task_type == "Retrieval":
-        # Handle all retrieval and STS tasks (STS is treated as retrieval)
+    if task_type == "Retrieval" or use_hn:
+        # Retrieval tasks, and any task that explicitly opts in to the
+        # hard-negative mining pipeline (e.g. F2LLMParquetTask regardless of
+        # the registered metadata type).
         return _load_retrieval_data(
             task=task, max_num_queries=max_num_queries, subtask=subtask
         )
     elif task_type in ["Classification", "BinaryClassification", "Clustering"]:
-        # Handle classification, binary classification and clustering tasks.
-        # When the task uses hard-negative mining its loader returns
-        # RetrievalRawData, so we route it through the retrieval pipeline.
-        use_hn = getattr(task, "use_hard_negative_mining", False)
-        if use_hn:
-            return _load_retrieval_data(
-                task=task, max_num_queries=max_num_queries, subtask=subtask
-            )
         return _load_classification_data(task)
     else:
         raise ValueError(f"Unknown task type: {task_type}")
