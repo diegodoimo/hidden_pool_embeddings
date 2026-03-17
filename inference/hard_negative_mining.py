@@ -16,7 +16,7 @@ import torch.distributed as dist
 from datasets import Dataset, Features, Value, Sequence
 from tasks.load_datasets import load_task_data
 from tasks import get_task
-from tasks.task_categories import get_category_path
+from tasks.helpers import get_category_path
 from utils.dataloader_helpers import LenghtSortedSampler, collate_fn_with_padding
 from pathlib import Path
 import time

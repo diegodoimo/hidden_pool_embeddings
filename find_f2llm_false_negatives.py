@@ -50,6 +50,7 @@ from tasks import NAME_TO_TASK, TRANSLATE_F2LLM_NAME
 from tasks.f2llm_data_loaders import make_f2llm_task
 from utils.create_datasets import instruction_template_qwen3
 from utils.helpers import print_memory_consumed
+from tasks.helpers import validate_and_select_tasks
 
 # ---------------------------------------------------------------------------
 # Required parquet columns (from_f2llm_parquet contract)
@@ -74,6 +75,7 @@ _PATH_TO_SHORT_NAME = {
 # Argument parsing
 # ---------------------------------------------------------------------------
 
+
 def parse_args():
     import argparse
 
@@ -91,7 +93,7 @@ def parse_args():
         type=str,
         default="results/f2llm_data_no_instruct",
         help="Directory containing <source_name>.parquet files produced by "
-             "tokenize_data.py --f2llm --save_raw_data_only. Default: %(default)s",
+        "tokenize_data.py --f2llm --save_raw_data_only. Default: %(default)s",
     )
     parser.add_argument(
         "--output_dir",
@@ -106,7 +108,25 @@ def parse_args():
         default=None,
         metavar="SOURCE",
         help="Optional list of F2LLM source names to process "
-             "(e.g. arguana hotpotqa msmarco). If omitted, all files are processed.",
+        "(e.g. arguana hotpotqa msmarco). If omitted, all files are processed.",
+    )
+    parser.add_argument(
+        "--task_names",
+        type=str,
+        nargs="*",
+        default=None,
+        metavar="SOURCE",
+        help="Optional list of F2LLM source names to process "
+        "(e.g. arguana hotpotqa msmarco). If omitted, all files are processed.",
+    )
+    parser.add_argument(
+        "--task_types",
+        type=str,
+        nargs="*",
+        default=None,
+        metavar="SOURCE",
+        help="Optional list of F2LLM source names to process "
+        "(e.g. arguana hotpotqa msmarco). If omitted, all files are processed.",
     )
     parser.add_argument(
         "--max_length",
@@ -132,6 +152,7 @@ def parse_args():
 # ---------------------------------------------------------------------------
 # Schema validation
 # ---------------------------------------------------------------------------
+
 
 def _check_parquet_schema(parquet_path: str, rank: int) -> bool:
     """Return True iff the parquet has all columns expected by from_f2llm_parquet.
@@ -175,8 +196,7 @@ def _verify_all_schemas(parquet_files: list[str], rank: int) -> None:
     if bad:
         raise RuntimeError(
             f"Schema validation failed for {len(bad)} file(s): {bad}\n"
-            "All parquets must contain: "
-            + ", ".join(sorted(_REQUIRED_COLUMNS))
+            "All parquets must contain: " + ", ".join(sorted(_REQUIRED_COLUMNS))
         )
     print("All schemas OK.\n")
 
@@ -184,6 +204,7 @@ def _verify_all_schemas(parquet_files: list[str], rank: int) -> None:
 # ---------------------------------------------------------------------------
 # Task discovery
 # ---------------------------------------------------------------------------
+
 
 def build_tasks(input_dir: str, data_subset: list[str] | None, rank: int):
     """Discover parquet files, validate schemas, and build F2LLMParquetTask objects.
@@ -248,7 +269,11 @@ def build_tasks(input_dir: str, data_subset: list[str] | None, rank: int):
         print(
             f"\nTasks to process : {len(tasks)}"
             + (f"\nSkipped (subset) : {len(skipped_subset)}" if skipped_subset else "")
-            + (f"\nSkipped (no map) : {skipped_no_translate}" if skipped_no_translate else "")
+            + (
+                f"\nSkipped (no map) : {skipped_no_translate}"
+                if skipped_no_translate
+                else ""
+            )
             + (f"\nSkipped (no task): {skipped_no_task}" if skipped_no_task else "")
         )
         if tasks:
@@ -261,6 +286,7 @@ def build_tasks(input_dir: str, data_subset: list[str] | None, rank: int):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main():
     args = parse_args()
@@ -277,8 +303,13 @@ def main():
     torch.cuda.set_device(dist.get_rank())
     torch.set_float32_matmul_precision("high")
 
+    selected_tasks = None
+    if args.task_names or args.task_types:
+        selected_tasks = validate_and_select_tasks(args.task_names, args.task_types)
+
     # Discover and validate tasks (schema check on rank-0 before loading model).
-    tasks = build_tasks(args.input_dir, args.data_subset, rank)
+    # tasks = build_tasks(args.input_dir, args.data_subset, rank)
+    tasks = build_tasks(args.input_dir, selected_tasks, rank)
     if not tasks:
         if rank == 0:
             print("No tasks to process. Exiting.")
@@ -320,9 +351,9 @@ def main():
     # Build validator
     # -----------------------------------------------------------------------
     validator = F2LLMValidator(
-        path=args.output_dir,          # used only to mkdir on rank-0
+        path=args.output_dir,  # used only to mkdir on rank-0
         model_name=model_short,
-        task_names=None,               # not used by F2LLMValidator
+        task_names=None,  # not used by F2LLMValidator
         tokenizer=tokenizer,
         instruction_template=instruction_template_qwen3,
         padding_side="right",

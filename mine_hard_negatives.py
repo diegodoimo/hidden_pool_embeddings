@@ -6,28 +6,15 @@ from transformers import AutoModel, AutoTokenizer
 import torch.distributed as dist
 from utils.create_datasets import instruction_template_qwen3
 from datetime import timedelta
-from tasks import (
-    NAME_TO_TASK,
-    BINARY_CLASSIFICATION_TASKS,
-    CLASSIFICATION_TASKS,
-    NLI_TASKS,
-    STS_TASKS,
-    CLUSTERING_TASKS,
-    DATASETS_BY_SIZE,
-    
-)
-from tasks.task_categories import (
-    OPEN_DOMAIN_QA,
-    DOMAIN_SPECIFIC_QA,
-    GENERAL_RETRIEVAL,
-    FACT_VERIFICATION,
-    PARAPHRASE_DETECTION,
-    SCIENTIFIC_DOC_RETRIEVAL,
-    SUMMARIZATION,
-)
-
+from tasks.helpers import validate_and_select_tasks
 from utils.helpers import print_memory_consumed
 from models.modules import add_pooling_layers, last_token_pool
+
+
+path_to_name = {
+    "Qwen/Qwen3-Embedding-0.6B": "qwen3_600m",
+    "Qwen/Qwen3-Embedding-8B": "qwen3_8b",
+}
 
 
 def parse_args():
@@ -52,12 +39,6 @@ def parse_args():
     parser.add_argument("--iterative_encode_threshold", type=int, default=10**7)
     args = parser.parse_args()
     return args
-
-
-path_to_name = {
-    "Qwen/Qwen3-Embedding-0.6B": "qwen3_600m",
-    "Qwen/Qwen3-Embedding-8B": "qwen3_8b",
-}
 
 
 def main():
@@ -110,7 +91,7 @@ def main():
         max_length=max_length,
         add_special_tokens=False,
         eot_id=tokenizer.pad_token_id,
-        iterative_encode_threshold=args.iterative_encode_threshold
+        iterative_encode_threshold=args.iterative_encode_threshold,
     )
 
     if RANK == 0:
@@ -132,4 +113,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
