@@ -1,11 +1,16 @@
-from datasets import Dataset
+from datasets import Dataset, load_dataset
 import os
+from collections import Counter
 
+path = "/home/diego/Documents/area_science/ricerca/open/hidden_pool_embeddings/results/f2llm_annotated"
 path = "/home/diego/Documents/area_science/ricerca/open/hidden_pool_embeddings/results/f2llm_data_no_instruct"
-
-ds_name = "arguana"
+ds_name = "bioasq"
 path = os.path.join(path, f"{ds_name}.parquet")
-ds = Dataset.from_parquet(path)
+ds = load_dataset("parquet", data_files=path, split="train")
+
+Counter(ds["qwen3_600m_positive_rank"])
+ds["qwen3_600m_hard_negatives"][0]
+ds["negative_id"][0]
 
 
 def from_one_hf_dataset(
