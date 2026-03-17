@@ -1,303 +1,194 @@
-from datasets import Dataset
-import os
+"""Data loader for F2LLM datasets saved as local parquet files.
 
-path = "/home/diego/Documents/area_science/ricerca/open/hidden_pool_embeddings/results/f2llm_data_no_instruct"
+These parquet files are produced by:
+    python tokenize_data.py --f2llm --save_raw_data_only ...
 
-ds_name = "arguana"
-path = os.path.join(path, f"{ds_name}.parquet")
-ds = Dataset.from_parquet(path)
+Expected columns (written by _assign_dedup_ids in tokenize_data.py):
+    query_text    : str
+    positive_text : str
+    negative_text : list[str]   – one list per row
+    query_id      : str         – "query_<first_occurrence_idx>"
+    positive_id   : str         – "doc_<first_occurrence_idx>"
+    negative_id   : list[str]   – parallel to negative_text; shares "doc_*" namespace
+
+The loader mirrors tasks/retrieval_loaders.py::from_one_hf_dataset step by step,
+so the output RetrievalRawData is fully compatible with
+inference/hard_negative_mining.HardNegativesMiner.
+"""
+
+import gc
+import time
+from dataclasses import dataclass
+from typing import ClassVar, List, Optional
+
+import pandas as pd
+import torch.distributed as dist
+
+from tasks.abs_task import TaskMetadata
+from tasks.data_helpers import LazyCorpusDict, RetrievalRawData
+from utils.helpers import return_formatted
 
 
-def from_one_hf_dataset(
-    task, max_num_queries=None, rank=None, subtask=None
+def from_f2llm_parquet(
+    task,
+    max_num_queries: Optional[int] = None,
+    rank: Optional[int] = None,
+    subtask=None,
 ) -> RetrievalRawData:
-    """
-    Load data from a single HuggingFace dataset where queries and positives
-    are in the same dataset with matching indices.
+    """Load F2LLM data from a local parquet file produced by tokenize_data.py.
 
-    Used by: NaturalQuestions, ALL_NLI, PAQ, ELI5, TriviaQA, COLIEE,
-             S2ORC*, SPECTER, SentenceCompression, StackExchangeDup*, QQP, AmazonQA
-
-    Args:
-        task: Task object with dataset configuration
-        max_num_queries: Maximum number of queries to keep (default: 1 million)
-        rank: Distributed training rank (if None, obtained from dist.get_rank())
+    Mirrors retrieval_loaders.from_one_hf_dataset:
+      1. Load parquet → pandas DataFrame; drop null rows.
+      2. Reuse stored query_id / positive_id (already deduplicated by
+         _assign_dedup_ids — identical texts carry the same ID).
+      3. Collect unique negatives whose ID is not yet in the positive set
+         (IDs share the same "doc_*" namespace, so set-membership is sufficient).
+      4. Build document list with unique positives first (indices 0…n_positives-1)
+         followed by extra negatives.
+      5. Optionally limit to max_num_queries unique queries.
+      6. Return RetrievalRawData with LazyCorpusDicts.
     """
     rank = dist.get_rank() if rank is None else rank
 
     if rank == 0:
         start = time.time()
-        print("Loading dataset...")
+        print(f"Loading F2LLM parquet: {task.parquet_path}")
 
-    subset_name = task.hf_subset
-    if subtask is not None:
-        assert task.hf_subset is None
-        subset_name = subtask
+    # save_raw_data in tokenize_data.py writes all string columns as
+    # large_utf8 (64-bit offsets), so pd.read_parquet works correctly even
+    # for large datasets like bioasq whose list-column values exceed 2 GB.
+    df = pd.read_parquet(task.parquet_path)
 
-    revision = getattr(task, "revision", None)
-    dataset = _load_hf_dataset(task.hf_name, subset_name, task.split, revision=revision)
-    # _print_ram("after loading HF dataset", rank)
+    n_pairs_raw = len(df)
+    verbose = n_pairs_raw > 10**6
 
-    if task.preprocessor is not None:
-        dataset = task.preprocessor(
-            dataset,
-            task.query_name,
-            task.positive_name,
-        )
-
-    if task.decontaminator is not None:
-        dataset = task.decontaminator(
-            dataset,
-            task.query_name,
-            task.positive_name,
-        )
-    n_pairs = len(dataset)
-    verbose = False
-    if n_pairs > 10**6:
-        verbose = True
-
-    dist.barrier()
-    if rank == 0 and verbose:
-        print(f"Dataset loaded in {(time.time()-start)/60:.2f} min")
-        start = time.time()
-        print(f"num elements in dataset: {return_formatted(n_pairs)}")
-        print("building dataframes")
-
-    # title_name is the canonical attribute for single-dataset tasks,
-    # parallel to query_name / positive_name.
-    title_col = getattr(task, "title_name", None)
-    has_title = title_col is not None and title_col in dataset.column_names
-
-    # Check for negatives to include in corpus
-    has_negatives = task.negative_name is not None
-    neg_col = None
-    neg_title_col = None
-    if has_negatives:
-        neg_col = task.negative_name
-        if neg_col not in dataset.column_names:
-            has_negatives = False
-            neg_col = None
-        else:
-            # Convention: if a column named <negative_name>_title exists,
-            # use it for negative titles (created by preprocessors)
-            candidate = neg_col + "_title"
-            if candidate in dataset.column_names:
-                neg_title_col = candidate
-
-    # Convert Arrow -> pandas DataFrame in one shot (fast columnar conversion),
-    # avoiding the slow path of dataset[col] (Python list) -> pd.Series.
-    cols_to_load = [task.query_name, task.positive_name]
-    if has_title:
-        cols_to_load.append(title_col)
-    if has_negatives:
-        cols_to_load.append(neg_col)
-        if neg_title_col is not None:
-            cols_to_load.append(neg_title_col)
-    df = dataset.select_columns(cols_to_load).to_pandas()
-    # _print_ram("after to_pandas (before del dataset)", rank)
-
-    # Free the HF Arrow table — the data now lives in the pandas DataFrame.
-    # For large datasets (e.g. BioASQ, 14 M rows) this reclaims ~10-20 GB.
-    del dataset
-    gc.collect()
-    # _print_ram("after del dataset + gc", rank)
-    # --- OLD: dataset was not freed here, staying in memory alongside df ---
-
-    # Keep as pandas Series — no .tolist() needed.
-    # Dataset.from_dict() in dict_to_dataset() accepts Series directly,
-    # so the round-trip Arrow → list → Arrow is avoided for 20M strings.
-
-    # Drop rows where query or positive text is null (e.g. wikihow)
-    null_mask = df[task.query_name].isna() | df[task.positive_name].isna()
+    # ------------------------------------------------------------------
+    # 1. Drop rows where query or positive text is null.
+    # ------------------------------------------------------------------
+    null_mask = df["query_text"].isna() | df["positive_text"].isna()
     if null_mask.any():
-        n_null = null_mask.sum()
+        n_null = int(null_mask.sum())
         if rank == 0:
             print(f"Dropping {n_null} rows with null query or positive text")
         df = df[~null_mask].reset_index(drop=True)
 
-    query_texts = df[task.query_name]
-    positive_texts = df[task.positive_name]
-    titles = None
-    if has_title:
-        titles = df[title_col]
+    n_pairs = len(df)
 
-    # Convert Arrow -> numpy arrays directly (fastest path)
     dist.barrier()
     if rank == 0 and verbose:
-        print(f"preprocessing done in {(time.time()-start)/60:.2f} min")
-        start = time.time()
-        print("finding unique queries and positives items...")
+        print(f"Dataset loaded in {(time.time()-start)/60:.2f} min")
+        print(f"num elements in dataset: {return_formatted(n_pairs)}")
+        print("Finding unique queries and positives...")
 
-    query_ids, unique_query_ids, unique_query_idx, unique_query_texts, _ = deduplicate(
-        query_texts, prefix="query"
-    )
-    (
-        positive_ids,
-        unique_positive_ids,
-        unique_positive_idx,
-        unique_positive_texts,
-        unique_positive_titles,
-    ) = deduplicate(positive_texts, prefix="doc", titles=titles)
+    # ------------------------------------------------------------------
+    # 2a. Queries — reuse stored query_id.
+    #     Same text → same "query_*" ID (guaranteed by deduplicate in
+    #     _assign_dedup_ids), so no re-hashing is needed.
+    # ------------------------------------------------------------------
+    query_ids: List[str] = df["query_id"].tolist()
+    unique_q_mask = ~df["query_id"].duplicated(keep="first")
+    unique_query_ids: List[str] = df.loc[unique_q_mask, "query_id"].tolist()
+    unique_query_texts: List[str] = df.loc[unique_q_mask, "query_text"].tolist()
+
+    # ------------------------------------------------------------------
+    # 2b. Positives — reuse stored positive_id.
+    #     positive_id and negative_id share the same "doc_*" namespace:
+    #     if a negative text equals a positive text they carry the same ID.
+    # ------------------------------------------------------------------
+    positive_ids: List[str] = df["positive_id"].tolist()
+    unique_pos_mask = ~df["positive_id"].duplicated(keep="first")
+    unique_positive_ids: List[str] = df.loc[unique_pos_mask, "positive_id"].tolist()
+    unique_positive_texts: List[str] = df.loc[unique_pos_mask, "positive_text"].tolist()
     n_positives = len(unique_positive_ids)
-    # _print_ram("after deduplication", rank)
 
-    # Extract unique negative texts not already in positives
-    neg_ids = []
-    neg_texts = []
-    neg_titles_list = None
-    if has_negatives:
-        if neg_title_col is not None:
-            # Explode text and title columns in sync
-            neg_df = df[[neg_col, neg_title_col]].copy()
-            neg_df.columns = ["text", "title"]
-            neg_df = neg_df.explode(["text", "title"]).dropna(subset=["text"])
-            neg_df = neg_df.drop_duplicates(subset=["text"], keep="first").reset_index(
-                drop=True
-            )
-            pos_texts_set = set(unique_positive_texts.tolist())
-            neg_df = neg_df[~neg_df["text"].isin(pos_texts_set)].reset_index(drop=True)
-            neg_ids = [f"neg_{i}" for i in range(len(neg_df))]
-            neg_texts = neg_df["text"].tolist()
-            neg_titles_list = neg_df["title"].tolist()
-        else:
-            neg_series = (
-                df[neg_col]
-                .explode()
-                .dropna()
-                .drop_duplicates(keep="first")
-                .reset_index(drop=True)
-            )
-            pos_texts_set = set(unique_positive_texts.tolist())
-            neg_series = neg_series[~neg_series.isin(pos_texts_set)].reset_index(
-                drop=True
-            )
-            neg_ids = [f"neg_{i}" for i in range(len(neg_series))]
-            neg_texts = neg_series.tolist()
-        if rank == 0 and verbose:
-            print(
-                f"Found {return_formatted(len(neg_ids))} unique negatives not in positives"
-            )
+    # ------------------------------------------------------------------
+    # 3. Negatives: unique "doc_*" IDs not already covered by positives.
+    #    Explode list columns in parallel, deduplicate by ID, then filter.
+    # ------------------------------------------------------------------
+    pos_id_set = set(unique_positive_ids)
 
-    # Free the DataFrame — column Series (query_texts, positive_texts, titles)
-    # keep the underlying data alive via their own references.
-    del df
+    neg_id_col = df["negative_id"].explode().reset_index(drop=True)
+    neg_text_col = df["negative_text"].explode().reset_index(drop=True)
+    neg_df = pd.DataFrame({"id": neg_id_col, "text": neg_text_col}).dropna(subset=["text"])
+    neg_df = (
+        neg_df
+        .drop_duplicates(subset=["id"], keep="first")
+        .loc[lambda d: ~d["id"].isin(pos_id_set)]
+        .reset_index(drop=True)
+    )
+    neg_ids: List[str] = neg_df["id"].tolist()
+    neg_texts: List[str] = neg_df["text"].tolist()
+
+    del df, neg_df, neg_id_col, neg_text_col
     gc.collect()
-    # _print_ram("after del df + gc", rank)
-    # --- OLD: df was not freed here, staying in memory ---
 
-    assert set(positive_ids).issubset(
-        set(unique_positive_ids)
-    ), "filtered qrels contain positive IDs not in corpus"
+    if rank == 0 and verbose:
+        print(f"Found {return_formatted(len(neg_ids))} unique negatives not in positives")
 
-    # Apply query limiting only if needed
+    # ------------------------------------------------------------------
+    # Sanity check before optional limiting.
+    # ------------------------------------------------------------------
+    assert set(positive_ids).issubset(set(unique_positive_ids)), (
+        "positive IDs contain entries not found in unique positives — data integrity error"
+    )
+
+    # ------------------------------------------------------------------
+    # 5. Optional query limiting (mirrors from_one_hf_dataset).
+    # ------------------------------------------------------------------
     if max_num_queries is not None and len(unique_query_ids) > max_num_queries:
         if rank == 0:
-            start = time.time()
             print(
-                f"Number of unique queries {return_formatted(len(unique_query_ids))} > {max_num_queries//10**6}M: limiting queries"
+                f"Limiting queries from {return_formatted(len(unique_query_ids))} "
+                f"to {return_formatted(max_num_queries)}"
             )
 
-        unique_query_texts = unique_query_texts[:max_num_queries]
+        allowed_query_ids = set(unique_query_ids[:max_num_queries])
         unique_query_ids = unique_query_ids[:max_num_queries]
-        unique_query_idx = unique_query_idx[:max_num_queries]
-        # Apply query limiting and reorganize documents
-        (
-            query_ids,
-            positive_ids,
-            unique_positive_ids,
-            unique_positive_texts,
-            unique_positive_titles,
-            n_positives,
-        ) = limit_number_of_queries(
-            query_ids=query_ids,
-            positive_ids=positive_ids,
-            unique_query_idx=unique_query_idx,
-            n_pairs=n_pairs,
-            unique_positive_ids=unique_positive_ids,
-            unique_positive_texts=unique_positive_texts,
-            unique_positive_titles=unique_positive_titles,
-            has_title=has_title,
-        )
+        unique_query_texts = unique_query_texts[:max_num_queries]
 
-        if rank == 0 and verbose:
-            print(f"Queries limited in {(time.time()-start)/60:.2f} min")
+        # Keep only qrel pairs within the surviving query set.
+        keep_pairs = [i for i, qid in enumerate(query_ids) if qid in allowed_query_ids]
+        query_ids = [query_ids[i] for i in keep_pairs]
+        positive_ids = [positive_ids[i] for i in keep_pairs]
 
-    assert set(positive_ids).issubset(
-        set(unique_positive_ids)
-    ), "filtered qrels contain positive IDs  in corpus"
+        # Recompute which positives are still referenced by surviving pairs.
+        referenced_pos = set(positive_ids)
+        still_in = [uid in referenced_pos for uid in unique_positive_ids]
+        unique_positive_ids = [uid for uid, m in zip(unique_positive_ids, still_in) if m]
+        unique_positive_texts = [t for t, m in zip(unique_positive_texts, still_in) if m]
+        n_positives = len(unique_positive_ids)
 
-    dist.barrier()
-    if rank == 0 and verbose:
-        print(f"remapping done in {(time.time()-start)/60:.2f} min")
-        start = time.time()
-        print("generating corpus dict...")
+        # Re-filter negatives: an ID that moved from "extra" to "positive" after
+        # limiting must be removed from the negative list to avoid duplication.
+        pos_id_set = set(unique_positive_ids)
+        keep_neg = [i for i, nid in enumerate(neg_ids) if nid not in pos_id_set]
+        neg_ids = [neg_ids[i] for i in keep_neg]
+        neg_texts = [neg_texts[i] for i in keep_neg]
 
-    # Build document lists: positives first, then negatives (if any)
-    if neg_ids:
-        document_ids = list(unique_positive_ids) + neg_ids
-        document_texts = list(unique_positive_texts) + neg_texts
-        if has_title and unique_positive_titles is not None:
-            if neg_titles_list is not None:
-                document_titles = list(unique_positive_titles) + neg_titles_list
-            else:
-                document_titles = list(unique_positive_titles) + [""] * len(neg_ids)
-        else:
-            document_titles = unique_positive_titles
-    else:
-        document_ids = unique_positive_ids
-        document_texts = unique_positive_texts
-        document_titles = unique_positive_titles
+    # ------------------------------------------------------------------
+    # 4. Build document list: unique positives first, extra negatives after.
+    # ------------------------------------------------------------------
+    document_ids = list(unique_positive_ids) + neg_ids
+    document_texts = list(unique_positive_texts) + neg_texts
+    document_titles = None  # F2LLM parquets have no title column
 
-    # Build corpus_dict with unique entries (bijective doc_id <-> document)
-    # Use LazyCorpusDict to avoid materialising a dict-of-dicts, which
-    # would duplicate all text data and add ~4-7 GB of Python object
-    # overhead for multi-million-row datasets.
-
-    # corpus_dict = LazyCorpusDict(
-    #     ids=document_ids,
-    #     texts=document_texts,
-    #     titles=document_titles if has_title else None,
-    # )
-
-    # query_dict = LazyCorpusDict(
-    #     ids=unique_query_ids,
-    #     texts=unique_query_texts,
-    # )
-
-    # --- OLD: corpus_dict and query_dict were full Python dicts ---
-    if has_title:
-        corpus_dict = {
-            id_: {"text": doc_text, "title": doc_title}
-            for id_, doc_text, doc_title in zip(
-                document_ids, document_texts, document_titles
-            )
-        }
-    else:
-        corpus_dict = {
-            id_: {"text": doc_text}
-            for id_, doc_text in zip(document_ids, document_texts)
-        }
-
-    query_dict = {
-        id_: {"text": text} for id_, text in zip(unique_query_ids, unique_query_texts)
-    }
-    # _print_ram("after building CorpusDict", rank)
-    assert set(document_ids) == set(corpus_dict.keys())
-    dist.barrier()
-    if rank == 0 and verbose:
-        print(f"corpus dict built in {(time.time()-start)/60:.2f} min")
+    assert set(positive_ids).issubset(set(document_ids)), (
+        "filtered qrels contain positive IDs not in the document list"
+    )
 
     if rank == 0:
-        print(f"Found {return_formatted(len(unique_query_texts))} unique queries")
-        print(
-            f"Total number of query-positive pairs: {return_formatted(len(query_ids))}"
-        )
-        print(
-            f"Positives referenced by pairs (n_positives): {return_formatted(n_positives)}"
-        )
-        print(
-            f"Total unique documents in corpus: {return_formatted(len(document_ids))}"
-        )
+        print(f"Found {return_formatted(len(unique_query_ids))} unique queries")
+        print(f"Total query-positive pairs: {return_formatted(len(query_ids))}")
+        print(f"Positives in corpus (n_positives): {return_formatted(n_positives)}")
+        print(f"Total documents in corpus: {return_formatted(len(document_ids))}")
+
+    # ------------------------------------------------------------------
+    # 6. Lightweight lookup dicts (no text duplication in RAM).
+    # ------------------------------------------------------------------
+    corpus_dict = LazyCorpusDict(ids=document_ids, texts=document_texts)
+    query_dict = LazyCorpusDict(ids=unique_query_ids, texts=unique_query_texts)
+
+    dist.barrier()
 
     return RetrievalRawData(
         query_ids=query_ids,
@@ -309,6 +200,80 @@ def from_one_hf_dataset(
         unique_query_ids=unique_query_ids,
         corpus_dict=corpus_dict,
         query_dict=query_dict,
-        has_title=has_title,
+        has_title=False,
         n_positives=n_positives,
+    )
+
+
+@dataclass
+class F2LLMParquetTask:
+    """Thin task descriptor for a single F2LLM dataset loaded from a local parquet.
+
+    Compatible with tasks.load_datasets.load_task_data and
+    inference.hard_negative_mining.HardNegativesMiner.
+
+    Parameters
+    ----------
+    parquet_path : str
+        Absolute path to the parquet written by:
+            python tokenize_data.py --f2llm --save_raw_data_only ...
+    metadata : TaskMetadata
+        Must have type="Retrieval" and a prompt dict matching the target
+        instruction template (e.g. TaskMetadata(type="Retrieval", prompt={...})).
+        Use make_f2llm_task() to inherit the prompt from the registered task.
+
+    Class-level attributes (not dataclass fields, shared by all instances):
+        loader               : from_f2llm_parquet (called by load_task_data)
+        has_multiple_datasets: False
+        subtasks             : None  (single-split dataset)
+        negative_name        : None
+    """
+
+    parquet_path: str
+    metadata: TaskMetadata
+
+    # Not annotated → treated as class attributes, not dataclass fields.
+    # staticmethod prevents Python's descriptor protocol from binding the
+    # instance as the first argument when loader_func is retrieved via
+    # getattr(task, "loader"), which would cause "multiple values for
+    # argument 'task'" when _load_retrieval_data calls loader_func(task=task, ...).
+    loader = staticmethod(from_f2llm_parquet)
+    has_multiple_datasets = False
+    subtasks = None
+    negative_name = None
+    # Ensure load_task_data always routes through _load_retrieval_data, even
+    # for tasks whose metadata.type is Classification / Clustering / STS / etc.
+    # All F2LLM parquets share the same retrieval-style schema regardless of
+    # the original task type.
+    use_hard_negative_mining = True
+
+
+def make_f2llm_task(ds_name: str, parquet_path: str) -> F2LLMParquetTask:
+    """Factory: build an F2LLMParquetTask inheriting the prompt from the registered task.
+
+    The instruction-template prompt stored in the original task class is reused
+    so that encoding at mining time uses the same prompt as training.
+
+    Parameters
+    ----------
+    ds_name : str
+        Dataset name as registered in tasks.NAME_TO_TASK (e.g. "arguana").
+    parquet_path : str
+        Path to the corresponding parquet saved by tokenize_data.py.
+
+    Returns
+    -------
+    F2LLMParquetTask
+        Ready to be passed to load_task_data() or HardNegativesMiner.
+    """
+    from tasks import NAME_TO_TASK  # local import to avoid circular dependency
+
+    original_task = NAME_TO_TASK.get(ds_name)
+    if original_task is None:
+        raise ValueError(
+            f"Unknown dataset '{ds_name}'. Available: {sorted(NAME_TO_TASK.keys())}"
+        )
+    return F2LLMParquetTask(
+        parquet_path=parquet_path,
+        metadata=original_task.metadata,
     )

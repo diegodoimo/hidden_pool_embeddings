@@ -417,7 +417,10 @@ def filter_qrels_by_length(
 
     # Convert boolean ChunkedArray → numpy (cheap: only bools, not strings)
     # and use .select() which preserves Dataset metadata / features.
-    valid_indices = np.nonzero(keep_mask.combine_chunks().to_numpy())[0]
+    # zero_copy_only=False is required for boolean arrays: Arrow uses bit-packed
+    # storage which is incompatible with NumPy's byte-per-element layout, so a
+    # copy is always necessary and must be explicitly allowed.
+    valid_indices = np.nonzero(keep_mask.combine_chunks().to_numpy(zero_copy_only=False))[0]
     return qrels_dataset.select(valid_indices)
 
 

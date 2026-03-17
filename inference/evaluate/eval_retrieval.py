@@ -11,8 +11,7 @@ from mteb._evaluators.retrieval_metrics import (
     make_score_dict,
 )
 
-from inference.helpers import abs_task_preprocessing, search, encode
-from inference.hard_negative_mining import estimate_chunk_sizes
+from inference.helpers import abs_task_preprocessing, search, encode, estimate_chunk_sizes
 from utils.create_datasets import create_dataset
 from utils.dataloader_helpers import LenghtSortedSampler
 
