@@ -1,20 +1,14 @@
-from datasets import load_dataset
-
-from tasks.retrieval_tasks import *
-from datasets import Dataset, Features, Value
-import time
+# from tasks.retrieval_tasks import *
+from datasets import Dataset
 import os
 import gc
 import tempfile
-from multiprocessing import Pool
-from dataclasses import dataclass
-from typing import List, Optional, Dict, Set, Union, Tuple
+from typing import Dict, Union, Tuple
 import pyarrow as pa
 import pyarrow.ipc as pa_ipc
 from tasks.data_helpers import (
     dict_to_dataset,
     create_qrels_dataset,
-    RetrievalRawData,
     ClassificationRawData,
     get_dict,
 )
@@ -76,7 +70,9 @@ def _load_retrieval_data(
         tuple of (hf_dataset, corpus_dict, has_title, n_positives)
     """
     # Dispatch to appropriate loader based on task configuration
-    rank = dist.get_rank()
+    rank = 0
+    if dist.is_initialized():
+        rank = dist.get_rank()
 
     loader_func = getattr(task, "loader", None)
 
@@ -106,6 +102,7 @@ def _load_retrieval_data(
 
     if rank == 0 and verbose:
         print("Building queries dataset")
+
     unique_queries_ds = dict_to_dataset(
         texts=raw_data.unique_query_texts, ids=raw_data.unique_query_ids
     )

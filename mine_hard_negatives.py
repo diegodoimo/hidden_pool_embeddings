@@ -44,7 +44,6 @@ def parse_args():
 def main():
     args = parse_args()
 
-    WORLD_SIZE = int(os.environ["WORLD_SIZE"])
     LOCAL_RANK = int(os.environ["LOCAL_RANK"])
     RANK = int(os.environ["RANK"])
 

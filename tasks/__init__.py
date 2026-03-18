@@ -485,68 +485,6 @@ SUMMARIZATION = [
     "wikihow",
 ]
 
-# # ============================================================================
-# # NLI TASK CATEGORIES
-# # ============================================================================
-
-# NLI_TASKS = [
-#     "snli",
-#     "mnli",
-#     "anli",
-#     "xnli",
-#     "all_nli",  # Combined NLI dataset
-# ]
-
-# # ============================================================================
-# # STS TASK CATEGORIES
-# # ============================================================================
-
-# STS_TASKS = [
-#     "sts12",
-#     "sts22",
-#     "stsbenchmark",
-# ]
-
-# # ============================================================================
-# # CLASSIFICATION TASK CATEGORIES
-# # ============================================================================
-
-# BINARY_CLASSIFICATION_TASKS = [
-#     "toxic_conversations",
-#     "amazon_counterfactual",
-#     "amazon_polarity",
-#     "imdb",
-#     "cola",
-# ]
-
-# MULTIWAY_CLASSIFICATION_TASKS = [
-#     "banking77",
-# ]
-
-# # ============================================================================
-# # CLUSTERING TASK CATEGORIES
-# # ============================================================================
-
-# CLUSTERING_TASKS = [
-#     "amazon_reviews",
-#     "emotion",
-#     "mtop_intent",
-#     "mtop_domain",
-#     "massive_scenario",
-#     "massive_intent",
-#     "tweet_sentiment",
-#     "arxiv_clustering_p2p",
-#     "arxiv_clustering_s2s",
-#     "biorxiv_clustering_p2p",
-#     "biorxiv_clustering_s2s",
-#     "medrxiv_clustering_p2p",
-#     "medrxiv_clustering_s2s",
-#     "reddit_clustering_p2p",
-#     "reddit_clustering_s2s",
-#     "stackexchange_clustering_p2p",
-#     "stackexchange_clustering_s2s",
-#     "twentynewsgroups",
-# ]
 
 # ============================================================================
 # TASK TO CATEGORY MAPPING
@@ -643,3 +581,97 @@ DATASETS_BY_SIZE = [
     # "paq",  # 73,376,018
     # "s2orc_title_abstract",  # 82,561,651
 ]
+
+
+# -------------------------------------------------------------------------
+
+
+# Example subset of datasets (task names only). Paths are expanded via
+# NAME_TO_TASK_SUBTASK_PATH where needed. Use as datasets_subset=QWEN3_600M_DATASET_SUBSET.
+DATASET_SUBSET = [
+    "msmarco",
+    "nfcorpus",
+    "arguana",
+    "fiqa2018",
+    "naturalquestions",
+    "squad",
+    "scifact",
+    "xsum",
+    "stsbenchmark",
+    "snli",
+]
+
+
+# MTEB 20-task subset (mteb_20task_subset_selection.md) - minimizes eval time while preserving category averages
+EVAL_TASK_DICT = {
+    "mteb_eng_v2_reduced": [
+        "SCIDOCS",
+        "CQADupstackGamingRetrieval",
+        "CQADupstackUnixRetrieval",
+        "HotpotQAHardNegatives",
+        "TRECCOVID",
+        "TwentyNewsgroupsClustering.v2",
+        "BiorxivClusteringP2P.v2",
+        "MedrxivClusteringS2S.v2",
+        "StackExchangeClustering.v2",
+        "AskUbuntuDupQuestions",
+        "BIOSSES",
+        "STS17",
+        "STS12",
+        "AmazonCounterfactualClassification",
+        "MassiveScenarioClassification",
+        "TweetSentimentExtractionClassification",
+        "MTOPDomainClassification",
+        "TwitterSemEval2015",
+        "SprintDuplicateQuestions",
+        "SummEvalSummarization.v2",
+    ],
+    "mteb_eng_v2_full": [
+        "ArguAna",
+        "ArXivHierarchicalClusteringP2P",
+        "ArXivHierarchicalClusteringS2S",
+        "AskUbuntuDupQuestions",
+        "BIOSSES",
+        "Banking77Classification",
+        "BiorxivClusteringP2P.v2",
+        "CQADupstackGamingRetrieval",
+        "CQADupstackUnixRetrieval",
+        "ClimateFEVERHardNegatives",
+        "FEVERHardNegatives",
+        "FiQA2018",
+        "HotpotQAHardNegatives",
+        "ImdbClassification",
+        "MTOPDomainClassification",
+        "MassiveIntentClassification",
+        "MassiveScenarioClassification",
+        "MedrxivClusteringP2P.v2",
+        "MedrxivClusteringS2S.v2",
+        "MindSmallReranking",
+        "SCIDOCS",
+        "SICK-R",
+        "STS12",
+        "STS13",
+        "STS14",
+        "STS15",
+        "STSBenchmark",
+        "SprintDuplicateQuestions",
+        "StackExchangeClustering.v2",
+        "StackExchangeClusteringP2P.v2",
+        "TRECCOVID",
+        "Touche2020Retrieval.v3",
+        "ToxicConversationsClassification",
+        "TweetSentimentExtractionClassification",
+        "TwentyNewsgroupsClustering.v2",
+        "TwitterSemEval2015",
+        "TwitterURLCorpus",
+        "SummEvalSummarization.v2",
+        "AmazonCounterfactualClassification",
+        "STS17",
+        "STS22.v2",
+    ],
+}
+
+
+assert set(EVAL_TASK_DICT["mteb_eng_v2_reduced"]).issubset(
+    EVAL_TASK_DICT["mteb_eng_v2_full"]
+)

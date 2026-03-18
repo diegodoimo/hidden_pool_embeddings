@@ -1,8 +1,4 @@
-
-
-
-
-EMBEDDING_GEMMA_PROMPTS = {
+EMBEDDINGGEMMA_PROMPTS = {
     "document": "title: {title} | text: ",
     "BitextMining": "task: search result | query: ",
     "Classification": "task: classification | query: ",
@@ -14,7 +10,154 @@ EMBEDDING_GEMMA_PROMPTS = {
     "Retrieval": "task: search result | query: ",
     "Retrieval-document": "title: none | text: ",
     "STS": "task: sentence similarity | query: ",
-    "Summarization": "task: summarization | query: "
+    "Summarization": "task: summarization | query: ",
+}
+
+
+@dataclass
+class TrainTaskMetadata:
+    type: str
+    prompt: str = None
+
+
+TASK_TYPE_TO_TASK_METADATA = {
+    "Retrieval": TrainTaskMetadata(
+        type="Retrieval", prompt=EMBEDDINGGEMMA_PROMPTS["Retrieval"]
+    ),
+    "PairClassification": TrainTaskMetadata(
+        type="PairClassification", prompt=EMBEDDINGGEMMA_PROMPTS["PairClassification"]
+    ),
+    "Summarization": TrainTaskMetadata(
+        type="Summarization", prompt=EMBEDDINGGEMMA_PROMPTS["Summarization"]
+    ),
+    "Reranking": TrainTaskMetadata(
+        type="Reranking", prompt=EMBEDDINGGEMMA_PROMPTS["Reranking"]
+    ),
+    "STS": TrainTaskMetadata(type="STS", prompt=EMBEDDINGGEMMA_PROMPTS["STS"]),
+    "Classification": TrainTaskMetadata(
+        type="Classification", prompt=EMBEDDINGGEMMA_PROMPTS["Classification"]
+    ),
+    "Clustering": TrainTaskMetadata(
+        type="Clustering", prompt=EMBEDDINGGEMMA_PROMPTS["Clustering"]
+    ),
+}
+
+
+# delclared in the paper but not true. There are a lot of paraphrases for a single dataset.
+
+# Dataset name -> prompt
+F2LLM_PROMPTS = {
+    # Retrieval — question answering
+    "arguana": "Given a question, retrieve passages that answer the question.",
+    "squad": "Given a question, retrieve passages that answer the question.",
+    "bioasq": "Given a question, retrieve passages that answer the question.",
+    "nfcorpus": "Given a question, retrieve passages that answer the question.",
+    "miracl": "Given a question, retrieve passages that answer the question.",
+    "mrtydi": "Given a question, retrieve passages that answer the question.",
+    # Retrieval — web search
+    "paq": "Given a web search query, retrieve relevant passages that answer the query.",
+    "stackexchange": "Given a web search query, retrieve relevant passages that answer the query.",
+    "msmarco": "Given a web search query, retrieve relevant passages that answer the query.",
+    "naturalquestions": "Given a web search query, retrieve relevant passages that answer the query.",
+    # Retrieval — NLI / entailment
+    "snli": "Given a premise, retrieve hypotheses that are entailed by the premise.",
+    "mnli": "Given a premise, retrieve hypotheses that are entailed by the premise.",
+    "anli": "Given a premise, retrieve hypotheses that are entailed by the premise.",
+    # Retrieval — misc
+    "hotpotqa": "Given a multi-hop question, retrieve passages that answer the question.",
+    "fever": "Given a claim, retrieve documents that support or refute the claim.",
+    "eli5": "Given a question from Reddit ELI5 forum, retrieve passages that answer it.",
+    "fiqa2018": "Given a financial question, retrieve passages that answer the question.",
+    "scifact": "Given a scientific claim, retrieve passages that support or refute the claim.",
+    "triviaqa": "Given a trivia question, retrieve passages that can answer it.",
+    "coliee": "Given a legal statement, retrieve articles that support it.",
+    "pubmedqa": "Given a question, retrieve paper abstracts from PubMed that can answer it.",
+    "s2orc_title_abstract": "Given a paper's title, retrieve the corresponding abstract.",
+    "s2orc_title_citation": "Given a paper's title, retrieve papers that cite it.",
+    "s2orc_abstract_citation": "Given a paper's abstract, retrieve abstract of papers that cite it.",
+    "amazonqa": "Given a question about a product, retrieve Amazon reviews that can help answer it.",
+    "specter": "Given a scientific paper title, retrieve paper titles that are cited by the given paper.",
+    "xsum": "Given a news summary, retrieve the original news article.",
+    "cnndm": "Given a news summary, retrieve the original news article.",
+    "sentence_compression": "Given a compressed sentence, retrieve the original sentence before compression.",
+    "qqp": "Given a question, retrieve questions that are semantically equivalent.",
+    "stackexchange_dup_s2s": "Given a question, retrieve questions that are semantically equivalent.",
+    "stackexchange_dup_p2p": "Given a question, retrieve questions that are semantically equivalent.",
+    "stackoverflow_dup": "Retrieve duplicate questions from StackOverflow forum.",
+    "sts12": "Retrieve semantically similar text.",
+    "sts22": "Retrieve semantically similar text.",
+    "stsbenchmark": "Retrieve semantically similar text.",
+    # Classification
+    "amazon_counterfactual": "Classify a given Amazon customer review text as either counterfactual or not counterfactual.",
+    "amazon_polarity": "Classify the given Amazon review into positive or negative sentiment.",
+    "imdb": "Classify the sentiment expressed in the given movie review text from the IMDB dataset.",
+    "toxic_conversations": "Classify the given comments as either toxic or not toxic.",
+    "cola": "Classify the given sentence as linguistically acceptable or not acceptable.",
+    # Clustering
+    "amazon_reviews": "Classify the given Amazon review into its appropriate rating category.",
+    "banking77": "Given an online banking query, find the corresponding intents.",
+    "emotion": "Classify the emotion expressed in the given Twitter message into one of the six emotions: anger, fear, joy, love, sadness, and surprise.",
+    "mtop_intent": "Classify the intent of the given utterance in task-oriented conversation.",
+    "mtop_domain": "Classify the intent domain of the given utterance in task-oriented conversation.",
+    "massive_scenario": "Given a user utterance as query, find the user scenarios.",
+    "massive_intent": "Given a user utterance as query, find the user intents.",
+    "tweet_sentiment": "Classify the sentiment of a given tweet as either positive, negative, or neutral.",
+    "arxiv_clustering_p2p": "Identify the main and secondary category of arXiv papers based on the titles and abstracts.",
+    "arxiv_clustering_s2s": "Identify the main and secondary category of arXiv papers based on the titles.",
+    "biorxiv_clustering_p2p": "Identify the main category of bioRxiv papers based on the titles and abstracts.",
+    "biorxiv_clustering_s2s": "Identify the main category of bioRxiv papers based on the titles.",
+    "medrxiv_clustering_p2p": "Identify the main category of medRxiv papers based on the titles and abstracts.",
+    "medrxiv_clustering_s2s": "Identify the main category of medRxiv papers based on the titles.",
+    "reddit_clustering_p2p": "Identify the topic or theme of Reddit posts based on the titles and posts.",
+    "reddit_clustering_s2s": "Identify the topic or theme of Reddit posts based on the titles.",
+    "stackexchange_clustering_p2p": "Identify the topic or theme of StackExchange posts based on the given paragraphs.",
+    "stackexchange_clustering_s2s": "Identify the topic or theme of StackExchange posts based on the titles.",
+    "twentynewsgroups": "Identify the topic or theme of the given news articles.",
+}
+
+
+F2LLM_TEST_PROMPTS = {
+    "AmazonCounterfactualClassification": "Classify a given Amazon customer review text as either counterfactual or not counterfactual.",
+    "Banking77Classification": "Given an online banking query, find the corresponding intents.",
+    "ImdbClassification": "Classify the sentiment expressed in the given movie review text from the IMDB dataset.",
+    "MTOPDomainClassification": "Classify the intent domain of the given utterance in task-oriented conversation.",
+    "MassiveIntentClassification": "Given a user utterance as query, find the user intents.",
+    "MassiveScenarioClassification": "Given a user utterance as query, find the user scenarios.",
+    "ToxicConversationsClassification": "Classify the given comments as either toxic or not toxic.",
+    "TweetSentimentExtractionClassification": "Classify the sentiment of a given tweet as either positive, negative, or neutral",
+    "ArXivHierarchicalClusteringP2P": "Identify the main and secondary category of arXiv papers based on the titles and abstracts.",
+    "ArXivHierarchicalClusteringS2S": "Identify the main and secondary category of arXiv papers based on the titles.",
+    "BiorxivClusteringP2P.v2": "Identify the main category of bioRxiv papers based on the titles and abstracts.",
+    "MedrxivClusteringP2P.v2": "Identify the main category of medRxiv papers based on the titles and abstracts.",
+    "MedrxivClusteringS2S.v2": "Identify the main category of medRxiv papers based on the titles.",
+    "StackExchangeClustering.v2": "Identify the topic or theme of StackExchange posts based on the titles.",
+    "StackExchangeClusteringP2P.v2": "Identify the topic or theme of StackExchange posts based on the given paragraphs.",
+    "TwentyNewsgroupsClustering.v2": "Identify the topic or theme of the given news articles.",
+    "SprintDuplicateQuestions": "Retrieve duplicate questions from Sprint forum.",
+    "TwitterSemEval2015": "Retrieve tweets that are semantically similar to the given tweet.",
+    "TwitterURLCorpus": "Retrieve tweets that are semantically similar to the given tweet.",
+    "AskUbuntuDupQuestions": "Retrieve duplicate questions from AskUbuntu forum.",
+    "MindSmallReranking": "Retrieve relevant news articles based on user browsing history.",
+    "ArguAna": "Given a claim, find documents that refute the claim.",
+    "CQADupstackGamingRetrieval": "Given a question, retrieve questions that are semantically equivalent.",
+    "CQADupstackUnixRetrieval": "Given a question, retrieve questions that are semantically equivalent.",
+    "ClimateFEVERHardNegatives": "Given a claim about climate change, retrieve documents that support or refute the claim.",
+    "FEVERHardNegatives": "Given a claim, retrieve documents that support or refute the claim.",
+    "FiQA2018": "Given a financial question, retrieve passages that answer the question.",
+    "HotpotQAHardNegatives": "Given a multi-hop question, retrieve passages that answer the question.",
+    "SCIDOCS": "Given a scientific paper title, retrieve paper abstracts that are cited by the given paper.",
+    "TRECCOVID": "Given a query on COVID-19, retrieve documents that answer the query.",
+    "Touche2020Retrieval.v3": "Given a question, retrieve passages that answer the question.",
+    "BIOSSES": "Retrieve semantically similar text.",
+    "SICK-R": "Retrieve semantically similar text.",
+    "STS12": "Retrieve semantically similar text.",
+    "STS13": "Retrieve semantically similar text.",
+    "STS14": "Retrieve semantically similar text.",
+    "STS15": "Retrieve semantically similar text.",
+    "STS17": "Retrieve semantically similar text.",
+    "STS22.v2": "Retrieve semantically similar text.",
+    "STSBenchmark": "Retrieve semantically similar text.",
+    "SummEvalSummarization.v2": "Given a news summary, retrieve other semantically similar summaries.",
 }
 
 
@@ -116,7 +259,7 @@ QWEN3_PROMPTS = {
     "PolEmo2.0-IN": "Classify the sentiment of in-domain (medicine and hotels) online reviews",
     "PolEmo2.0-OUT": "Classify the sentiment of out-of-domain (products and school) online reviews",
     "AllegroReviews": "Classify the sentiment of reviews from e-commerce marketplace Allegro",
-    "PAC": "Classify the sentence into one of the two types: \"BEZPIECZNE_POSTANOWIENIE_UMOWNE\" and \"KLAUZULA_ABUZYWNA\"",
+    "PAC": 'Classify the sentence into one of the two types: "BEZPIECZNE_POSTANOWIENIE_UMOWNE" and "KLAUZULA_ABUZYWNA"',
     "SICK-E-PL": "Retrieve semantically similar text",
     "SICK-R-PL": "Retrieve semantically similar text",
     "STS22": "Retrieve semantically similar text",
@@ -272,5 +415,5 @@ QWEN3_PROMPTS = {
     "CQADupstackUnixRetrieval": "Given a question, retrieve detailed question descriptions from Stackexchange that are duplicates to the given question",
     "STS16": "Retrieve semantically similar text",
     "SummEval": "Retrieve semantically similar text",
-    "ATEC": "Retrieve semantically similar text"
+    "ATEC": "Retrieve semantically similar text",
 }

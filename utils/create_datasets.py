@@ -22,188 +22,16 @@ import hashlib
 from typing import List, Optional
 from dataclasses import dataclass
 
-from tasks import NAME_TO_TASK_TYPE
+from tasks import NAME_TO_TASK_TYPE, EVAL_TASK_DICT
 import pyarrow as pa
 import pyarrow.compute as pc
-
+from tasks.prompts import (
+    F2LLM_TEST_PROMPTS,
+    EMBEDDINGGEMMA_PROMPTS,
+    TASK_TYPE_TO_TASK_METADATA,
+)
 
 disable_progress_bars()
-
-# EMBEDDINGGEMMA
-TASK_PROMPTS = {
-    "document": "title: {title} | text: ",
-    "BitextMining": "task: search result | query: ",
-    "Classification": "task: classification | query: ",
-    "Clustering": "task: clustering | query: ",
-    "InstructionRetrieval": "task: code retrieval | query: ",
-    "MultilabelClassification": "task: classification | query: ",
-    "PairClassification": "task: sentence similarity | query: ",
-    "Reranking": "task: search result | query: ",
-    "Retrieval": "task: search result | query: ",
-    "Retrieval-document": "title: none | text: ",
-    "STS": "task: sentence similarity | query: ",
-    "Summarization": "task: summarization | query: ",
-}
-
-
-@dataclass
-class TrainTaskMetadata:
-    type: str
-    prompt: str = None
-
-
-TASK_TYPE_TO_TASK_METADATA = {
-    "Retrieval": TrainTaskMetadata(type="Retrieval", prompt=TASK_PROMPTS["Retrieval"]),
-    "PairClassification": TrainTaskMetadata(
-        type="PairClassification", prompt=TASK_PROMPTS["PairClassification"]
-    ),
-    "Summarization": TrainTaskMetadata(
-        type="Summarization", prompt=TASK_PROMPTS["Summarization"]
-    ),
-    "Reranking": TrainTaskMetadata(type="Reranking", prompt=TASK_PROMPTS["Reranking"]),
-    "STS": TrainTaskMetadata(type="STS", prompt=TASK_PROMPTS["STS"]),
-    "Classification": TrainTaskMetadata(
-        type="Classification", prompt=TASK_PROMPTS["Classification"]
-    ),
-    "Clustering": TrainTaskMetadata(
-        type="Clustering", prompt=TASK_PROMPTS["Clustering"]
-    ),
-}
-
-
-# Example subset of datasets (task names only). Paths are expanded via
-# NAME_TO_TASK_SUBTASK_PATH where needed. Use as datasets_subset=QWEN3_600M_DATASET_SUBSET.
-DATASET_SUBSET = [
-    "msmarco",
-    "nfcorpus",
-    "arguana",
-    # "fiqa2018",
-    # "naturalquestions",
-    # "squad",
-    # "scifact",
-    # "xsum",
-    # "stsbenchmark",
-    # "snli",
-]
-
-
-# MTEB 20-task subset (mteb_20task_subset_selection.md) - minimizes eval time while preserving category averages
-TASK_DICT = {
-    "mteb_eng_v2_reduced": [
-        "SCIDOCS",
-        "CQADupstackGamingRetrieval",
-        "CQADupstackUnixRetrieval",
-        "HotpotQAHardNegatives",
-        "TRECCOVID",
-        "TwentyNewsgroupsClustering.v2",
-        "BiorxivClusteringP2P.v2",
-        "MedrxivClusteringS2S.v2",
-        "StackExchangeClustering.v2",
-        "AskUbuntuDupQuestions",
-        "BIOSSES",
-        "STS17",
-        "STS12",
-        "AmazonCounterfactualClassification",
-        "MassiveScenarioClassification",
-        "TweetSentimentExtractionClassification",
-        "MTOPDomainClassification",
-        "TwitterSemEval2015",
-        "SprintDuplicateQuestions",
-        "SummEvalSummarization.v2",
-    ],
-}
-
-full_mteb_eng_v2_set = {
-    "ArguAna",
-    "ArXivHierarchicalClusteringP2P",
-    "ArXivHierarchicalClusteringS2S",
-    "AskUbuntuDupQuestions",
-    "BIOSSES",
-    "Banking77Classification",
-    "BiorxivClusteringP2P.v2",
-    "CQADupstackGamingRetrieval",
-    "CQADupstackUnixRetrieval",
-    "ClimateFEVERHardNegatives",
-    "FEVERHardNegatives",
-    "FiQA2018",
-    "HotpotQAHardNegatives",
-    "ImdbClassification",
-    "MTOPDomainClassification",
-    "MassiveIntentClassification",
-    "MassiveScenarioClassification",
-    "MedrxivClusteringP2P.v2",
-    "MedrxivClusteringS2S.v2",
-    "MindSmallReranking",
-    "SCIDOCS",
-    "SICK-R",
-    "STS12",
-    "STS13",
-    "STS14",
-    "STS15",
-    "STSBenchmark",
-    "SprintDuplicateQuestions",
-    "StackExchangeClustering.v2",
-    "StackExchangeClusteringP2P.v2",
-    "TRECCOVID",
-    "Touche2020Retrieval.v3",
-    "ToxicConversationsClassification",
-    "TweetSentimentExtractionClassification",
-    "TwentyNewsgroupsClustering.v2",
-    "TwitterSemEval2015",
-    "TwitterURLCorpus",
-    "SummEvalSummarization.v2",
-    "AmazonCounterfactualClassification",
-    "STS17",
-    "STS22.v2",
-}
-assert set(TASK_DICT["mteb_eng_v2_reduced"]).issubset(full_mteb_eng_v2_set)
-
-f2llm_test_prompts = {
-    "AmazonCounterfactualClassification": "Classify a given Amazon customer review text as either counterfactual or not counterfactual.",
-    "Banking77Classification": "Given an online banking query, find the corresponding intents.",
-    "ImdbClassification": "Classify the sentiment expressed in the given movie review text from the IMDB dataset.",
-    "MTOPDomainClassification": "Classify the intent domain of the given utterance in task-oriented conversation.",
-    "MassiveIntentClassification": "Given a user utterance as query, find the user intents.",
-    "MassiveScenarioClassification": "Given a user utterance as query, find the user scenarios.",
-    "ToxicConversationsClassification": "Classify the given comments as either toxic or not toxic.",
-    "TweetSentimentExtractionClassification": "Classify the sentiment of a given tweet as either positive, negative, or neutral",
-    "ArXivHierarchicalClusteringP2P": "Identify the main and secondary category of arXiv papers based on the titles and abstracts.",
-    "ArXivHierarchicalClusteringS2S": "Identify the main and secondary category of arXiv papers based on the titles.",
-    "BiorxivClusteringP2P.v2": "Identify the main category of bioRxiv papers based on the titles and abstracts.",
-    "MedrxivClusteringP2P.v2": "Identify the main category of medRxiv papers based on the titles and abstracts.",
-    "MedrxivClusteringS2S.v2": "Identify the main category of medRxiv papers based on the titles.",
-    "StackExchangeClustering.v2": "Identify the topic or theme of StackExchange posts based on the titles.",
-    "StackExchangeClusteringP2P.v2": "Identify the topic or theme of StackExchange posts based on the given paragraphs.",
-    "TwentyNewsgroupsClustering.v2": "Identify the topic or theme of the given news articles.",
-    "SprintDuplicateQuestions": "Retrieve duplicate questions from Sprint forum.",
-    "TwitterSemEval2015": "Retrieve tweets that are semantically similar to the given tweet.",
-    "TwitterURLCorpus": "Retrieve tweets that are semantically similar to the given tweet.",
-    "AskUbuntuDupQuestions": "Retrieve duplicate questions from AskUbuntu forum.",
-    "MindSmallReranking": "Retrieve relevant news articles based on user browsing history.",
-    "ArguAna": "Given a claim, find documents that refute the claim.",
-    "CQADupstackGamingRetrieval": "Given a question, retrieve questions that are semantically equivalent.",
-    "CQADupstackUnixRetrieval": "Given a question, retrieve questions that are semantically equivalent.",
-    "ClimateFEVERHardNegatives": "Given a claim about climate change, retrieve documents that support or refute the claim.",
-    "FEVERHardNegatives": "Given a claim, retrieve documents that support or refute the claim.",
-    "FiQA2018": "Given a financial question, retrieve passages that answer the question.",
-    "HotpotQAHardNegatives": "Given a multi-hop question, retrieve passages that answer the question.",
-    "SCIDOCS": "Given a scientific paper title, retrieve paper abstracts that are cited by the given paper.",
-    "TRECCOVID": "Given a query on COVID-19, retrieve documents that answer the query.",
-    "Touche2020Retrieval.v3": "Given a question, retrieve passages that answer the question.",
-    "BIOSSES": "Retrieve semantically similar text.",
-    "SICK-R": "Retrieve semantically similar text.",
-    "STS12": "Retrieve semantically similar text.",
-    "STS13": "Retrieve semantically similar text.",
-    "STS14": "Retrieve semantically similar text.",
-    "STS15": "Retrieve semantically similar text.",
-    "STS17": "Retrieve semantically similar text.",
-    "STS22.v2": "Retrieve semantically similar text.",
-    "STSBenchmark": "Retrieve semantically similar text.",
-    "SummEvalSummarization.v2": "Given a news summary, retrieve other semantically similar summaries.",
-}
-
-
-# *******************************************************************************************
 
 
 def get_eval_tasks(eval_set, task_types=None):
@@ -217,8 +45,9 @@ def get_eval_tasks(eval_set, task_types=None):
             MultilabelClassification, BitextMining, STS, Summarization, InstructionRetrieval.
     """
     import mteb  # lazy import: mteb is slow to load; only needed here
+
     assert task_types is None or isinstance(task_types, list)
-    
+
     if eval_set == "mteb_multilingual_v2":
         benchmark = mteb.get_benchmark("MTEB(Multilingual, v2)")
         tasks = list(benchmark.tasks)
@@ -226,7 +55,7 @@ def get_eval_tasks(eval_set, task_types=None):
         benchmark = mteb.get_benchmark("MTEB(eng, v2)")
         tasks = list(benchmark.tasks)
     elif eval_set == "mteb_eng_v2_reduced":
-        task_names = TASK_DICT["mteb_eng_v2_reduced"]
+        task_names = EVAL_TASK_DICT["mteb_eng_v2_reduced"]
         benchmark = mteb.get_benchmark("MTEB(eng, v2)")
         all_tasks = list(benchmark.tasks)
         tasks = [task for task in all_tasks if task.metadata.name in task_names]
@@ -282,7 +111,7 @@ def instruction_template_qwen3(prompt_type, task_metadata, text, title="") -> st
 def instruction_template_f2llm(prompt_type, task_metadata, text, title="") -> str:
 
     if prompt_type == PromptType.query:
-        instruction = f2llm_test_prompts[task_metadata.name]
+        instruction = F2LLM_TEST_PROMPTS[task_metadata.name]
         prompt = f"Instruct: {instruction.strip()}\nQuery: {text.strip()}"
 
     elif prompt_type == PromptType.document:
@@ -299,15 +128,15 @@ def instruction_template_embeddinggemma(prompt_type, task_metadata, text, title=
 
     # we do not use  task specific instruction in embeddinggemma
     if prompt_type == PromptType.query:
-        instruction = TASK_PROMPTS[task_metadata.type]
+        instruction = EMBEDDINGGEMMA_PROMPTS[task_metadata.type]
         prompt = f"{instruction.strip()} {text.strip()}"
 
     elif prompt_type == PromptType.document:
 
         if len(title) > 0:
-            instruction = TASK_PROMPTS["document"].format(title=title)
+            instruction = EMBEDDINGGEMMA_PROMPTS["document"].format(title=title)
         else:
-            instruction = TASK_PROMPTS["Retrieval-document"]
+            instruction = EMBEDDINGGEMMA_PROMPTS["Retrieval-document"]
 
         prompt = f"{instruction.strip()} {text.strip()}"
 
@@ -420,7 +249,9 @@ def filter_qrels_by_length(
     # zero_copy_only=False is required for boolean arrays: Arrow uses bit-packed
     # storage which is incompatible with NumPy's byte-per-element layout, so a
     # copy is always necessary and must be explicitly allowed.
-    valid_indices = np.nonzero(keep_mask.combine_chunks().to_numpy(zero_copy_only=False))[0]
+    valid_indices = np.nonzero(
+        keep_mask.combine_chunks().to_numpy(zero_copy_only=False)
+    )[0]
     return qrels_dataset.select(valid_indices)
 
 
