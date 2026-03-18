@@ -1,25 +1,9 @@
-import os
-
 from .binary_classification_tasks import *
 from .classification_tasks import *
 from .clustering_tasks import *
 from .nli_tasks import *
 from .retrieval_tasks import *
 from .sts_tasks import *
-
-
-def task_name_to_inner_path(task_name: str) -> str:
-    """Build canonical inner path from NAME_TO_TASK_SUBTASK_PATH.
-
-    Returns e.g. "retrieval/general_retrieval/arguana" or "nli/snli".
-    """
-    info = NAME_TO_TASK_SUBTASK_PATH[task_name]
-    parent = info["parent_folder"]
-    subparent = info["subparent_folder"]
-    if subparent is not None:
-        return os.path.join(parent, subparent, task_name)
-    return os.path.join(parent, task_name)
-
 
 NAME_TO_TASK = {
     # MTEB-style retrieval tasks
@@ -387,19 +371,6 @@ NAME_TO_TASK_SUBTASK_PATH = {
 assert set(NAME_TO_TASK_SUBTASK_PATH.keys()) == set(NAME_TO_TASK.keys())
 
 
-def task_name_to_inner_path(task_name: str) -> str:
-    """Build canonical inner path from NAME_TO_TASK_SUBTASK_PATH.
-
-    Returns e.g. "retrieval/general_retrieval/arguana" or "nli/snli".
-    """
-    info = NAME_TO_TASK_SUBTASK_PATH[task_name]
-    parent = info["parent_folder"]
-    subparent = info["subparent_folder"]
-    if subparent is not None:
-        return os.path.join(parent, subparent, task_name)
-    return os.path.join(parent, task_name)
-
-
 # NLI tasks
 NLI_TASKS = [
     "snli",
@@ -409,7 +380,11 @@ NLI_TASKS = [
 ]
 
 # STS tasks are semantic textual similarity tasks
-STS_TASKS = ["sts12", "sts22", "stsbenchmark"]
+STS_TASKS = [
+    "sts12",
+    "sts22",
+    "stsbenchmark",
+]
 
 # Binary Classification tasks
 BINARY_CLASSIFICATION_TASKS = [
@@ -421,9 +396,7 @@ BINARY_CLASSIFICATION_TASKS = [
 ]
 
 # Multi-way Classification tasks
-CLASSIFICATION_TASKS = [
-    "banking77",
-]
+MULTIWAY_CLASSIFICATION_TASKS = ["banking77"]
 
 # Clustering tasks
 CLUSTERING_TASKS = [
@@ -446,6 +419,123 @@ CLUSTERING_TASKS = [
     "stackexchange_clustering_s2s",
     "twentynewsgroups",
 ]
+
+# ----------------------------------------------------------------------------
+
+"""
+Task categorization for organizing all task types.
+Maps task names to their respective categories.
+"""
+
+# ============================================================================
+# RETRIEVAL TASK CATEGORIES
+# ============================================================================
+
+OPEN_DOMAIN_QA = [
+    "naturalquestions",
+    "triviaqa",
+    "paq",
+    "eli5",
+    "squad",
+    "hotpotqa",
+    "gooaq",
+    "yahooanswers",
+]
+
+DOMAIN_SPECIFIC_QA = [
+    "bioasq",
+    "pubmedqa",
+    "fiqa2018",
+    "amazonqa",
+    "coliee",
+]
+
+GENERAL_RETRIEVAL = [
+    "msmarco",
+    "nfcorpus",
+    "stackexchange",
+    "miracl",
+    "mrtydi",
+    "arguana",
+]
+
+FACT_VERIFICATION = [
+    "fever",
+    "scifact",
+]
+
+PARAPHRASE_DETECTION = [
+    "qqp",
+    "stackexchange_dup_p2p",
+    "stackexchange_dup_s2s",
+    "stackoverflow_dup",
+]
+
+SCIENTIFIC_DOC_RETRIEVAL = [
+    "s2orc_abstract_citation",
+    "s2orc_title_abstract",
+    "s2orc_title_citation",
+    "specter",
+]
+
+SUMMARIZATION = [
+    "cnndm",
+    "xsum",
+    "sentence_compression",
+    "wikihow",
+]
+
+
+# ============================================================================
+# TASK TO CATEGORY MAPPING
+# ============================================================================
+
+# Create a mapping from task name to category
+TASK_TO_CATEGORY = {}
+
+# Retrieval tasks - organized by subcategory
+for task in OPEN_DOMAIN_QA:
+    TASK_TO_CATEGORY[task] = "retrieval/open_domain_qa"
+
+for task in DOMAIN_SPECIFIC_QA:
+    TASK_TO_CATEGORY[task] = "retrieval/domain_specific_qa"
+
+for task in GENERAL_RETRIEVAL:
+    TASK_TO_CATEGORY[task] = "retrieval/general_retrieval"
+
+for task in FACT_VERIFICATION:
+    TASK_TO_CATEGORY[task] = "retrieval/fact_verification"
+
+for task in PARAPHRASE_DETECTION:
+    TASK_TO_CATEGORY[task] = "retrieval/paraphrase_detection"
+
+for task in SCIENTIFIC_DOC_RETRIEVAL:
+    TASK_TO_CATEGORY[task] = "retrieval/scientific_doc_retrieval"
+
+for task in SUMMARIZATION:
+    TASK_TO_CATEGORY[task] = "retrieval/summarization"
+
+# NLI tasks
+for task in NLI_TASKS:
+    TASK_TO_CATEGORY[task] = "nli"
+
+# STS tasks
+for task in STS_TASKS:
+    TASK_TO_CATEGORY[task] = "sts"
+
+# Classification tasks
+for task in BINARY_CLASSIFICATION_TASKS:
+    TASK_TO_CATEGORY[task] = "classification/binary"
+
+for task in MULTIWAY_CLASSIFICATION_TASKS:
+    TASK_TO_CATEGORY[task] = "classification/multiway"
+
+# Clustering tasks
+for task in CLUSTERING_TASKS:
+    TASK_TO_CATEGORY[task] = "clustering"
+
+
+# ----------------------------------------------------------------------------------------------
 
 
 # Datasets sorted by total size (unique_queries + unique_documents), shortest first
@@ -493,125 +583,95 @@ DATASETS_BY_SIZE = [
 ]
 
 
-# All other retrieval tasks (everything not in the above categories)
-def get_retrieval_tasks():
-    """
-    Get all retrieval tasks (excluding STS, NLI, classification, and clustering tasks),
-    sorted by their category group in a consistent order.
-
-    Returns tasks in this order:
-    1. Open Domain QA
-    2. Domain-Specific QA
-    3. General Retrieval
-    4. Fact Verification
-    5. Paraphrase Detection
-    6. Scientific Document Retrieval
-    7. Summarization
-    """
-    # Define the order of retrieval task categories
-    retrieval_categories = [
-        OPEN_DOMAIN_QA,
-        DOMAIN_SPECIFIC_QA,
-        GENERAL_RETRIEVAL,
-        FACT_VERIFICATION,
-        PARAPHRASE_DETECTION,
-        SCIENTIFIC_DOC_RETRIEVAL,
-        SUMMARIZATION,
-    ]
-
-    # Build sorted list of retrieval tasks by category
-    sorted_tasks = []
-    for category in retrieval_categories:
-        sorted_tasks.extend(category)
-
-    return sorted_tasks
+# -------------------------------------------------------------------------
 
 
-def filter_tasks_by_type(task_types):
-    """
-    Filter available tasks based on requested task types.
-
-    Args:
-        task_types: List of task type strings ("retrieval", "sts", "nli", "classification", "clustering", "all")
-
-    Returns:
-        List of task names matching the requested types
-    """
-    if "all" in task_types:
-        return list(NAME_TO_TASK.keys())
-
-    selected_tasks = []
-
-    if "retrieval" in task_types:
-        selected_tasks.extend(get_retrieval_tasks())
-
-    if "sts" in task_types:
-        selected_tasks.extend(STS_TASKS)
-
-    if "nli" in task_types:
-        selected_tasks.extend(NLI_TASKS)
-
-    if "classification" in task_types:
-        selected_tasks.extend(BINARY_CLASSIFICATION_TASKS)
-        selected_tasks.extend(CLASSIFICATION_TASKS)
-
-    if "clustering" in task_types:
-        selected_tasks.extend(CLUSTERING_TASKS)
-
-    if "sorted" in task_types:
-        selected_tasks.extend(DATASETS_BY_SIZE)
-
-    # Remove duplicates while preserving order
-    seen = set()
-    result = []
-    for task in selected_tasks:
-        if task not in seen and task in NAME_TO_TASK:
-            seen.add(task)
-            result.append(task)
-
-    return result
+# Example subset of datasets (task names only). Paths are expanded via
+# NAME_TO_TASK_SUBTASK_PATH where needed. Use as datasets_subset=QWEN3_600M_DATASET_SUBSET.
+DATASET_SUBSET = [
+    "msmarco",
+    "nfcorpus",
+    "arguana",
+    "fiqa2018",
+    "naturalquestions",
+    "squad",
+    "scifact",
+    "xsum",
+    "stsbenchmark",
+    "snli",
+]
 
 
-def validate_and_select_tasks(task_names, task_types):
-    """
-    Validate and select tasks based on task_names or task_types.
+# MTEB 20-task subset (mteb_20task_subset_selection.md) - minimizes eval time while preserving category averages
+EVAL_TASK_DICT = {
+    "mteb_eng_v2_reduced": [
+        "SCIDOCS",
+        "CQADupstackGamingRetrieval",
+        "CQADupstackUnixRetrieval",
+        "HotpotQAHardNegatives",
+        "TRECCOVID",
+        "TwentyNewsgroupsClustering.v2",
+        "BiorxivClusteringP2P.v2",
+        "MedrxivClusteringS2S.v2",
+        "StackExchangeClustering.v2",
+        "AskUbuntuDupQuestions",
+        "BIOSSES",
+        "STS17",
+        "STS12",
+        "AmazonCounterfactualClassification",
+        "MassiveScenarioClassification",
+        "TweetSentimentExtractionClassification",
+        "MTOPDomainClassification",
+        "TwitterSemEval2015",
+        "SprintDuplicateQuestions",
+        "SummEvalSummarization.v2",
+    ],
+    "mteb_eng_v2_full": [
+        "ArguAna",
+        "ArXivHierarchicalClusteringP2P",
+        "ArXivHierarchicalClusteringS2S",
+        "AskUbuntuDupQuestions",
+        "BIOSSES",
+        "Banking77Classification",
+        "BiorxivClusteringP2P.v2",
+        "CQADupstackGamingRetrieval",
+        "CQADupstackUnixRetrieval",
+        "ClimateFEVERHardNegatives",
+        "FEVERHardNegatives",
+        "FiQA2018",
+        "HotpotQAHardNegatives",
+        "ImdbClassification",
+        "MTOPDomainClassification",
+        "MassiveIntentClassification",
+        "MassiveScenarioClassification",
+        "MedrxivClusteringP2P.v2",
+        "MedrxivClusteringS2S.v2",
+        "MindSmallReranking",
+        "SCIDOCS",
+        "SICK-R",
+        "STS12",
+        "STS13",
+        "STS14",
+        "STS15",
+        "STSBenchmark",
+        "SprintDuplicateQuestions",
+        "StackExchangeClustering.v2",
+        "StackExchangeClusteringP2P.v2",
+        "TRECCOVID",
+        "Touche2020Retrieval.v3",
+        "ToxicConversationsClassification",
+        "TweetSentimentExtractionClassification",
+        "TwentyNewsgroupsClustering.v2",
+        "TwitterSemEval2015",
+        "TwitterURLCorpus",
+        "SummEvalSummarization.v2",
+        "AmazonCounterfactualClassification",
+        "STS17",
+        "STS22.v2",
+    ],
+}
 
-    Args:
-        task_names: List of specific task names or None
-        task_types: List of task type strings
 
-    Returns:
-        List of validated task names
-
-    Raises:
-        ValueError: If any task name is invalid
-    """
-    if task_names is not None:
-        # Use specific task names if provided
-        invalid_tasks = [task for task in task_names if task not in NAME_TO_TASK]
-        if invalid_tasks:
-            available_tasks = sorted(NAME_TO_TASK.keys())
-            raise ValueError(
-                f"Invalid task name(s): {invalid_tasks}\n"
-                f"Available tasks: {available_tasks}"
-            )
-        return task_names
-    else:
-        # Fall back to task types
-        return filter_tasks_by_type(task_types)
-
-
-
-
-def get_task(name: str):
-    if name not in NAME_TO_TASK:
-        raise ValueError(
-            f"Unknown task '{name}'. Available tasks: {list(NAME_TO_TASK)}"
-        )
-
-    task = NAME_TO_TASK[name]
-
-    return task
-
-
-
+assert set(EVAL_TASK_DICT["mteb_eng_v2_reduced"]).issubset(
+    EVAL_TASK_DICT["mteb_eng_v2_full"]
+)
