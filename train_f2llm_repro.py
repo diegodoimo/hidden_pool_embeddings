@@ -190,6 +190,68 @@ def collate_fn(batch_raw, args, _stack, tokenizer, classification_datasets):
     }
 
 
+def collate_fn2(batch_raw, args, _stack, tokenizer, classification_datasets):
+    """Variant of ``collate_fn`` for datasets pre-annotated with doc IDs.
+
+    Expected dataset fields (in addition to ``query_input_ids`` and
+    ``passage_input_ids``):
+
+    * ``negative_input_ids``  – list of token-id lists, one per hard negative
+      (all candidates stored together rather than as separate named fields).
+    * ``positive_doc_id``     – str, document ID of the positive passage.
+    * ``negative_doc_id``     – list[str], document IDs parallel to
+      ``negative_input_ids``.
+
+    The returned batch is identical to ``collate_fn`` plus two extra keys:
+
+    * ``positive_doc_ids``  – list[str], length bs.
+    * ``negative_doc_ids``  – list[list[str]], shape [bs, num_hard_neg],
+      aligned with the selected hard negatives.
+    """
+    num_hard_neg = (
+        1
+        if batch_raw[0]["dataset_name"] in classification_datasets
+        else args.num_hard_neg
+    )
+
+    # Sample from however many hard negatives are available (flexible pool size).
+    num_available = len(batch_raw[0]["negative_input_ids"])
+    hard_neg_indices = (
+        [0] if num_hard_neg == 1 else random.sample(range(num_available), num_hard_neg)
+    )
+
+    input_ids = _stack(
+        [s["query_input_ids"] for s in batch_raw]
+        + [s["passage_input_ids"] for s in batch_raw]
+        + [s["negative_input_ids"][i] for s in batch_raw for i in hard_neg_indices],
+        args.max_seq_length,
+        tokenizer,
+    )
+    seqlens = torch.tensor([ids.size(0) for ids in input_ids])
+    input_ids = pad_sequence(
+        input_ids, batch_first=True, padding_value=tokenizer.pad_token_id
+    )
+    attention_masks = input_ids.ne(tokenizer.pad_token_id).long()
+
+    positive_doc_ids = [s["positive_doc_id"] for s in batch_raw]
+    negative_doc_ids = [
+        [s["negative_doc_id"][i] for i in hard_neg_indices] for s in batch_raw
+    ]
+
+    return {
+        "input_ids": input_ids,
+        "seq_lens": seqlens,
+        "attention_mask": attention_masks,
+        "bs": len(batch_raw),
+        "dataset_name": batch_raw[0]["dataset_name"],
+        "data_indices": torch.tensor(
+            [int(sample["data_index"]) for sample in batch_raw], dtype=torch.long
+        ),
+        "positive_doc_ids": positive_doc_ids,
+        "negative_doc_ids": negative_doc_ids,
+    }
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True)
@@ -291,7 +353,8 @@ def main():
         with open(os.path.join(args.output_dir, "args.json"), "w") as f:
             json.dump(vars(args), f, indent=2)
 
-    train_datasets, valid_datasets = [], []
+    #train_datasets, valid_datasets = [], []
+    train_datasets = []
     accelerator.print("loading datasets")
     with accelerator.main_process_first():
         for f in sorted(
@@ -315,9 +378,10 @@ def main():
                 with_indices=True,
                 desc=f"adding data_index to {dataset_name}",
             )
-            dataset = dataset.train_test_split(train_size=0.99, shuffle=True, seed=0)
-            train_datasets.append((dataset_name, dataset["train"]))
-            valid_datasets.append((dataset_name, dataset["test"]))
+            train_datasets.append((dataset_name, dataset))
+            # dataset = dataset.train_test_split(train_size=0.99, shuffle=True, seed=0)
+            # train_datasets.append((dataset_name, dataset["train"]))
+            # valid_datasets.append((dataset_name, dataset["test"]))
 
     collate_fn_partial = partial(
         collate_fn,
@@ -338,17 +402,6 @@ def main():
             pin_memory=True,
         )
         for name, ds in train_datasets
-    }
-    valid_loaders = {
-        name: DataLoader(
-            ds,
-            shuffle=False,
-            batch_size=args.train_batch_size,
-            collate_fn=collate_fn_partial,
-            num_workers=args.num_workers,
-            pin_memory=True,
-        )
-        for name, ds in valid_datasets
     }
 
     # determine training steps
@@ -427,9 +480,6 @@ def main():
         train_loaders, accelerator, batch_recorder=batch_recorder
     )
 
-    for k, v in valid_loaders.items():
-        valid_loaders[k] = accelerator.prepare(v)
-
     # if training on multiple GPUs, length of dataloader would have changed
     if override_train_step:
         args.train_steps = len(train_dataloader) * args.train_epochs
@@ -481,7 +531,6 @@ def main():
             accelerator,
             model,
             train_dataloader,
-            valid_loaders,
             optimizer,
             lr_scheduler,
             sum(len(d[1]) for d in train_datasets),

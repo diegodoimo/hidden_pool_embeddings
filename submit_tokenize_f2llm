@@ -20,16 +20,16 @@ export PYTHONUNBUFFERED=1
 export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
 
 
-# Tokenize all F2LLM sources that are in NAME_TO_TASK
-# python tokenize_data_qwen.py \
-#     --tokenizer_path google/t5gemma-2-270m-270m \
-#     --root_dir $HF_HOME/hub/datasets--codefuse-ai--F2LLM/snapshots/c8158be982d16202dda93211c1f7a542159acc3e \
-#     --output_dir ./results/datasets_tokenized/f2llm/f2llm-prompt_t5gemma-2-tok \
-#     --num_workers $SLURM_CPUS_PER_TASK
-
-
-python estract_f2llm_prompt_templates.py \
+#Tokenize all F2LLM sources that are in NAME_TO_TASK
+python tokenize_data_qwen.py \
+    --tokenizer_path Qwen/Qwen3-0.6B \
     --root_dir $HF_HOME/hub/datasets--codefuse-ai--F2LLM/snapshots/c8158be982d16202dda93211c1f7a542159acc3e \
-    # --tokenizer_path google/t5gemma-2-270m-270m \
-    # --output_dir ./results/datasets_tokenized/f2llm/f2llm-prompt_t5gemma-2-tok \
-    # --num_workers $SLURM_CPUS_PER_TASK
+    --output_dir ./results/f2llm_tokenized/f2llm-prompt_qwen3-tok \
+    --num_workers $SLURM_CPUS_PER_TASK
+#--tokenizer_path google/t5gemma-2-270m-270m \
+
+# python estract_f2llm_prompt_templates.py \
+#     --root_dir $HF_HOME/hub/datasets--codefuse-ai--F2LLM/snapshots/c8158be982d16202dda93211c1f7a542159acc3e \
+#     # --tokenizer_path google/t5gemma-2-270m-270m \
+#     # --output_dir ./results/datasets_tokenized/f2llm/f2llm-prompt_t5gemma-2-tok \
+#     # --num_workers $SLURM_CPUS_PER_TASK

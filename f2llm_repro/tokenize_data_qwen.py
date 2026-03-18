@@ -1,11 +1,15 @@
+import os
+from functools import partial
 from multiprocessing import Pool
+
 import numpy as np
 import pandas as pd
-import os
-
 from transformers import AutoTokenizer
 from tqdm.auto import tqdm
 import argparse
+
+from datasets import Dataset
+from tokenize_data import _convert_f2llm_batch, _assign_dedup_ids
 
 
 # ---- globals set by main() before any worker fork ----
@@ -72,8 +76,13 @@ def parallelize(data, func, num_of_processes=8):
     return data
 
 
-def main(args):
+def main_old(args):
+    """Original implementation kept for consistency checks.
 
+    Uses multiprocessing.Pool + pandas; produces identical output columns to
+    main() but without query_text / positive_id / negative_input_ids /
+    negative_doc_id.
+    """
     for ds_name in tqdm(
         sorted(f for f in os.listdir(args.root_dir) if f.endswith(".parquet"))
     ):
@@ -103,6 +112,83 @@ def main(args):
 
         os.makedirs(args.output_dir, exist_ok=True)
         df.to_parquet(f"{args.output_dir}/{ds_name}", index=False)
+
+
+def main(args):
+
+    for ds_name in tqdm(
+        sorted(f for f in os.listdir(args.root_dir) if f.endswith(".parquet"))
+    ):
+        print(ds_name, flush=True)
+
+        ds = Dataset.from_parquet(f"{args.root_dir}/{ds_name}")
+        num_neg = 24 if "negative_2" in ds.column_names else 1
+
+        # ── Step 1: strip F2LLM instruct prefix, reshape negatives ───────────
+        # _convert_f2llm_batch returns {query_text, positive_text, negative_text};
+        # existing columns (query, passage, negative_1…N) are kept alongside.
+        ds = ds.map(
+            partial(_convert_f2llm_batch, num_neg),
+            batched=True,
+            batch_size=10_000,
+            num_proc=args.num_workers,
+            desc=f"converting {ds_name}",
+        )
+
+        # ── Step 2: assign stable "doc_NNN" IDs ──────────────────────────────
+        ds = _assign_dedup_ids(ds)
+        ds = ds.rename_column("negative_id", "negative_doc_id")
+
+        # ── Step 3: dedup-tokenize all unique strings in one batched call ─────
+        # Mirrors _tokenize_dedup from tokenize_data.py but applies truncation
+        # and optional EOS appending required by this model family.
+        q_texts = ds["query"]           # original query WITH F2LLM instruct prefix
+        p_texts = ds["positive_text"]
+        n_texts = ds["negative_text"]   # list[list[str]]
+
+        all_neg_flat = [t for row in n_texts for t in row]
+        all_unique = list(dict.fromkeys(q_texts + p_texts + all_neg_flat))
+        print(
+            f"  [{ds_name}] tokenizing {len(all_unique):,} unique strings "
+            f"(from {len(q_texts):,} rows, {len(all_neg_flat):,} neg slots)",
+            flush=True,
+        )
+
+        raw_ids = tokenizer(
+            all_unique,
+            max_length=max_seq_length,
+            truncation=True,
+            add_special_tokens=_add_special_tokens,
+            return_attention_mask=False,
+        )["input_ids"]
+        if _append_eos:
+            raw_ids = [ids + [tokenizer.eos_token_id] for ids in raw_ids]
+
+        id_map = dict(zip(all_unique, raw_ids))
+
+        # ── Step 4: attach all token columns in a single map pass ────────────
+        # num_proc=1: the closure captures id_map (a plain dict) which cannot
+        # be forked into worker processes; the work here is pure dict lookups
+        # so single-process speed is ample.
+        def _attach(batch):
+            neg_ids = [[id_map[t] for t in row] for row in batch["negative_text"]]
+            out = {
+                "query_input_ids":   [id_map[q] for q in batch["query"]],
+                "passage_input_ids": [id_map[p] for p in batch["positive_text"]],
+                "negative_input_ids": neg_ids,
+            }
+            for i in range(1, num_neg + 1):
+                out[f"negative_{i}_input_ids"] = [row[i - 1] for row in neg_ids]
+            return out
+
+        ds = ds.map(_attach, batched=True, batch_size=10_000, num_proc=1,
+                    desc=f"attaching tokens {ds_name}")
+
+        os.makedirs(args.output_dir, exist_ok=True)
+        ds.to_parquet(f"{args.output_dir}/{ds_name}")
+
+
+
 
 
 if __name__ == "__main__":
