@@ -34,8 +34,9 @@ from tasks import (
     NAME_TO_TASK_SUBTASK_PATH,
     NAME_TO_TASK_TYPE,
     TRANSLATE_F2LLM_NAME,
-    task_name_to_inner_path,
-)
+    )
+    
+from tasks.helpers import task_name_to_inner_path
 from tasks.prompts import F2LLM_PROMPTS
 from tasks.retrieval_loaders import deduplicate
 from utils.create_datasets import (

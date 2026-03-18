@@ -142,9 +142,9 @@ def main(args):
         # ── Step 3: dedup-tokenize all unique strings in one batched call ─────
         # Mirrors _tokenize_dedup from tokenize_data.py but applies truncation
         # and optional EOS appending required by this model family.
-        q_texts = ds["query"]           # original query WITH F2LLM instruct prefix
-        p_texts = ds["positive_text"]
-        n_texts = ds["negative_text"]   # list[list[str]]
+        q_texts = list(ds["query"])      # original query WITH F2LLM instruct prefix
+        p_texts = list(ds["positive_text"])
+        n_texts = list(ds["negative_text"])  # list[list[str]]
 
         all_neg_flat = [t for row in n_texts for t in row]
         all_unique = list(dict.fromkeys(q_texts + p_texts + all_neg_flat))
