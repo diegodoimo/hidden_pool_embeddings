@@ -581,3 +581,97 @@ DATASETS_BY_SIZE = [
     # "paq",  # 73,376,018
     # "s2orc_title_abstract",  # 82,561,651
 ]
+
+
+# -------------------------------------------------------------------------
+
+
+# Example subset of datasets (task names only). Paths are expanded via
+# NAME_TO_TASK_SUBTASK_PATH where needed. Use as datasets_subset=QWEN3_600M_DATASET_SUBSET.
+DATASET_SUBSET = [
+    "msmarco",
+    "nfcorpus",
+    "arguana",
+    "fiqa2018",
+    "naturalquestions",
+    "squad",
+    "scifact",
+    "xsum",
+    "stsbenchmark",
+    "snli",
+]
+
+
+# MTEB 20-task subset (mteb_20task_subset_selection.md) - minimizes eval time while preserving category averages
+EVAL_TASK_DICT = {
+    "mteb_eng_v2_reduced": [
+        "SCIDOCS",
+        "CQADupstackGamingRetrieval",
+        "CQADupstackUnixRetrieval",
+        "HotpotQAHardNegatives",
+        "TRECCOVID",
+        "TwentyNewsgroupsClustering.v2",
+        "BiorxivClusteringP2P.v2",
+        "MedrxivClusteringS2S.v2",
+        "StackExchangeClustering.v2",
+        "AskUbuntuDupQuestions",
+        "BIOSSES",
+        "STS17",
+        "STS12",
+        "AmazonCounterfactualClassification",
+        "MassiveScenarioClassification",
+        "TweetSentimentExtractionClassification",
+        "MTOPDomainClassification",
+        "TwitterSemEval2015",
+        "SprintDuplicateQuestions",
+        "SummEvalSummarization.v2",
+    ],
+    "mteb_eng_v2_full": [
+        "ArguAna",
+        "ArXivHierarchicalClusteringP2P",
+        "ArXivHierarchicalClusteringS2S",
+        "AskUbuntuDupQuestions",
+        "BIOSSES",
+        "Banking77Classification",
+        "BiorxivClusteringP2P.v2",
+        "CQADupstackGamingRetrieval",
+        "CQADupstackUnixRetrieval",
+        "ClimateFEVERHardNegatives",
+        "FEVERHardNegatives",
+        "FiQA2018",
+        "HotpotQAHardNegatives",
+        "ImdbClassification",
+        "MTOPDomainClassification",
+        "MassiveIntentClassification",
+        "MassiveScenarioClassification",
+        "MedrxivClusteringP2P.v2",
+        "MedrxivClusteringS2S.v2",
+        "MindSmallReranking",
+        "SCIDOCS",
+        "SICK-R",
+        "STS12",
+        "STS13",
+        "STS14",
+        "STS15",
+        "STSBenchmark",
+        "SprintDuplicateQuestions",
+        "StackExchangeClustering.v2",
+        "StackExchangeClusteringP2P.v2",
+        "TRECCOVID",
+        "Touche2020Retrieval.v3",
+        "ToxicConversationsClassification",
+        "TweetSentimentExtractionClassification",
+        "TwentyNewsgroupsClustering.v2",
+        "TwitterSemEval2015",
+        "TwitterURLCorpus",
+        "SummEvalSummarization.v2",
+        "AmazonCounterfactualClassification",
+        "STS17",
+        "STS22.v2",
+    ],
+}
+
+
+assert set(EVAL_TASK_DICT["mteb_eng_v2_reduced"]).issubset(
+    EVAL_TASK_DICT["mteb_eng_v2_full"]
+)
