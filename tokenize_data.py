@@ -36,7 +36,7 @@ from tasks import (
     TRANSLATE_F2LLM_NAME,
     task_name_to_inner_path,
 )
-from tasks.f2llm_prompts import TASK_TO_PROMPT
+from tasks.prompts import F2LLM_PROMPTS
 from tasks.retrieval_loaders import deduplicate
 from utils.create_datasets import (
     TASK_TYPE_TO_TASK_METADATA,
@@ -550,7 +550,7 @@ def get_f2llm_paths(subset_list):
 
     # Check that our naming convention matches the dataset's known source names.
     set_all_f2llm = set(TRANSLATE_F2LLM_NAME[task] for task in all_sources)
-    set_known_f2llm_prompts = set(TASK_TO_PROMPT.keys())
+    set_known_f2llm_prompts = set(F2LLM_PROMPTS.keys())
 
     assert set_all_f2llm == set_known_f2llm_prompts, set_all_f2llm.symmetric_difference(
         set_known_f2llm_prompts
