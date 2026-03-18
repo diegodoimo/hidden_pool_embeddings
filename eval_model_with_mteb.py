@@ -4,37 +4,37 @@ import time
 import numpy as np
 
 
-print("loading benchmark")
-bench_dict = {
-    "mteb_multilingual_v2": "MTEB(Multilingual, v2)",
-    "mteb_eng_v2": "MTEB(eng, v2)",
-}
-benchmark = mteb.get_benchmark("MTEB(eng, v2)")
+# print("loading benchmark")
+# bench_dict = {
+#     "mteb_multilingual_v2": "MTEB(Multilingual, v2)",
+#     "mteb_eng_v2": "MTEB(eng, v2)",
+# }
+# benchmark = mteb.get_benchmark("MTEB(eng, v2)")
 
 
-tasks = []
-for task in benchmark.tasks:
-    tasks.append(task.metadata.name)
+# tasks = []
+# for task in benchmark.tasks:
+#     tasks.append(task.metadata.name)
 
 
-len(tasks)
-benchmarks = mteb.get_benchmarks()
+# len(tasks)
+# benchmarks = mteb.get_benchmarks()
 
-for benchmark in benchmarks:
-    for task in benchmark.tasks:
-        print(task.metadata.name)
-        print(task.metadata.prompt)
-
-
-benchmark[0].metadata.type
-task_types = set(
-    task.metadata.type for benchmark in benchmarks for task in benchmark.tasks
-)
+# for benchmark in benchmarks:
+#     for task in benchmark.tasks:
+#         print(task.metadata.name)
+#         print(task.metadata.prompt)
 
 
-task_types = set(task.metadata.type for task in benchmark.tasks)
+# benchmark[0].metadata.type
+# task_types = set(
+#     task.metadata.type for benchmark in benchmarks for task in benchmark.tasks
+# )
 
-task_types
+
+# task_types = set(task.metadata.type for task in benchmark.tasks)
+
+# task_types
 
 
 def parse_args():
