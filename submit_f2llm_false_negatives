@@ -46,4 +46,5 @@ torchrun \
     --batch_size 32 \
     --max_length 1024 \
     --top_k 100 \
+    --task_types sorted \
     #--data_subset bioasq #arguana hotpotqa msmarco

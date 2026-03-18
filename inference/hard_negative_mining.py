@@ -15,8 +15,7 @@ import torch.distributed as dist
 
 from datasets import Dataset, Features, Value, Sequence
 from tasks.load_datasets import load_task_data
-from tasks import get_task
-from tasks.helpers import get_category_path
+from tasks.helpers import get_category_path, get_task
 from utils.dataloader_helpers import LenghtSortedSampler, collate_fn_with_padding
 from pathlib import Path
 import time
@@ -383,10 +382,12 @@ class _BaseMiner:
 
             # Validate filtered pairs using PyArrow — avoids materialising
             # millions of Python strings just for a subset check.
-            corpus_ids_arr = corpus_dataset.data.table.column("id")
-            query_ids_arr = unique_queries_dataset.data.table.column("id")
-            qrel_qids = filtered_qrels.data.table.column("query_id")
-            qrel_pids = filtered_qrels.data.table.column("positive_id")
+            # Use Dataset column access (not .data.table) so that any
+            # _indices table created by .select()/.filter() is respected.
+            corpus_ids_arr = pa.array(corpus_dataset["id"])
+            query_ids_arr = pa.array(unique_queries_dataset["id"])
+            qrel_qids = pa.array(filtered_qrels["query_id"])
+            qrel_pids = pa.array(filtered_qrels["positive_id"])
 
             # pc.unique returns a ChunkedArray when the input is chunked and a
             # plain Array when the input is already contiguous.  Only ChunkedArray
@@ -491,22 +492,15 @@ class _BaseMiner:
         if self.rank == 0:
             print(f"queries embedding duration: {(time.time()-start)/60:.2f} min")
 
-        # Extract ID columns from Arrow once — avoids repeated materialisation
-        # of millions of Python strings each time dataset[...]["col"] is called.
-        _unique_query_ids = (
-            dataset["unique_queries"].data.table.column("id").to_pylist()
-        )
-        _qrel_query_ids = dataset["qrels"].data.table.column("query_id").to_pylist()
-        _qrel_positive_ids = (
-            dataset["qrels"].data.table.column("positive_id").to_pylist()
-        )
-        _corpus_ids = dataset["corpus"].data.table.column("id").to_pylist()
+        # Use Dataset column access so that any _indices table created by
+        # .select() or .filter() is respected. Direct .data.table access
+        # bypasses _indices and returns the full original Arrow table, which
+        # produces wrong ID lists when rows have been removed.
+        _unique_query_ids = dataset["unique_queries"]["id"]
+        _qrel_query_ids = dataset["qrels"]["query_id"]
+        _qrel_positive_ids = dataset["qrels"]["positive_id"]
+        _corpus_ids = dataset["corpus"]["id"]
         unique_query_id_to_idx = {qid: idx for idx, qid in enumerate(_unique_query_ids)}
-
-        dist.barrier()
-        if self.rank == 0:
-            print("\nQuery-positive scores will be computed during corpus search")
-            print_memory_consumed(rank=self.rank)
 
         dist.barrier()
         chunk_size, query_chunk_size = estimate_chunk_sizes(query_embeddings)
@@ -820,12 +814,9 @@ class HardNegativesMiner(_BaseMiner):
 
         accumulated_stats = TripletStats()
 
-        # Pre-extract qrels columns via Arrow — avoids materialising millions
-        # of Python strings through HF Dataset.__getitem__ overhead.
-        all_qrel_query_ids = dataset["qrels"].data.table.column("query_id").to_pylist()
-        all_qrel_positive_ids = (
-            dataset["qrels"].data.table.column("positive_id").to_pylist()
-        )
+        # Use Dataset column access (not .data.table) to respect _indices.
+        all_qrel_query_ids = dataset["qrels"]["query_id"]
+        all_qrel_positive_ids = dataset["qrels"]["positive_id"]
 
         time_perf = {}
         start = time.time()

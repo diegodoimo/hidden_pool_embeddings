@@ -11,7 +11,6 @@
 #SBATCH --gres=gpu:H100:2
 ##SBATCH --gres=gpu:A100:2
 
-
 env_path=\/orfeo/cephfs/scratch/area/ddoimo/open/hidden_pool_embeddings
 
 source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_a100
@@ -40,8 +39,8 @@ torchrun \
     --model_name_or_path "Qwen/Qwen3-Embedding-0.6B" \
     --batch_size 16 \
     --iterative_encode_threshold 500000 \
-    --task_names 'bioasq' \
-    #--task_types "sorted"  \
+    --task_types "sorted"  \
+    #--task_names 'bioasq' \
     #
     #--task_names "stackexchange" \
 

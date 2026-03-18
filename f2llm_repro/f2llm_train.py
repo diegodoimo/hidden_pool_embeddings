@@ -4,6 +4,7 @@ from tqdm.auto import tqdm
 import torch
 import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
+import numpy as np
 import os
 import json
 from utils.helpers import get_cpt_steps
@@ -208,6 +209,107 @@ def hard_loss(
 
     hard_norm = F.normalize(hard_neg_embeddings, p=2, dim=-1)
     logits = (a_norm.unsqueeze(1) * hard_norm).sum(-1) / temperature  # [bs, num_hard+1]
+
+    loss_hard = criterion(
+        logits, torch.zeros((bs), dtype=torch.long, device=logits.device)
+    ).mean()
+
+    return loss_hard
+
+
+def inbatch_loss2(
+    query_embeddings,  # [bs, d]
+    context_embeddings,  # [bs, d]
+    doc_ids,  # list[str], length bs — doc IDs of the positive contexts (local process)
+    criterion,
+    accelerator,
+    temperature=0.05,
+):
+    """In-batch InfoNCE loss with false-negative masking.
+
+    Identical to ``inbatch_loss`` except that, for each query i, every
+    context j in the (cross-GPU) denominator whose doc_id equals the
+    positive doc_id of query i is masked to -inf before the softmax.
+    The true positive (position ``labels[i]``) is always kept.
+    """
+    bs = query_embeddings.size(0)
+    a_norm = F.normalize(query_embeddings, p=2, dim=-1)
+    b_cross_gpus = accelerator.gather(context_embeddings)  # [bs*nproc, d]
+    b_norm_cross_gpus = F.normalize(b_cross_gpus, p=2, dim=-1)
+
+    # Gather doc_ids from every process.
+    # gather_object returns a list of length nproc; each element is the
+    # object passed by that process (here: a list of strings).
+    all_doc_ids_nested = accelerator.gather_object(doc_ids)
+    all_doc_ids = [d for sublist in all_doc_ids_nested for d in sublist]  # [bs*nproc]
+
+    student_logits = (
+        torch.matmul(a_norm, b_norm_cross_gpus.t()) / temperature
+    )  # [bs, bs*nproc]
+
+    labels = (
+        torch.arange(bs, device=student_logits.device) + bs * accelerator.process_index
+    )
+
+    # same_id[i, j] = True when all_doc_ids[j] == doc_ids[i]
+    local_arr = np.array(doc_ids)       # [bs]
+    all_arr = np.array(all_doc_ids)     # [bs*nproc]
+    same_id = torch.from_numpy(
+        local_arr[:, None] == all_arr[None, :]
+    ).to(student_logits.device)         # [bs, bs*nproc]
+
+    # Never mask the true positive
+    true_pos = torch.zeros_like(same_id)
+    true_pos[torch.arange(bs, device=student_logits.device), labels] = True
+
+    student_logits = student_logits.masked_fill(same_id & ~true_pos, float("-inf"))
+
+    loss_bs = criterion(student_logits, labels)
+    loss = loss_bs.mean()
+    return loss
+
+
+def hard_loss2(
+    query_embeddings,   # [bs, d]
+    context_embeddings, # [bs, d]
+    hard_neg_embeddings,  # [bs, num, d]
+    doc_ids,            # list[str], length bs — positive doc IDs
+    hard_neg_doc_ids,   # list[list[str]], shape [bs, num] — hard-negative doc IDs
+    criterion,
+    accelerator,
+    temperature=0.05,
+):
+    """Hard-negative InfoNCE loss with false-negative masking.
+
+    Identical to ``hard_loss`` except that, for each query i, every hard
+    negative whose doc_id equals ``doc_ids[i]`` (the positive doc_id) is
+    masked to -inf before the softmax.  The positive (index 0) is always
+    kept.
+    """
+    if hard_neg_embeddings is None:
+        return 0.0
+
+    bs = query_embeddings.size(0)
+    a_norm = F.normalize(query_embeddings, p=2, dim=-1)
+
+    hard_neg_embeddings = torch.concat(
+        [context_embeddings.unsqueeze(1), hard_neg_embeddings], dim=1
+    )  # [bs, num_hard+1, d]
+
+    hard_norm = F.normalize(hard_neg_embeddings, p=2, dim=-1)
+    logits = (a_norm.unsqueeze(1) * hard_norm).sum(-1) / temperature  # [bs, num_hard+1]
+
+    if hard_neg_doc_ids is not None:
+        # match[i, j] = True when hard_neg_doc_ids[i][j] == doc_ids[i]
+        neg_arr = np.array(hard_neg_doc_ids)        # [bs, num_hard]
+        pos_arr = np.array(doc_ids)[:, None]        # [bs, 1]
+        match = neg_arr == pos_arr                  # [bs, num_hard]
+        # Prepend a False column so index 0 (the positive) is never masked
+        match_full = np.concatenate(
+            [np.zeros((bs, 1), dtype=bool), match], axis=1
+        )  # [bs, num_hard+1]
+        mask = torch.from_numpy(match_full).to(logits.device)
+        logits = logits.masked_fill(mask, float("-inf"))
 
     loss_hard = criterion(
         logits, torch.zeros((bs), dtype=torch.long, device=logits.device)
