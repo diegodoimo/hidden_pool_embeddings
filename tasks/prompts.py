@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 EMBEDDINGGEMMA_PROMPTS = {
     "document": "title: {title} | text: ",
     "BitextMining": "task: search result | query: ",
