@@ -485,68 +485,6 @@ SUMMARIZATION = [
     "wikihow",
 ]
 
-# # ============================================================================
-# # NLI TASK CATEGORIES
-# # ============================================================================
-
-# NLI_TASKS = [
-#     "snli",
-#     "mnli",
-#     "anli",
-#     "xnli",
-#     "all_nli",  # Combined NLI dataset
-# ]
-
-# # ============================================================================
-# # STS TASK CATEGORIES
-# # ============================================================================
-
-# STS_TASKS = [
-#     "sts12",
-#     "sts22",
-#     "stsbenchmark",
-# ]
-
-# # ============================================================================
-# # CLASSIFICATION TASK CATEGORIES
-# # ============================================================================
-
-# BINARY_CLASSIFICATION_TASKS = [
-#     "toxic_conversations",
-#     "amazon_counterfactual",
-#     "amazon_polarity",
-#     "imdb",
-#     "cola",
-# ]
-
-# MULTIWAY_CLASSIFICATION_TASKS = [
-#     "banking77",
-# ]
-
-# # ============================================================================
-# # CLUSTERING TASK CATEGORIES
-# # ============================================================================
-
-# CLUSTERING_TASKS = [
-#     "amazon_reviews",
-#     "emotion",
-#     "mtop_intent",
-#     "mtop_domain",
-#     "massive_scenario",
-#     "massive_intent",
-#     "tweet_sentiment",
-#     "arxiv_clustering_p2p",
-#     "arxiv_clustering_s2s",
-#     "biorxiv_clustering_p2p",
-#     "biorxiv_clustering_s2s",
-#     "medrxiv_clustering_p2p",
-#     "medrxiv_clustering_s2s",
-#     "reddit_clustering_p2p",
-#     "reddit_clustering_s2s",
-#     "stackexchange_clustering_p2p",
-#     "stackexchange_clustering_s2s",
-#     "twentynewsgroups",
-# ]
 
 # ============================================================================
 # TASK TO CATEGORY MAPPING

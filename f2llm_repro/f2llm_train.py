@@ -483,14 +483,16 @@ def accelerate_train(
                     ]
                 ).mean()
                 if not args.only_retrieval:
-                    train_log_dict["Avg/classification/training_loss_hard"] = torch.tensor(
-                        [
-                            v
-                            for k, v in _per_ds.items()
-                            if k.split("/")[0] in CLASSIFICATION_DATASETS
-                            and k.endswith("training_loss_hard")
-                        ]
-                    ).mean()
+                    train_log_dict["Avg/classification/training_loss_hard"] = (
+                        torch.tensor(
+                            [
+                                v
+                                for k, v in _per_ds.items()
+                                if k.split("/")[0] in CLASSIFICATION_DATASETS
+                                and k.endswith("training_loss_hard")
+                            ]
+                        ).mean()
+                    )
                     train_log_dict["Avg/clustering/training_loss_hard"] = torch.tensor(
                         [
                             v
