@@ -14,7 +14,7 @@ import time
 from tasks.load_datasets import load_task_data
 from utils.helpers import print_memory_consumed
 
-from inference.hard_negative_mining import _BaseMiner
+from inference.mine_hard_negatives import _BaseMiner
 
 
 class F2LLMValidator(_BaseMiner):

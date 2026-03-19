@@ -1,4 +1,4 @@
-from inference.hard_negative_mining import HardNegativesMiner
+from inference.mine_hard_negatives import HardNegativesMiner
 import os
 import torch
 import argparse

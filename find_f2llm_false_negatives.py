@@ -44,7 +44,7 @@ import torch
 import torch.distributed as dist
 from transformers import AutoModel, AutoTokenizer
 
-from inference.f2llm_false_negative_mining import F2LLMValidator
+from inference.mine_false_negatives import F2LLMValidator
 from models.modules import add_pooling_layers, last_token_pool
 from tasks import NAME_TO_TASK, TRANSLATE_F2LLM_NAME
 from tasks.f2llm_data_loaders import make_f2llm_task
