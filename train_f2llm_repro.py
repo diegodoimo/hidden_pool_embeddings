@@ -132,8 +132,29 @@ class BatchMetadataRecorder:
             self._fh = None
 
 
+# def _stack(input_ids, max_len, tokenizer):
+#     """OLD: sum(data, []) is O(n**2) — it repeatedly copies growing lists.
+#     With 432 sequences of ~500 tokens each that's ~216K tokens copied
+#     quadratically."""
+#     data = [ids[:max_len] for ids in input_ids]
+#     data = [
+#         ids if ids[-1] == tokenizer.eos_token_id
+#         else ids[:-1] + [tokenizer.eos_token_id]
+#         for ids in data
+#     ]
+#     lens = [len(x) for x in data]
+#     tensor = torch.tensor(sum(data, []))  # O(n**2) list concat
+#     return tensor.split(lens)
+
 def _stack(input_ids, max_len, tokenizer):
-    data = [ids[:max_len] for ids in input_ids]  # input_ids: list of lists
+    """Truncate, ensure EOS, pack into a flat tensor and split.
+
+    Uses itertools.chain instead of sum(lists, []) to avoid O(n**2)
+    list concatenation.
+    """
+    from itertools import chain
+
+    data = [ids[:max_len] for ids in input_ids]
     data = [
         (
             ids
@@ -143,8 +164,8 @@ def _stack(input_ids, max_len, tokenizer):
         for ids in data
     ]
     lens = [len(x) for x in data]
-    tensor = torch.tensor(sum(data, []))  # (total_tokens,)
-    return tensor.split(lens)  # list of 1-d tensors
+    tensor = torch.tensor(list(chain.from_iterable(data)))  # O(n) flat concat
+    return tensor.split(lens)
 
 
 def collate_fn(batch_raw, args, _stack, tokenizer, classification_datasets):
@@ -191,21 +212,21 @@ def collate_fn(batch_raw, args, _stack, tokenizer, classification_datasets):
 
 
 def collate_fn2(batch_raw, args, _stack, tokenizer, classification_datasets):
-    """Variant of ``collate_fn`` for datasets pre-annotated with doc IDs.
+    """Variant of ``collate_fn`` for datasets pre-annotated with integer doc IDs.
 
     Expected dataset fields (in addition to ``query_input_ids`` and
     ``passage_input_ids``):
 
-    * ``negative_input_ids``  – list of token-id lists, one per hard negative
+    * ``negative_token_ids``  – list of token-id lists, one per hard negative
       (all candidates stored together rather than as separate named fields).
-    * ``positive_doc_id``     – str, document ID of the positive passage.
-    * ``negative_doc_id``     – list[str], document IDs parallel to
+    * ``positive_doc_id``     – int, document ID of the positive passage.
+    * ``negative_doc_id``     – list[int], document IDs parallel to
       ``negative_input_ids``.
 
     The returned batch is identical to ``collate_fn`` plus two extra keys:
 
-    * ``positive_doc_ids``  – list[str], length bs.
-    * ``negative_doc_ids``  – list[list[str]], shape [bs, num_hard_neg],
+    * ``positive_doc_ids``  – int32 tensor, shape [bs].
+    * ``negative_doc_ids``  – int32 tensor, shape [bs, num_hard_neg],
       aligned with the selected hard negatives.
     """
     num_hard_neg = (
@@ -215,15 +236,15 @@ def collate_fn2(batch_raw, args, _stack, tokenizer, classification_datasets):
     )
 
     # Sample from however many hard negatives are available (flexible pool size).
-    num_available = len(batch_raw[0]["negative_input_ids"])
+    num_available = len(batch_raw[0]["negative_token_ids"])
     hard_neg_indices = (
         [0] if num_hard_neg == 1 else random.sample(range(num_available), num_hard_neg)
     )
 
     input_ids = _stack(
-        [s["query_input_ids"] for s in batch_raw]
-        + [s["passage_input_ids"] for s in batch_raw]
-        + [s["negative_input_ids"][i] for s in batch_raw for i in hard_neg_indices],
+        [s["query_token_ids"] for s in batch_raw]
+        + [s["positive_token_ids"] for s in batch_raw]
+        + [s["negative_token_ids"][i] for s in batch_raw for i in hard_neg_indices],
         args.max_seq_length,
         tokenizer,
     )
@@ -233,10 +254,13 @@ def collate_fn2(batch_raw, args, _stack, tokenizer, classification_datasets):
     )
     attention_masks = input_ids.ne(tokenizer.pad_token_id).long()
 
-    positive_doc_ids = [s["positive_doc_id"] for s in batch_raw]
-    negative_doc_ids = [
-        [s["negative_doc_id"][i] for i in hard_neg_indices] for s in batch_raw
-    ]
+    positive_doc_ids = torch.tensor(
+        [int(s["positive_doc_id"]) for s in batch_raw], dtype=torch.int32
+    )
+    negative_doc_ids = torch.tensor(
+        [[int(s["negative_doc_id"][i]) for i in hard_neg_indices] for s in batch_raw],
+        dtype=torch.int32,
+    )
 
     return {
         "input_ids": input_ids,
@@ -384,7 +408,7 @@ def main():
             # valid_datasets.append((dataset_name, dataset["test"]))
 
     collate_fn_partial = partial(
-        collate_fn,
+        collate_fn2,
         args=args,
         _stack=_stack,
         tokenizer=tokenizer,

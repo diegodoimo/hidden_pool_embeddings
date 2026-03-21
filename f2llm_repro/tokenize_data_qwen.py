@@ -7,13 +7,6 @@ from tqdm.auto import tqdm
 import argparse
 
 
-# ---- globals set by main() before any worker fork ----
-tokenizer = None
-max_seq_length = None
-_add_special_tokens = None
-_append_eos = None
-
-
 # Model-type presets:
 #   qwen3      – add_special_tokens=False, manually append eos_token_id,
 #                max_seq_length reserves 1 slot for that EOS.
@@ -73,6 +66,24 @@ def parallelize(data, func, num_of_processes=8):
 
 def main(args):
 
+    # ---- configure globals before forking workers ----
+    model_type = _infer_model_type(args.tokenizer_path)
+    preset = MODEL_TYPE_PRESETS[model_type]
+    _add_special_tokens = preset["add_special_tokens"]
+    _append_eos = preset["append_eos"]
+    max_seq_length = args.max_seq_len - preset["seq_len_reserve"]
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.tokenizer_path, trust_remote_code=True
+    )
+    print(
+        f"Tokenizer : {args.tokenizer_path}\n"
+        f"Model type: {model_type}\n"
+        f"add_special_tokens={_add_special_tokens}, append_eos={_append_eos}, "
+        f"max_seq_length={max_seq_length} (total cap {args.max_seq_len})"
+    )
+
+
     for ds_name in tqdm(
         sorted(f for f in os.listdir(args.root_dir) if f.endswith(".parquet"))
     ):
@@ -102,6 +113,69 @@ def main(args):
 
         os.makedirs(args.output_dir, exist_ok=True)
         df.to_parquet(f"{args.output_dir}/{ds_name}", index=False)
+
+
+def main_test(args):
+    """Tokenize all parquet files in args.root_dir and return a dict {source_name: df}.
+
+    Each df has the original columns plus:
+      query_input_ids, passage_input_ids, negative_1_input_ids, …, negative_N_input_ids
+    """
+    global tokenizer, max_seq_length, _add_special_tokens, _append_eos
+
+    # ---- configure globals before forking workers ----
+    model_type = _infer_model_type(args.tokenizer_path)
+    preset = MODEL_TYPE_PRESETS[model_type]
+    _add_special_tokens = preset["add_special_tokens"]
+    _append_eos = preset["append_eos"]
+    max_seq_length = args.max_seq_len - preset["seq_len_reserve"]
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.tokenizer_path, trust_remote_code=True
+    )
+    print(
+        f"Tokenizer : {args.tokenizer_path}\n"
+        f"Model type: {model_type}\n"
+        f"add_special_tokens={_add_special_tokens}, append_eos={_append_eos}, "
+        f"max_seq_length={max_seq_length} (total cap {args.max_seq_len})"
+    )
+
+    datasets_filter = set(args.datasets) if getattr(args, "datasets", None) else None
+
+    results = {}
+    for ds_name in tqdm(
+        sorted(f for f in os.listdir(args.root_dir) if f.endswith(".parquet"))
+    ):
+        source_name = ds_name[:-8]  # strip ".parquet"
+        if datasets_filter is not None and source_name not in datasets_filter:
+            continue
+        print(ds_name, flush=True)
+
+        df = pd.read_parquet(f"{args.root_dir}/{ds_name}")
+        df["query_input_ids"] = parallelize(
+            df["query"], process_sent_batch, args.num_workers
+        )
+
+        num_neg = 24 if "negative_2" in df.keys() else 1
+
+        ls = df.passage.to_list()
+        for i in range(1, num_neg + 1):
+            ls += df[f"negative_{i}"].to_list()
+        ls = list(set(ls))
+        df_tmp = pd.DataFrame({"text": ls})
+        df_tmp["input_ids"] = parallelize(
+            df_tmp["text"], process_sent_batch, args.num_workers
+        )
+        df_tmp = df_tmp.set_index("text")
+
+        df["passage_input_ids"] = df.passage.map(df_tmp.input_ids)
+
+        for i in range(1, num_neg + 1):
+            df[f"negative_{i}_input_ids"] = df[f"negative_{i}"].map(df_tmp.input_ids)
+
+        results[source_name] = df
+
+    return results
 
 
 if __name__ == "__main__":
@@ -142,22 +216,5 @@ if __name__ == "__main__":
         return args
 
     args = parse_args()
-
-    # ---- configure globals before forking workers ----
-    model_type = _infer_model_type(args.tokenizer_path)
-    preset = MODEL_TYPE_PRESETS[model_type]
-    _add_special_tokens = preset["add_special_tokens"]
-    _append_eos = preset["append_eos"]
-    max_seq_length = args.max_seq_len - preset["seq_len_reserve"]
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.tokenizer_path, trust_remote_code=True
-    )
-    print(
-        f"Tokenizer : {args.tokenizer_path}\n"
-        f"Model type: {model_type}\n"
-        f"add_special_tokens={_add_special_tokens}, append_eos={_append_eos}, "
-        f"max_seq_length={max_seq_length} (total cap {args.max_seq_len})"
-    )
 
     main(args)

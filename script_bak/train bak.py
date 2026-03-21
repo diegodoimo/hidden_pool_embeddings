@@ -1,3 +1,4 @@
+import contextlib
 import torch
 import os
 
@@ -15,6 +16,7 @@ from torch.utils.data.distributed import DistributedSampler
 from argparse import ArgumentParser
 from transformers import AutoModel, AutoTokenizer
 from peft import LoraConfig, get_peft_model
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from utils.arguments import parse_args
 from utils.helpers import (
@@ -50,6 +52,14 @@ from functools import partial
 
 from huggingface_hub import login as hf_login
 
+try:
+    import deepspeed
+    from transformers.integrations import HfDeepSpeedConfig
+
+    _DEEPSPEED_AVAILABLE = True
+except ImportError:
+    _DEEPSPEED_AVAILABLE = False
+
 from inference.test_retrieval_ddp_update import evaluate_retrieval
 from utils.create_datasets import (
     instruction_template_qwen3,
@@ -59,9 +69,6 @@ from models.modules import last_token_pool, add_pooling_layers, mean_pool
 from datetime import timedelta
 from tasks import RETRIEVAL_SUBSET, NAME_TO_TASK_TYPE
 from tasks.task_categories import BINARY_CLASSIFICATION_TASKS
-
-import deepspeed
-from transformers.integrations import HfDeepSpeedConfig
 
 
 class CudaDataPrefetcher:
@@ -133,24 +140,6 @@ class Trainer:
         if self.rank == 0:
             os.makedirs(args.output_dir, exist_ok=True)
 
-        ds_config = get_train_ds_config(
-            train_batch_size=args.batch_size,
-            per_device_train_batch_size=args.per_device_train_batch_size,
-            gradient_accumulation_steps=args.gradient_accumulation_steps,
-            stage=2,
-            max_norm=args.clip_grad_thresh,
-        )
-
-        # Costa: MAGIC: it's actually needed to initialize this `dschf`, so
-        # https://huggingface.co/docs/transformers/deepspeed#non-trainer-deepspeed-integration
-        # next line instructs transformers to partition the model directly over multiple gpus using
-        # deepspeed.zero.Init when model's `from_pretrained` method is called.
-        if ds_config is not None and ds_config["zero_optimization"]["stage"] == 3:
-            dschf = HfDeepSpeedConfig(ds_config)
-        else:
-            dschf = None
-        print(f"{dschf=}")
-
         if args.activation_checkpointing:
             # Resolve the underlying transformer model for checkpointing.
             # EmbeddingT5Gemma2* variants expose it as .encoder;
@@ -172,11 +161,7 @@ class Trainer:
             )
 
             # Selective checkpointing: keep only one in every N layers
-            # checkpointed. interval=1 (default) checkpoints every layer;
-            # interval=2 checkpoints every other layer, halving recompute cost
-            # while still cutting peak activation memory roughly in half vs
-            # no checkpointing.  GradientCheckpointingLayer exposes a per-
-            # instance gradient_checkpointing flag we can flip individually.
+            # checkpointed (see train_deepspeed.py for full rationale).
             interval = getattr(args, "checkpoint_layers_interval", 1)
             if interval > 1 and hasattr(_base, "layers"):
                 for i, layer in enumerate(_base.layers):
@@ -204,24 +189,91 @@ class Trainer:
 
         print_memory_consumed(message="memory consumed before loading model")
 
-        # 3. Move your model to the device
+        self.use_deepspeed = getattr(args, "deepspeed", False)
 
-        self.optimizer, self.lr_scheduler = get_scheduler_optimizer(
-            self.model,
-            args,
-            len_dataloader,
+        if self.use_deepspeed:
+            if not _DEEPSPEED_AVAILABLE:
+                raise ImportError("--deepspeed requires the 'deepspeed' package.")
+
+            ds_config = get_train_ds_config(
+                train_batch_size=args.batch_size,
+                per_device_train_batch_size=args.per_device_train_batch_size,
+                gradient_accumulation_steps=args.gradient_accumulation_steps,
+                stage=getattr(args, "deepspeed_stage", 2),
+                max_norm=args.clip_grad_thresh,
+            )
+
+            # Required for ZeRO-3 to partition the model during from_pretrained.
+            # Must be created before deepspeed.initialize().
+            if ds_config["zero_optimization"]["stage"] == 3:
+                _dschf = HfDeepSpeedConfig(ds_config)  # noqa: F841 (kept alive)
+
+            self.optimizer, self.lr_scheduler = get_scheduler_optimizer(
+                self.model,
+                args,
+                len_dataloader,
+            )
+
+            print_memory_consumed(message="before deepspeed.initialize")
+            self.model, self.optimizer, _, self.lr_scheduler = deepspeed.initialize(
+                model=self.model,
+                optimizer=self.optimizer,
+                config=ds_config,
+                lr_scheduler=self.lr_scheduler,
+                dist_init_required=False,
+            )
+            self.model.train()
+            print_memory_consumed(message="after deepspeed.initialize")
+        else:
+            # 3. Move your model to the device
+            self.model = self.model.to(self.device)
+            self.model = DDP(
+                self.model,
+                device_ids=[self.local_rank],
+                static_graph=True,  # cache allreduce schedule (graph never changes)
+                gradient_as_bucket_view=True,  # avoid gradient-to-bucket copy
+            )
+
+            if not args.no_compile:
+                if RANK == 0:
+                    print(
+                        "wrapping with torch.compile (actual compilation deferred to first forward pass)..."
+                    )
+                self.model = torch.compile(self.model)
+            print_memory_consumed(message="memory consumed after loading model")
+
+            self.optimizer, self.lr_scheduler = get_scheduler_optimizer(
+                self.model,
+                args,
+                len_dataloader,
+                fused=True,
+            )
+
+        # DeepSpeed handles mixed precision internally; DDP uses torch.autocast.
+        self.autocast_ctx = (
+            contextlib.nullcontext()
+            if self.use_deepspeed
+            else torch.autocast(device_type="cuda", dtype=torch.bfloat16)
         )
 
-        print_memory_consumed(message="before model intialize\n")
-        self.model, self.optimizer, _, self.lr_scheduler = deepspeed.initialize(
-            model=self.model,
-            optimizer=self.optimizer,
-            config=ds_config,
-            lr_scheduler=self.lr_scheduler,
-            dist_init_required=False,
+        # Bind the correct backward implementation once at init so the hot loop
+        # dispatches with a direct attribute lookup — no branch per step.
+        self._backward_step = (
+            self._backward_step_ds if self.use_deepspeed else self._backward_step_ddp
         )
-        self.model.train()
-        print_memory_consumed(message="after model initialized")
+
+    def _backward_step_ds(self, loss: torch.Tensor, args) -> None:
+        """DeepSpeed backward + update (clip/zero_grad/lr_step handled internally)."""
+        self.model.backward(loss)
+        self.model.step()
+
+    def _backward_step_ddp(self, loss: torch.Tensor, args) -> None:
+        """DDP backward + update."""
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), args.clip_grad_thresh)
+        self.optimizer.step()
+        self.lr_scheduler.step()
+        self.optimizer.zero_grad(set_to_none=True)
 
     def train(
         self,
@@ -241,7 +293,7 @@ class Trainer:
         checkpointing_steps, _ = get_cpt_steps(
             args.checkpointing_steps, args.max_train_steps, logspace=False
         )
-        log_steps, log_interval = get_cpt_steps(
+        log_steps, _ = get_cpt_steps(
             int(args.logging_steps), args.max_train_steps, logspace=False
         )
 
@@ -298,6 +350,7 @@ class Trainer:
         completed_steps = 0
         total_loss = 0
         total_time = 0
+        previous_cpt = 0  # used by deepspeed path for per-interval loss averaging
 
         is_f2llm = isinstance(loss_fn, F2LLMLoss)
         # Pre-compute set of retrieval task names for per-batch inbatch decision
@@ -319,7 +372,6 @@ class Trainer:
         )
 
         start = time.time()
-        previous_cpt = 0
         for epoch in range(args.num_train_epochs):
 
             self.model.train()
@@ -332,6 +384,10 @@ class Trainer:
 
             # --- Non-blocking H2D transfer (overlaps with previous step's compute) ---
             for index, batch in enumerate(train_loader):
+                if index == 0 and epoch == 0 and RANK == 0:
+                    print(
+                        "first batch received from dataloader, entering forward pass..."
+                    )
                 batch = {
                     key: (
                         val.to(self.device, non_blocking=True)
@@ -355,41 +411,44 @@ class Trainer:
                 query_ids = batch["query_ids"]
                 num_neg = batch["num_hard_negatives"]
 
-                B = query_inputs.shape[0]
-                query_embeddings = self.model(
-                    input_ids=query_inputs, attention_mask=query_mask
-                )
-
-                all_doc_embeddings = self.model(
-                    input_ids=all_doc_inputs, attention_mask=all_doc_mask
-                )
-                doc_embeddings = all_doc_embeddings[:B]
-                neg_embeddings = all_doc_embeddings[B:].view(B, num_neg, -1)
-
-                if is_f2llm:
-                    ds_name = batch.get("dataset_name", "")
-                    _ib = ds_name in _inbatch_tasks
-                    loss = loss_fn(
-                        query_embeddings=query_embeddings,
-                        doc_embeddings=doc_embeddings,
-                        hard_neg_embeddings=neg_embeddings,
-                        doc_ids=doc_ids,
-                        query_ids=query_ids,
-                        use_inbatch=_ib,
+                with self.autocast_ctx:
+                    B = query_inputs.shape[0]
+                    query_embeddings = self.model(
+                        input_ids=query_inputs, attention_mask=query_mask
                     )
-                else:
-                    loss = loss_fn(
-                        query_embeddings=query_embeddings,
-                        doc_embeddings=doc_embeddings,
-                        hard_neg_embeddings=neg_embeddings,
-                        doc_ids=doc_ids,
-                        query_ids=query_ids,
+                    all_doc_embeddings = self.model(
+                        input_ids=all_doc_inputs, attention_mask=all_doc_mask
                     )
+                    doc_embeddings = all_doc_embeddings[:B]
+                    neg_embeddings = all_doc_embeddings[B:].view(B, num_neg, -1)
 
-                self.model.backward(loss)
-                self.model.step()
+                    if is_f2llm:
+                        ds_name = batch.get("dataset_name", "")
+                        _ib = ds_name in _inbatch_tasks
+                        loss = loss_fn(
+                            query_embeddings=query_embeddings,
+                            doc_embeddings=doc_embeddings,
+                            hard_neg_embeddings=neg_embeddings,
+                            doc_ids=doc_ids,
+                            query_ids=query_ids,
+                            use_inbatch=_ib,
+                        )
+                    else:
+                        loss = loss_fn(
+                            query_embeddings=query_embeddings,
+                            doc_embeddings=doc_embeddings,
+                            hard_neg_embeddings=neg_embeddings,
+                            doc_ids=doc_ids,
+                            query_ids=query_ids,
+                        )
+
+                self._backward_step(loss, args)
+
                 total_loss += loss.detach().float()
                 completed_steps += 1
+
+                if completed_steps == 1 and RANK == 0:
+                    print(f"first step completed in {time.time()-start:.1f}s")
 
                 if completed_steps in log_steps or completed_steps == 10:
 
@@ -402,8 +461,8 @@ class Trainer:
                         / WORLD_SIZE
                         / (completed_steps - previous_cpt)
                     )
-                    total_loss = 0
                     previous_cpt = completed_steps
+                    total_loss = 0
 
                     if RANK == 0:
                         stats["loss"][completed_steps] = avg_loss
@@ -492,6 +551,14 @@ def main():
     torch.cuda.set_device(LOCAL_RANK)
     torch.set_float32_matmul_precision("high")
 
+    if getattr(args, "deepspeed", False):
+        # need activation checkpointing otherwise oom
+        args.activation_checkpointing = True
+        #args.per_device_train_batch_size = min(32, args.per_device_train_batch_size)
+        if RANK == 0:
+            print("USE DEEPSPEED: set activation checkpointing to TRUE")
+            #print("USE DEEPSPEED: set min batch_size to 32")
+
     args.batch_size = WORLD_SIZE * args.per_device_train_batch_size
     args.gradient_accumulation_steps = 1
 
@@ -550,7 +617,6 @@ def main():
 
         model_name = "embeddinggemma"
         instruction_template = instruction_template_embeddinggemma
-        pool_fn = mean_pool
         add_special_tokens = True
         eot_id = None
 
@@ -603,12 +669,6 @@ def main():
     #         datasets_subset=train_list,
     #         max_seq_len=args.max_seq_len if args.length_strategy == "filter" else None,
     #     )
-
-    train_dataset = create_hard_negatives_datasets_from_pretokenized(
-        base_dir=args.negatives_dir,
-        rank=RANK,
-        datasets_subset=train_list,
-    )
 
     dist.barrier()
     if RANK == 0:
@@ -668,6 +728,12 @@ def main():
     # Standard path: single concatenated dataset
     # ------------------------------------------------------------------
     else:
+
+        train_dataset = create_hard_negatives_datasets_from_pretokenized(
+            base_dir=args.negatives_dir,
+            rank=RANK,
+            datasets_subset=train_list,
+        )
         if args.batch_strategy in ("sequential", "grouped"):
             sampler = DatasetAwareSampler(
                 train_dataset,
@@ -709,8 +775,6 @@ def main():
             multiprocessing_context="spawn" if args.num_workers > 0 else None,
         )
 
-    # **************************************
-
     eval_tasks = get_eval_tasks(args.eval_set)
     evaluator = evaluate_retrieval(
         tasks=eval_tasks,
@@ -722,8 +786,6 @@ def main():
         max_samples=1_000_000,
     )
 
-    # Initialize loss (not compiled here; model+loss are compiled as one
-    # graph inside Trainer.train()).
     if args.loss_type == "f2llm":
         loss_fn = F2LLMLoss(temperature=args.f2llm_temperature)
     else:
@@ -733,12 +795,10 @@ def main():
         if WORLD_SIZE > 1 and args.distributed_loss:
             loss_fn = EmbeddingGemmaLossDistributed(temperature=0.07)
 
-    # Compile loss standalone (alternative to unified model+loss compilation):
-    # loss_fn = torch.compile(loss_fn, mode="max-autotune")
-
     dist.barrier()
 
-    suffix = f"deepspeed_{model_name}_train-{teacher_model}_gpus{WORLD_SIZE}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_{args.batch_strategy}"
+    _ds_prefix = "deepspeed_" if getattr(args, "deepspeed", False) else ""
+    suffix = f"{_ds_prefix}{model_name}_train-{teacher_model}_gpus{WORLD_SIZE}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_{args.batch_strategy}"
     if args.out_filename:
         args.out_filename = f"{args.out_filename}_{suffix}"
     else:

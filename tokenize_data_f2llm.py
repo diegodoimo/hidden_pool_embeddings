@@ -63,21 +63,16 @@ INSTRUCTION_TEMPLATES = {
     "f2llm": (None, False),
 }
 
-# Columns that the training dataloader actually consumes.  Stripping the raw
-# text columns keeps the output files compact and consistent with what
-# create_pretokenized_hard_negatives_datasets produces.
-_COLS_TO_KEEP = {
-    "query_prompt",
-    "positive_prompt",
-    "negative_prompts",
-    "positive_id",
-    "query_id",
-    "dataset_name",
-    "total_length",
-    "query_token_ids",
-    "positive_token_ids",
-    "negative_token_ids",
+
+MODEL_TYPE_PRESETS = {
+    "qwen3": {"add_special_tokens": False, "append_eos": True, "seq_len_reserve": 1},
+    "t5gemma-2": {
+        "add_special_tokens": True,
+        "append_eos": False,
+        "seq_len_reserve": 0,
+    },
 }
+
 
 
 def parse_args():
@@ -204,52 +199,6 @@ def parse_args():
 # -----------------------------------------
 
 
-def _compute_and_save_metadata(
-    output_path: str,
-    ds_name: str,
-    n_rows_raw: int,
-    rows_saved: int,
-    query_prompts: list,
-    positive_prompts: list,
-    all_neg_flat: list,
-) -> None:
-    """Compute deduplication statistics and write metadata.json next to the parquet.
-
-    Fields written:
-      total_queries / unique_queries   — rows vs distinct query prompt strings
-      total_positives / unique_positives — same for positive passages
-      total_negatives                  — sum of all negative slots across rows
-      unique_negatives                 — number of distinct negative passages
-      negative_count_distribution      — counts-of-counts: {k: n} means n unique
-                                         negatives each appeared in exactly k rows
-      rows_saved                       — rows written to the output parquet
-
-    Stats are measured on *raw* (pre-filter) data to reflect the underlying
-    dataset independently of the chosen max_seq_len threshold.
-    """
-    neg_counter: Counter = Counter(all_neg_flat)
-    count_of_counts: Counter = Counter(neg_counter.values())
-
-    metadata = {
-        "dataset": ds_name,
-        "total_queries": n_rows_raw,
-        "unique_queries": len(set(query_prompts)),
-        "total_positives": n_rows_raw,
-        "unique_positives": len(set(positive_prompts)),
-        "total_negatives": len(all_neg_flat),
-        "unique_negatives": len(neg_counter),
-        # {"k": n} → n unique negatives each appear as a negative for exactly k queries
-        "negative_count_distribution": {
-            str(k): v for k, v in sorted(count_of_counts.items())
-        },
-        "rows_saved": rows_saved,
-    }
-
-    metadata_path = os.path.join(os.path.dirname(output_path), "metadata.json")
-    with open(metadata_path, "w") as fh:
-        json.dump(metadata, fh, indent=2)
-
-
 def _get_task_metadata(dataset_name: str):
     """Return task metadata for *dataset_name*, raising ValueError if unknown."""
     if dataset_name not in NAME_TO_TASK_TYPE:
@@ -263,12 +212,18 @@ def _get_task_metadata(dataset_name: str):
 def _tokenize_dedup(
     tokenizer,
     add_special_tokens: bool,
+    append_eos: bool,
+    max_seq_length: int,
     label: str,
     q_prompts: list,
     p_prompts: list,
     neg_prompts_lists: list,
 ) -> tuple:
     """Deduplicate then tokenize all prompts in one batched call.
+
+    Truncates to *max_seq_length* and, when *append_eos* is True, appends
+    the tokenizer's eos_token_id to every sequence (matching the reference
+    f2llm_repro/tokenize_data_qwen.py behaviour for Qwen3).
 
     Returns (q_ids, p_ids, n_ids, all_neg_flat) where *all_neg_flat* is the
     flattened list of all negative prompt strings (useful for metadata).
@@ -287,8 +242,13 @@ def _tokenize_dedup(
         all_unique,
         add_special_tokens=add_special_tokens,
         return_attention_mask=False,
-        truncation=False,
+        truncation=True,
+        max_length=max_seq_length,
     )["input_ids"]
+
+    if append_eos:
+        eos_id = tokenizer.eos_token_id
+        all_ids = [ids + [eos_id] for ids in all_ids]
 
     id_map = dict(zip(all_unique, all_ids))
     q_ids = [id_map[p] for p in q_prompts]
@@ -370,6 +330,8 @@ def _finalize_and_save(
         p_ids = [p_ids[i] for i in sort_idx]
         n_ids = [n_ids[i] for i in sort_idx]
         total_length = [total_length[i] for i in sort_idx]
+    else:
+        n_rows = len(ds)
 
     # --- 2. Build pyarrow table — O(1) per column append ----------------------
     # HF add_column/remove_columns each rebuild the full Arrow table; instead
@@ -378,21 +340,11 @@ def _finalize_and_save(
     base_cols = [
         c
         for c in ds.column_names
-        if c in _COLS_TO_KEEP
-        and c
-        not in {
-            "query_token_ids",
-            "positive_token_ids",
-            "negative_token_ids",
-            "dataset_name",
-            "total_length",
-            "positive_doc_id",
-            "negative_doc_id",
-        }
+        if c in {"positive_doc_id", "negative_doc_id", "query_id"}
     ]
     table: pa.Table = ds.data.table.select(base_cols)
-    # Cast string / list<string> cols to large_string variants to avoid
-    # 32-bit offset overflow on large datasets (e.g. bioasq) during take().
+    # Cast string columns (query_id) to large_string to avoid 32-bit offset
+    # overflow on large datasets.  Doc-id columns are int32 and need no cast.
     new_schema_fields = []
     for field in table.schema:
         if field.type == pa.utf8():
@@ -402,19 +354,18 @@ def _finalize_and_save(
         else:
             new_schema_fields.append(field)
     table = table.cast(pa.schema(new_schema_fields))
-    table = table.take(sort_idx)
+    if total_length is not None:
+        table = table.take(sort_idx)
 
     if not has_token_cols:
-        table = table.append_column("query_token_ids", pa.array(q_ids))
-        table = table.append_column("positive_token_ids", pa.array(p_ids))
-        table = table.append_column("negative_token_ids", pa.array(n_ids))
-    if "dataset_name" not in ds.column_names:
-        table = table.append_column(
-            "dataset_name", pa.array([ds_name] * n_rows, type=pa.large_utf8())
-        )
-    # Always use token-based total_length (overrides any char-based column from
-    # _build_prompts_hard_negatives_batch).
-    table = table.append_column("total_length", pa.array(total_length, type=pa.int32()))
+        token_type = pa.large_list(pa.int32())
+        table = table.append_column("query_token_ids", pa.array(q_ids, type=token_type))
+        table = table.append_column("positive_token_ids", pa.array(p_ids, type=token_type))
+        table = table.append_column("negative_token_ids", pa.array(n_ids, type=pa.large_list(token_type)))
+
+
+    if total_length is not None:
+        table = table.append_column("total_length", pa.array(total_length, type=pa.int32()))
 
     # print(f"building columns: {(time.time() - start)}")
     # start = time.time()
@@ -423,19 +374,6 @@ def _finalize_and_save(
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     pq.write_table(table, output_path, compression="snappy")
 
-    # print(f"finalizing: {(time.time() - start)}")
-    # start = time.time()
-
-    _compute_and_save_metadata(
-        output_path=output_path,
-        ds_name=ds_name,
-        n_rows_raw=n_rows_raw,
-        rows_saved=n_rows,
-        query_prompts=q_prompts,
-        positive_prompts=p_prompts,
-        all_neg_flat=neg_flat,
-    )
-    # print(f"metadata: {(time.time() - start)}")
     return n_rows
 
 
@@ -454,8 +392,10 @@ def _convert_f2llm_batch(
     """Step 1 for F2LLM: strip the instruct-prefix from queries, reshape negatives.
 
     Input columns : query, passage, negative_1 … negative_<N>  (1-indexed).
-    Output columns: query_text, positive_text, negative_text
+    Output columns: query_original_text, query_text, positive_text, negative_text
                     (negative_text is [batch_size][num_hard_negatives]).
+                    query_original_text keeps the F2LLM instruct prefix;
+                    query_text is the stripped version (no instruct prefix).
 
     query_id / positive_id are NOT set here; call _assign_dedup_ids afterwards.
     """
@@ -478,20 +418,20 @@ def _convert_f2llm_batch(
     ]
 
     return {
-        "query_text": batch["query"],
-        "query_no_instruct_text": stripped_queries,
+        "query_original_text": batch["query"],
+        "query_text": stripped_queries,
         "positive_text": stripped_passages,
         "negative_text": stripped_negs,
     }
 
 
 def _assign_dedup_ids(ds) -> "Dataset":
-    """Step 2 for F2LLM: assign query_id and positive_id via fast pandas deduplication.
+    """Step 2 for F2LLM: assign query_id and integer doc IDs via fast pandas deduplication.
 
-    Same-text queries/positives receive the same ID (matching the logic used
-    when building hard-negative parquets for the non-F2LLM path).
-    Uses ``tasks.retrieval_loaders.deduplicate`` which is backed by C-optimised
-    pandas hash tables and is significantly faster than a Python loop.
+    Same-text queries/positives receive the same integer ID.  Using integers
+    (instead of ``"doc_123"`` strings) allows the training loop to gather
+    doc IDs across GPUs with ``accelerator.gather()`` (NCCL, GPU-native)
+    and compare them entirely on-device.
     """
 
     q_series = pd.Series(ds["query_text"])
@@ -505,14 +445,17 @@ def _assign_dedup_ids(ds) -> "Dataset":
     num_samples = len(ds["positive_text"])
     per_sample_negatives = len(ds["negative_text"][0])
 
-    doc_ids, *_ = deduplicate(doc_series, prefix="doc")
-    ds = ds.add_column("positive_id", doc_ids[:num_samples])
+    first_occ = doc_series.drop_duplicates(keep="first")
+    text_to_int = pd.Series(range(len(first_occ)), index=first_occ.values)
+    doc_ids = doc_series.map(text_to_int).astype(int).tolist()
+
+    ds = ds.add_column("positive_doc_id", doc_ids[:num_samples])
     negative_ids = doc_ids[num_samples:]
     negative_ids = [
         negative_ids[index : index + per_sample_negatives]
         for index in range(0, num_samples * per_sample_negatives, per_sample_negatives)
     ]
-    ds = ds.add_column("negative_id", negative_ids)
+    ds = ds.add_column("negative_doc_id", negative_ids)
     return ds
 
 
@@ -622,13 +565,16 @@ def get_data_paths(root_folder, subset_list, teacher_model):
 def main():
     args = parse_args()
 
-    if "t5gemma-2" in args.tokenizer_path.lower():
-        tokenizer_name = "t5gemma-2"
+    # items: list of F2LLM source-name strings (e.g. "arguana", "amazon_qa")
+    items = get_f2llm_paths(subset_list=args.data_subset)
+
+    if "qwen3" in args.tokenizer_path.lower():
+        model_type = "qwen3"
+    elif "t5gemma-2" in args.tokenizer_path.lower():
+        model_type = "t5gemma-2"
     else:
         raise ValueError("wrong model name")
 
-    # items: list of F2LLM source-name strings (e.g. "arguana", "amazon_qa")
-    items = get_f2llm_paths(subset_list=args.data_subset)
 
     print(
         f"Found {len(items)} datasets to process "
@@ -641,6 +587,12 @@ def main():
 
     for i, item in enumerate(items):
 
+        output_path = os.path.join(args.output_dir, f"{item}.parquet")
+        if os.path.isfile(output_path) and not args.force_recompute:
+            print(f"Skipping [{i + 1}/{len(items)}] {output_path} (output exists)")
+            continue
+
+
         print(f"\nProcessing [{i + 1}/{len(items)}] {item}")
         t0 = time.time()
         # ------------------------------------------------------------------
@@ -648,19 +600,24 @@ def main():
         # ------------------------------------------------------------------
 
         ds = load_f2llm(sources=[item])
-        # Step 0: remove inputs with wrong template.
-        filter_fn = _filter_f2llm_batch
+
+        t1 = time.time()
+        print(f"dataset loaded in {(t1-t0)/60:.1f}min")
+        
         total_len = len(ds)
-        ds = ds.filter(
-            filter_fn,
-            batched=True,
-            batch_size=10000,
-            num_proc=args.num_workers,
-        )
-        if len(ds) != total_len:
-            print(
-                f"dataset {item}: {total_len-len(ds)} rows removed due to wrong instruct template."
-            )
+        # Step 0: remove inputs with wrong template.
+        # filter_fn = _filter_f2llm_batch
+
+        # ds = ds.filter(
+        #     filter_fn,
+        #     batched=True,
+        #     batch_size=10000,
+        #     num_proc=args.num_workers,
+        # )
+        # if len(ds) != total_len:
+        #     print(
+        #         f"dataset {item}: {total_len-len(ds)} rows removed due to wrong instruct template."
+        #     )
 
         # inspect num negatives
         num_hard_negatives = args.num_hard_negatives
@@ -681,19 +638,18 @@ def main():
 
         ds = _assign_dedup_ids(ds)
 
+        t11 = time.time()
+        print(f"dataset filtered in {(t11-t1)/60:.1f}min")
+
+
         if args.save_raw_data_only and args.f2llm:
             raw_output_path = os.path.join(args.raw_output_dir, f"{item}.parquet")
             n_raw = save_raw_data(ds, raw_output_path)
             print(f"data saved: {n_raw} rows -> {raw_output_path}")
 
         else:
-
-            if args.f2llm:
-                f2llm_source: str = item
-                ds_name = TRANSLATE_F2LLM_NAME[f2llm_source]
-            else:
-                input_path: str = item
-                ds_name = os.path.basename(os.path.dirname(input_path))
+            f2llm_source: str = item
+            ds_name = TRANSLATE_F2LLM_NAME[f2llm_source]
 
             # ------------------------------------------------------------------
             # Resolve ds_name (leaf, e.g. "arguana") and inner_path
@@ -714,13 +670,7 @@ def main():
             # output_path = os.path.join(
             #     output_folder, middle_folder, inner_path, "data.parquet"
             # )
-            output_path = os.path.join(
-                args.output_dir, "f2llm_data_tokenized", f"{item}.parquet"
-            )
 
-            if os.path.isfile(output_path) and not args.force_recompute:
-                print(f"Skipping [{i + 1}/{len(items)}] {output_path} (output exists)")
-                continue
 
             # use_fast=True (default): Rust fast tokenizer is 10-100× faster than the
             # pure-Python fallback.  trust_remote_code is kept for custom model repos.
@@ -728,21 +678,22 @@ def main():
                 args.tokenizer_path, trust_remote_code=True
             )
 
+            preset = MODEL_TYPE_PRESETS[model_type]
+            _add_special_tokens = preset["add_special_tokens"]
+            _append_eos = preset["append_eos"]
+            max_seq_length = args.max_seq_len - preset["seq_len_reserve"]
+
             if args.num_workers > 1:
                 # Prevent Rust tokenizer threads from being forked inside worker processes.
                 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-            t1 = time.time()
-            print(f"dataset loaded in {(t1-t0)/60:.1f}min")
-
             if args.f2llm_prompt:
-                instruction_template, add_special_tokens = None, False
-
                 # Capture pre-filter prompt lists (used for metadata stats).
-                q_prompts: list = ds["query_text"]
+                q_prompts: list = ds["query_original_text"]
                 p_prompts: list = ds["positive_text"]
                 neg_prompts_lists: list = ds["negative_text"]
                 neg_flat: list = [p for row in neg_prompts_lists for p in row]
+                n_rows_raw = len(ds)
 
             else:
                 if args.instruction_template not in INSTRUCTION_TEMPLATES:
@@ -751,7 +702,7 @@ def main():
                         f"Choices: {list(INSTRUCTION_TEMPLATES.keys())}"
                     )
 
-                instruction_template, add_special_tokens = INSTRUCTION_TEMPLATES[
+                instruction_template, _ = INSTRUCTION_TEMPLATES[
                     args.instruction_template
                 ]
 
@@ -790,12 +741,14 @@ def main():
                 neg_flat: list = [p for row in neg_prompts_lists for p in row]
 
             t2 = time.time()
-            print(f"prompts built in {(t2-t1)/60:.1f}min")
+            print(f"prompts built in {(t2-t11)/60:.1f}min")
 
             # --- Step 3b: dedup across the full dataset, tokenize once ---
             q_ids, p_ids, n_ids, _ = _tokenize_dedup(
                 tokenizer,
-                add_special_tokens,
+                _add_special_tokens,
+                _append_eos,
+                max_seq_length,
                 ds_name,
                 q_prompts,
                 p_prompts,

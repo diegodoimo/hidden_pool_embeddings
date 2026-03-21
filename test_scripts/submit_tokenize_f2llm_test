@@ -21,16 +21,16 @@ export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
 
 
 #Tokenize all F2LLM sources that are in NAME_TO_TASK
-python tokenize_data_f2llm.py \
-    --tokenizer_path google/t5gemma-2-270m-270m \
+python test_tokenizer.py \
+    --tokenizer_path Qwen/Qwen3-0.6B \
     --f2llm_prompt \
     --force_recompute \
-    --output_dir ./results/f2llm_tokenized/f2llm-prompt_t5gemma-2-tok \
-    # --root_dir $HF_HOME/hub/datasets--codefuse-ai--F2LLM/snapshots/c8158be982d16202dda93211c1f7a542159acc3e \
+    --output_dir ./results/f2llm_tokenized/f2llm-prompt_qwen3-tok \
+    --root_dir $HF_HOME/hub/datasets--codefuse-ai--F2LLM/snapshots/c8158be982d16202dda93211c1f7a542159acc3e \
+    --datasets arguana
     # --num_workers $SLURM_CPUS_PER_TASK \
     # --force_recompute \
 #--tokenizer_path google/t5gemma-2-270m-270m \
-#--tokenizer_path Qwen/Qwen3-0.6B \
 
 # python estract_f2llm_prompt_templates.py \
 #     --root_dir $HF_HOME/hub/datasets--codefuse-ai--F2LLM/snapshots/c8158be982d16202dda93211c1f7a542159acc3e \

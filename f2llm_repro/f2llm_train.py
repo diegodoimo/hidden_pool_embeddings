@@ -4,7 +4,6 @@ from tqdm.auto import tqdm
 import torch
 import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
-import numpy as np
 import os
 import json
 from utils.helpers import get_cpt_steps
@@ -220,7 +219,7 @@ def hard_loss(
 def inbatch_loss2(
     query_embeddings,  # [bs, d]
     context_embeddings,  # [bs, d]
-    doc_ids,  # list[str], length bs — doc IDs of the positive contexts (local process)
+    doc_ids,  # int32 tensor [bs] — doc IDs of the positive contexts (local process)
     criterion,
     accelerator,
     temperature=0.05,
@@ -233,34 +232,25 @@ def inbatch_loss2(
     The true positive (position ``labels[i]``) is always kept.
     """
     bs = query_embeddings.size(0)
+    dev = query_embeddings.device
     a_norm = F.normalize(query_embeddings, p=2, dim=-1)
     b_cross_gpus = accelerator.gather(context_embeddings)  # [bs*nproc, d]
     b_norm_cross_gpus = F.normalize(b_cross_gpus, p=2, dim=-1)
 
-    # Gather doc_ids from every process.
-    # gather_object returns a list of length nproc; each element is the
-    # object passed by that process (here: a list of strings).
-    all_doc_ids_nested = accelerator.gather_object(doc_ids)
-    all_doc_ids = [d for sublist in all_doc_ids_nested for d in sublist]  # [bs*nproc]
+    all_doc_ids = accelerator.gather(doc_ids)  # [bs*nproc]
 
     student_logits = (
         torch.matmul(a_norm, b_norm_cross_gpus.t()) / temperature
     )  # [bs, bs*nproc]
 
-    labels = (
-        torch.arange(bs, device=student_logits.device) + bs * accelerator.process_index
-    )
+    labels = torch.arange(bs, device=dev) + bs * accelerator.process_index
 
     # same_id[i, j] = True when all_doc_ids[j] == doc_ids[i]
-    local_arr = np.array(doc_ids)       # [bs]
-    all_arr = np.array(all_doc_ids)     # [bs*nproc]
-    same_id = torch.from_numpy(
-        local_arr[:, None] == all_arr[None, :]
-    ).to(student_logits.device)         # [bs, bs*nproc]
+    same_id = doc_ids[:, None] == all_doc_ids[None, :]  # [bs, bs*nproc]
 
     # Never mask the true positive
     true_pos = torch.zeros_like(same_id)
-    true_pos[torch.arange(bs, device=student_logits.device), labels] = True
+    true_pos[torch.arange(bs, device=dev), labels] = True
 
     student_logits = student_logits.masked_fill(same_id & ~true_pos, float("-inf"))
 
@@ -273,8 +263,8 @@ def hard_loss2(
     query_embeddings,   # [bs, d]
     context_embeddings, # [bs, d]
     hard_neg_embeddings,  # [bs, num, d]
-    doc_ids,            # list[str], length bs — positive doc IDs
-    hard_neg_doc_ids,   # list[list[str]], shape [bs, num] — hard-negative doc IDs
+    doc_ids,            # int32 tensor [bs] — positive doc IDs
+    hard_neg_doc_ids,   # int32 tensor [bs, num] — hard-negative doc IDs
     criterion,
     accelerator,
     temperature=0.05,
@@ -290,6 +280,7 @@ def hard_loss2(
         return 0.0
 
     bs = query_embeddings.size(0)
+    dev = query_embeddings.device
     a_norm = F.normalize(query_embeddings, p=2, dim=-1)
 
     hard_neg_embeddings = torch.concat(
@@ -301,18 +292,15 @@ def hard_loss2(
 
     if hard_neg_doc_ids is not None:
         # match[i, j] = True when hard_neg_doc_ids[i][j] == doc_ids[i]
-        neg_arr = np.array(hard_neg_doc_ids)        # [bs, num_hard]
-        pos_arr = np.array(doc_ids)[:, None]        # [bs, 1]
-        match = neg_arr == pos_arr                  # [bs, num_hard]
+        match = hard_neg_doc_ids == doc_ids[:, None]  # [bs, num_hard]
         # Prepend a False column so index 0 (the positive) is never masked
-        match_full = np.concatenate(
-            [np.zeros((bs, 1), dtype=bool), match], axis=1
+        mask = torch.cat(
+            [torch.zeros(bs, 1, dtype=torch.bool, device=dev), match], dim=1
         )  # [bs, num_hard+1]
-        mask = torch.from_numpy(match_full).to(logits.device)
         logits = logits.masked_fill(mask, float("-inf"))
 
     loss_hard = criterion(
-        logits, torch.zeros((bs), dtype=torch.long, device=logits.device)
+        logits, torch.zeros(bs, dtype=torch.long, device=dev)
     ).mean()
 
     return loss_hard
@@ -423,30 +411,41 @@ def accelerate_train(
         for batch in train_dataloader:
             # forward and compute loss
             outputs = model.forward(batch)
-            # passage features: [bs, 1, d]
+            # query/passage features: [bs, d]
             # hard_neg_features: [bs, num_hard_neg, d]
 
-            loss_hard = hard_loss(
-                outputs["query_passage_features"].squeeze(1),
-                outputs["passage_passage_features"].squeeze(1),
-                outputs["negative_passage_features"],
-                criterion,
-                accelerator,
-            )
             dataset_name = batch["dataset_name"]
-            count_hard_dict[dataset_name] += 1
-            loss_hard_dict[dataset_name] += loss_hard.detach().float()
+            # model.forward now returns [bs, d] directly — no more .squeeze(1)
+            q_feat = outputs["query_passage_features"]
+            p_feat = outputs["passage_passage_features"]
+            n_feat = outputs["negative_passage_features"]
+
             if dataset_name in RETRIEVAL_DATASETS:
-                loss = inbatch_loss(
-                    outputs["query_passage_features"].squeeze(1),
-                    outputs["passage_passage_features"].squeeze(1),
+                loss_hard = hard_loss2(
+                    q_feat, p_feat, n_feat,
+                    batch.get("positive_doc_ids"),
+                    batch.get("negative_doc_ids"),
+                    criterion,
+                    accelerator,
+                )
+                loss = inbatch_loss2(
+                    q_feat, p_feat,
+                    batch.get("positive_doc_ids"),
                     criterion,
                     accelerator,
                 )
                 count_dict[dataset_name] += 1
                 loss_dict[dataset_name] += loss.detach().float()
             else:
+                # CLUSTERING / CLASSIFICATION: no doc_id masking
+                loss_hard = hard_loss(
+                    q_feat, p_feat, n_feat,
+                    criterion,
+                    accelerator,
+                )
                 loss = 0.0
+            count_hard_dict[dataset_name] += 1
+            loss_hard_dict[dataset_name] += loss_hard.detach().float()
 
             loss_total = loss + loss_hard
 
@@ -454,7 +453,8 @@ def accelerate_train(
             accelerator.backward(loss_total)
             optimizer.step()
             lr_scheduler.step()
-            optimizer.zero_grad()
+            # set_to_none=True avoids a memset; sets grads to None instead of zeroing
+            optimizer.zero_grad(set_to_none=True)
             if optimizer.param_groups[0]["lr"] < args.min_lr:
                 for i in range(len(optimizer.param_groups)):
                     optimizer.param_groups[i]["lr"] = args.min_lr

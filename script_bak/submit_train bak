@@ -2,14 +2,14 @@
 #SBATCH --partition=H100
 ##SBATCH --partition=DGX
 #SBATCH --account=lade
-#SBATCH --nodelist=dgx004
+##SBATCH --nodelist=dgx002
 #SBATCH --nodes=1
 #SBATCH --time=24:00:00            
 #SBATCH --ntasks-per-node=1       
-#SBATCH --cpus-per-task=104 #32          
-#SBATCH --mem=800G                   
+#SBATCH --cpus-per-task=56 #32          
+#SBATCH --mem=200G                   
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:8
+#SBATCH --gres=gpu:H100:4
 
 #source /u/area/ddoimo/anaconda3/bin/activate ./env_a100
 module load cuda/12.8 
@@ -63,17 +63,17 @@ torchrun \
     --use_deepspeed \
     --loss_type f2llm \
     --train_subset retrieval \
-    --out_filename f2llm_retrieval_f2llm_loss \
+    --out_filename f2llm_retrieval_improved_loss \
     --num_hard_negatives 7 \
-    --negatives_dir results/f2llm_tokenized/f2llm-prompt_qwen3-tok \
-    --model_name_or_path Qwen/Qwen3-Embedding-0.6B \
-    --eval_set mteb_eng_v2_reduced \
-    --batch_strategy f2llm_multi \
+    --negatives_dir results/datasets_tokenized/f2llm/qwen3_600m-teacher_embeddinggemma-prompt_t5gemma-2-tok \
+    --model_name_or_path google/t5gemma-2-270m-270m  \
     --length_strategy truncate \
+    --batch_strategy grouped \
+    --eval_set mteb_eng_v2_reduced \
     --max_seq_len 1024  \
     --attention_dim 256 \
     --num_workers $WORKERS_PER_RANK \
-    --per_device_train_batch_size 48 \
+    --per_device_train_batch_size 16 \
     --per_device_eval_batch_size 128 \
     --learning_rate 1e-5 \
     --lr_min_fact 0.01 \
@@ -84,3 +84,13 @@ torchrun \
     --logging_steps 50 \
     --eval_steps 5 \
     --output_dir "./results/train" \
+# || true
+
+# torchrun \
+#     --nnodes=$SLURM_NTASKS \
+#     --node-rank=$SLURM_NODEID \
+#     --nproc-per-node=$GPU_NUMBER \
+#     --rdzv-id=$SLURM_PROCID \
+#     --rdzv-backend=c10d \
+#     --rdzv-endpoint=$head_node:0 \
+#     filler.py

@@ -10,8 +10,7 @@ from utils.create_datasets import (
     instruction_template_qwen3,
     instruction_template_embeddinggemma,
 )
-from utils.create_datasets import TASK_DICT
-
+from tasks import EVAL_TASK_DICT
 from models.modules import add_pooling_layers, last_token_pool, mean_pool
 import mteb
 from datetime import timedelta
@@ -22,6 +21,8 @@ def parse_args():
     parser.add_argument("--model_name_or_path", type=str)
     parser.add_argument("--task_name", type=str, default="ArguAna")
     parser.add_argument("--benchmark", type=str, default=None)
+    parser.add_argument("--filename", type=str, default="")
+    parser.add_argument("--out_dir", type=str, default = "results/performace_evals")
     args = parser.parse_args()
     return args
 
@@ -36,6 +37,10 @@ def main():
     )
     rank = dist.get_rank()
     torch.cuda.set_device(LOCAL_RANK)
+    torch.set_float32_matmul_precision("high")
+    if rank == 0:
+        os.makedirs(args.out_dir, exist_ok=True)
+    dist.barrier()
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name_or_path, use_fast=False, trust_remote_code=True
@@ -71,7 +76,7 @@ def main():
         tasks = []
         if args.benchmark == "mteb_eng_v2_subset":
             for task in benchmark.tasks:
-                if task.metadata.name in TASK_DICT["mteb_eng_v2_reduced"]:
+                if task.metadata.name in EVAL_TASK_DICT["mteb_eng_v2_reduced"]:
                     tasks.append(task)
         else:
             for task in benchmark.tasks:
@@ -99,13 +104,18 @@ def main():
 
     results, summary = retrieval_evaluator.evaluate(model, batch_size=64)
 
+    filename = ""
+    if args.filename:
+        filename = f"_{args.filename}"
     if rank == 0:
         print(results)
         print(summary)
         label = args.benchmark if args.benchmark else args.task_name
-        with open(f"{model_name}_{label}_results.json", "w", encoding="utf-8") as f:
+
+        base = os.path.join(args.out_dir, f"{model_name}_{label}{filename}")
+        with open(f"{base}_results.json", "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=4)
-        with open(f"{model_name}_{label}_summary.json", "w", encoding="utf-8") as f:
+        with open(f"{base}_summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=4)
 
     dist.destroy_process_group()

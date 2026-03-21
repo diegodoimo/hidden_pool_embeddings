@@ -33,7 +33,41 @@ class F2LLM:
     def set_device(self):
         self.device = self.lm.device
 
+    # def forward(self, batch):
+    #     """OLD: Python for-loop extracts one last-token embedding at a time,
+    #     creating bs*(2+num_hard_neg) intermediate tensors. Also wraps query
+    #     and passage features in an unnecessary [bs,1,d] shape that every
+    #     call site immediately squeeze(1)'s away."""
+    #     bs = batch["bs"]
+    #     num_hard_neg = int((len(batch["input_ids"]) - 2 * bs) / bs)
+    #     outputs = self.lm(batch["input_ids"], batch["attention_mask"])
+    #     passage_features_all_tokens = outputs.last_hidden_state
+    #     return {
+    #         "query_passage_features": torch.stack(
+    #             [passage_features_all_tokens[i, [batch["seq_lens"][i] - 1]]
+    #              for i in range(bs)]
+    #         ),                                                  # [bs, 1, d]
+    #         "passage_passage_features": torch.stack(
+    #             [passage_features_all_tokens[i, [batch["seq_lens"][i] - 1]]
+    #              for i in range(bs, 2 * bs)]
+    #         ),                                                  # [bs, 1, d]
+    #         "negative_passage_features": (
+    #             None if num_hard_neg == 0
+    #             else torch.stack(
+    #                 [passage_features_all_tokens[i, [batch["seq_lens"][i] - 1]]
+    #                  for i in range(2 * bs, len(batch["seq_lens"]))]
+    #             ).view(bs, num_hard_neg, -1)
+    #         ),                                                  # [bs, n, d]
+    #     }
+
     def forward(self, batch):
+        """Vectorized last-token pooling.
+
+        Replaces the Python for-loop with a single advanced-index gather over
+        all sequences at once.  Also returns query/passage features as [bs, d]
+        instead of [bs, 1, d] — the extra dim was always immediately squeezed
+        away by every call site.
+        """
         bs = batch["bs"]
         num_hard_neg = int((len(batch["input_ids"]) - 2 * bs) / bs)
 
@@ -42,29 +76,18 @@ class F2LLM:
             batch["attention_mask"],
         )
 
-        passage_features_all_tokens = outputs.last_hidden_state
+        hidden = outputs.last_hidden_state          # [total_seqs, max_len, d]
+        last_idx = batch["seq_lens"] - 1             # [total_seqs]
+        seq_range = torch.arange(len(last_idx), device=last_idx.device)
+        features = hidden[seq_range, last_idx]       # [total_seqs, d]
+
         return {
-            "query_passage_features": torch.stack(
-                [
-                    passage_features_all_tokens[i, [batch["seq_lens"][i] - 1]]
-                    for i in range(bs)
-                ]
-            ),
-            "passage_passage_features": torch.stack(
-                [
-                    passage_features_all_tokens[i, [batch["seq_lens"][i] - 1]]
-                    for i in range(bs, 2 * bs)
-                ]
-            ),
+            "query_passage_features": features[:bs],                  # [bs, d]
+            "passage_passage_features": features[bs : 2 * bs],       # [bs, d]
             "negative_passage_features": (
                 None
                 if num_hard_neg == 0
-                else torch.stack(
-                    [
-                        passage_features_all_tokens[i, [batch["seq_lens"][i] - 1]]
-                        for i in range(2 * bs, len(batch["seq_lens"]))
-                    ]
-                ).view(bs, num_hard_neg, -1)
+                else features[2 * bs :].view(bs, num_hard_neg, -1)   # [bs, n, d]
             ),
         }
 
@@ -146,11 +169,13 @@ class F2LLMT5Gemma2:
             attention_mask=batch["attention_mask"],
         )  # (total_batch, H)
 
+        # Return [bs, d] directly instead of [bs, 1, d] — the extra dim was
+        # always immediately squeezed away by every call site.
         return {
-            "query_passage_features": embeddings[:bs].unsqueeze(1),  # (bs, 1, H)
-            "passage_passage_features": embeddings[bs : 2 * bs].unsqueeze(
-                1
-            ),  # (bs, 1, H)
+            # "query_passage_features": embeddings[:bs].unsqueeze(1),           # OLD [bs, 1, H]
+            # "passage_passage_features": embeddings[bs : 2 * bs].unsqueeze(1), # OLD [bs, 1, H]
+            "query_passage_features": embeddings[:bs],                          # [bs, H]
+            "passage_passage_features": embeddings[bs : 2 * bs],               # [bs, H]
             "negative_passage_features": (
                 None
                 if num_hard_neg == 0

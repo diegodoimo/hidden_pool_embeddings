@@ -445,14 +445,23 @@ def encode(
     if world_size > 1:
         gathered = [torch.zeros_like(embeddings) for _ in range(world_size)]
         dist.all_gather(gathered, embeddings)
-        embeddings = torch.cat(gathered, dim=0)[:num_samples]
+        all_embeddings = torch.cat(gathered, dim=0)
 
-        if indices is not None:
-            gathered_indices = [torch.zeros_like(indices) for _ in range(world_size)]
-            dist.all_gather(gathered_indices, indices)
-            indices = torch.cat(gathered_indices, dim=0)[:num_samples]
+        gathered_indices = [torch.zeros_like(indices) for _ in range(world_size)]
+        dist.all_gather(gathered_indices, indices)
+        all_indices = torch.cat(gathered_indices, dim=0)
 
-    # Restore original order
+        # Scatter into correct positions using the original indices.
+        # Duplicates (from padding) harmlessly overwrite with the same value;
+        # every valid index is guaranteed to be placed correctly.
+        embeddings = torch.zeros(
+            num_samples, all_embeddings.shape[1],
+            device=all_embeddings.device, dtype=all_embeddings.dtype,
+        )
+        embeddings[all_indices] = all_embeddings
+        return embeddings
+
+    # Single-GPU: just restore original order
     sorted_positions = torch.argsort(indices)
     embeddings = embeddings[sorted_positions]
     return embeddings
