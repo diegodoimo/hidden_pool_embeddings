@@ -86,6 +86,18 @@ def _str_to_int_id(s: str) -> int:
     return int(hashlib.md5(s.encode()).hexdigest()[:15], 16)
 
 
+_ABSTASK_FALLBACK_PROMPTS = {
+    "STS": "Retrieve semantically similar text.",
+    "Summarization": "Given a news summary, retrieve other semantically similar summaries.",
+    "Retrieval": "Retrieve text based on user query.",
+    "Reranking": "Retrieve text based on user query.",
+    "Classification": "Classify user passages.",
+    "Clustering": "Identify categories in user passages.",
+    "PairClassification": "Retrieve text that are semantically similar to the given text.",
+    "BitextMining": "Retrieve parallel sentences.",
+}
+
+
 def instruction_template_qwen3(prompt_type, task_metadata, text, title="") -> str:
 
     if prompt_type == PromptType.query:
@@ -94,9 +106,12 @@ def instruction_template_qwen3(prompt_type, task_metadata, text, title="") -> st
                 instruction = task_metadata.prompt["query"]
             else:
                 instruction = task_metadata.prompt
-            prompt = f"Instruct: {instruction.strip()}\nQuery:{text.strip()}"
         else:
-            prompt = f"Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:{text.strip()}"
+            instruction = _ABSTASK_FALLBACK_PROMPTS.get(
+                getattr(task_metadata, "type", ""),
+                "Given a web search query, retrieve relevant passages that answer the query",
+            )
+        prompt = f"Instruct: {instruction.strip()}\nQuery:{text.strip()}"
 
     elif prompt_type == PromptType.document:
 
@@ -446,6 +461,7 @@ def create_dataset(
     prompt_type,
     max_length,
     verbose=False,
+    skip_length_filter: bool = False,
 ):
     """Create dataset.
 
@@ -458,10 +474,9 @@ def create_dataset(
         prompt_type: The type of prompt to create a dataloader for. If None, it will be inferred from the task metadata.
         tokenizer: The tokenizer to use.
         instruction_template: The instruction template function.
-        max_length: Maximum sequence length in tokens.
-        input_column: The column to use as input. If None, it will use the first column that matches the modality.
-        batch_size: The batch size for the dataloader.
-        **kwargs: Additional arguments to pass to the dataloader creation functions.
+        max_length: Maximum sequence length in tokens (for filtering when *skip_length_filter* is False).
+        skip_length_filter: If True, only drop empty texts; keep long rows and use collate truncation instead
+            (MTEB clustering keeps all subsampled rows and truncates at encode time).
 
     Returns:
         A tokenized dataset.
@@ -490,13 +505,27 @@ def create_dataset(
     all_removed_long_ids = []
     all_removed_empty_ids = []
 
-    def filter_wrapper(rows):
-        keep_mask, removed_long, removed_empty = _remove_long_sequences(
-            rows, tokenizer, max_length
-        )
-        all_removed_long_ids.extend(removed_long)
-        all_removed_empty_ids.extend(removed_empty)
-        return keep_mask
+    if skip_length_filter:
+
+        def filter_wrapper(rows):
+            texts = np.array(rows["text"])
+            ids = np.array(rows["id"])
+            valid_text_mask = np.array(
+                [bool(text and str(text).strip()) for text in texts]
+            )
+            removed_empty_ids = ids[~valid_text_mask].tolist()
+            all_removed_empty_ids.extend(removed_empty_ids)
+            return valid_text_mask.tolist()
+
+    else:
+
+        def filter_wrapper(rows):
+            keep_mask, removed_long, removed_empty = _remove_long_sequences(
+                rows, tokenizer, max_length
+            )
+            all_removed_long_ids.extend(removed_long)
+            all_removed_empty_ids.extend(removed_empty)
+            return keep_mask
 
     new_ds = new_ds.filter(filter_wrapper, batched=True, batch_size=10000)
 
@@ -1254,6 +1283,53 @@ def create_per_dataset_from_pretokenized(
         if rank == 0:
             print(f"  Loading {ds_name} {i}/{len(parquet_files)}...")
         result[dataset_name] = _load_parquet_safe(path)
+
+    if rank == 0:
+        total_rows = sum(len(ds) for ds in result.values())
+        print(
+            f"Total training examples: {total_rows / 10**6:.2f}M "
+            f"across {len(result)} datasets"
+        )
+
+    return result
+
+
+
+def create_per_dataset_from_pretokenized_f2llm(
+    base_dir,
+    rank=0,
+    datasets_subset: Optional[List[str]] = None,
+) -> dict[str, "Dataset"]:
+    """Load pre-tokenized F2LLM parquet datasets and return them individually.
+
+    Expects flat parquet files at ``{base_dir}/{dataset_name}.parquet``,
+    which is the layout written by ``tokenize_data_f2llm.py``.
+
+    Adds a ``dataset_name`` column to each loaded dataset so that
+    ``collate_fn_pretokenized_fast_pad_v2`` can identify the source task.
+
+    Returns:
+        dict mapping dataset name (e.g. ``"msmarco"``) to an HF Dataset.
+    """
+    subset_set = set(datasets_subset) if datasets_subset is not None else None
+
+    result: dict[str, Dataset] = {}
+    parquet_files = sorted(
+        f for f in os.listdir(base_dir) if f.endswith(".parquet")
+    )
+
+    for f in parquet_files:
+        dataset_name = f[: -len(".parquet")]
+
+        if subset_set is not None and dataset_name not in subset_set:
+            continue
+
+        if rank == 0:
+            print(f"  Loading {dataset_name}...")
+
+        dataset = _load_parquet_safe(os.path.join(base_dir, f))
+        dataset = dataset.add_column("dataset_name", [dataset_name] * len(dataset))
+        result[dataset_name] = dataset
 
     if rank == 0:
         total_rows = sum(len(ds) for ds in result.values())

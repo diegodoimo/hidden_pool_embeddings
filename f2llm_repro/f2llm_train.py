@@ -2,6 +2,7 @@ from tqdm.auto import tqdm
 
 # from torch.utils.tensorboard import SummaryWriter
 import torch
+import torch.distributed
 import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
 import os
@@ -158,6 +159,36 @@ def save_checkpoint(args, accelerator, model, output_dir, lr_scheduler):
     accelerator.wait_for_everyone()
 
 
+def save_training_state(accelerator, output_dir, epoch, completed_steps):
+    """Save full training state (model + optimizer + scheduler + metadata)
+    so that training can be resumed from this exact point."""
+    accelerator.wait_for_everyone()
+    accelerator.print(f"Saving training state to {output_dir}")
+    accelerator.save_state(output_dir)
+    if accelerator.is_main_process:
+        meta = {"epoch": epoch, "completed_steps": completed_steps}
+        with open(os.path.join(output_dir, "training_meta.json"), "w") as f:
+            json.dump(meta, f, indent=2)
+    accelerator.wait_for_everyone()
+
+
+def load_training_state(accelerator, checkpoint_dir):
+    """Load a training state saved by ``save_training_state``.
+
+    Returns (epoch, completed_steps) so the caller can fast-forward the
+    training loop.
+    """
+    accelerator.print(f"Resuming training state from {checkpoint_dir}")
+    accelerator.load_state(checkpoint_dir)
+    meta_path = os.path.join(checkpoint_dir, "training_meta.json")
+    with open(meta_path) as f:
+        meta = json.load(f)
+    accelerator.print(
+        f"Resumed from epoch {meta['epoch']}, step {meta['completed_steps']}"
+    )
+    return meta["epoch"], meta["completed_steps"]
+
+
 def inbatch_loss(
     query_embeddings,  # [bs, d]
     context_embeddings,  # [bs, d]
@@ -168,10 +199,18 @@ def inbatch_loss(
 
     bs = query_embeddings.size(0)
     a_norm = F.normalize(query_embeddings, p=2, dim=-1)
-    # b_norm = torch.nn.functional.normalize(context_embeddings, p=2, dim=-1)
-    b_cross_gpus = accelerator.gather(context_embeddings)  # [bs*process, d]
-    # print((context_embeddings - b_cross_gpus[bs * accelerator.process_index : bs * accelerator.process_index+bs]).abs().sum())
-    b_norm_cross_gpus = F.normalize(b_cross_gpus, p=2, dim=-1)  # ()
+
+    # OLD: accelerator.gather is NOT differentiable — doc_embeddings receive
+    # no gradient from the in-batch loss (only queries are updated).
+    # b_cross_gpus = accelerator.gather(context_embeddings)  # [bs*process, d]
+
+    # NEW: differentiable all_gather so that gradients from all ranks'
+    # losses flow back to each rank's doc_embeddings via reduce_scatter.
+    b_cross_gpus = torch.cat(
+        torch.distributed.nn.functional.all_gather(context_embeddings), dim=0
+    )  # [bs*process, d]
+
+    b_norm_cross_gpus = F.normalize(b_cross_gpus, p=2, dim=-1)
 
     student_logits = (
         torch.matmul(a_norm, b_norm_cross_gpus.t()) / temperature
@@ -234,9 +273,19 @@ def inbatch_loss2(
     bs = query_embeddings.size(0)
     dev = query_embeddings.device
     a_norm = F.normalize(query_embeddings, p=2, dim=-1)
-    b_cross_gpus = accelerator.gather(context_embeddings)  # [bs*nproc, d]
+
+    # OLD: accelerator.gather is NOT differentiable — doc_embeddings receive
+    # no gradient from the in-batch loss (only queries are updated).
+    # b_cross_gpus = accelerator.gather(context_embeddings)  # [bs*nproc, d]
+
+    # NEW: differentiable all_gather so that gradients from all ranks'
+    # losses flow back to each rank's doc_embeddings via reduce_scatter.
+    b_cross_gpus = torch.cat(
+        torch.distributed.nn.functional.all_gather(context_embeddings), dim=0
+    )  # [bs*nproc, d]
     b_norm_cross_gpus = F.normalize(b_cross_gpus, p=2, dim=-1)
 
+    # doc_ids are integer labels (no gradient needed), plain gather is fine.
     all_doc_ids = accelerator.gather(doc_ids)  # [bs*nproc]
 
     student_logits = (
@@ -317,6 +366,8 @@ def accelerate_train(
     evaluator=None,
     per_device_eval_batch_size=8,
     eval_wrapper_class=None,
+    start_epoch=0,
+    start_step=0,
 ):
     if eval_wrapper_class is None:
         eval_wrapper_class = F2LLMEvalWrapper
@@ -355,8 +406,8 @@ def accelerate_train(
     # )
     stats = {"train": {}, "valid": {}, "test_perf": {}}
     criterion = CrossEntropyLoss(reduction="none")
-    pbar = tqdm(range(args.train_steps), disable=not accelerator.is_local_main_process)
-    completed_steps = 0
+    pbar = tqdm(range(args.train_steps), initial=start_step, disable=not accelerator.is_local_main_process)
+    completed_steps = start_step
     loss_dict = {
         ds_name: torch.tensor(0.0, device=model.lm.device)
         for ds_name in RETRIEVAL_DATASETS
@@ -405,7 +456,7 @@ def accelerate_train(
                 json.dump(stats, f, indent=4)
 
     model.lm.train()
-    for epoch in range(args.train_epochs):
+    for epoch in range(start_epoch, args.train_epochs):
         accelerator.print(f"*************** Starting epoch {epoch+1} ***************")
         train_dataloader.reset_epoch(epoch)
         for batch in train_dataloader:
@@ -596,6 +647,10 @@ def accelerate_train(
             # Restore the original eval set for the next mid-training evals
             restore_tasks = get_eval_tasks(args.eval_set)
             evaluator.update_datasets(restore_tasks)
+
+        # End-of-epoch checkpoint for resumption
+        ckpt_dir = os.path.join(args.output_dir, f"checkpoint{filename}_epoch_{epoch + 1}")
+        save_training_state(accelerator, ckpt_dir, epoch + 1, completed_steps)
 
     # if summary_writer:
     #     summary_writer.close()

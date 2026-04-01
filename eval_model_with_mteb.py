@@ -1,129 +1,141 @@
+from inference.test_retrieval_ddp_update import evaluate_retrieval
+import os
+import json
+import torch
+from torch.nn.parallel import DistributedDataParallel as DDP
 import argparse
+from transformers import AutoModel, AutoTokenizer
+import torch.distributed as dist
+from utils.create_datasets import (
+    instruction_template_qwen3,
+    instruction_template_embeddinggemma,
+)
+from tasks import EVAL_TASK_DICT
+from models.modules import add_pooling_layers, last_token_pool, mean_pool
 import mteb
+from datetime import timedelta
+
+from inference.test_retrieval_ddp_update import compute_averages
 import time
+from collections import defaultdict
 import numpy as np
-
-
-# print("loading benchmark")
-# bench_dict = {
-#     "mteb_multilingual_v2": "MTEB(Multilingual, v2)",
-#     "mteb_eng_v2": "MTEB(eng, v2)",
-# }
-# benchmark = mteb.get_benchmark("MTEB(eng, v2)")
-
-
-# tasks = []
-# for task in benchmark.tasks:
-#     tasks.append(task.metadata.name)
-
-
-# len(tasks)
-# benchmarks = mteb.get_benchmarks()
-
-# for benchmark in benchmarks:
-#     for task in benchmark.tasks:
-#         print(task.metadata.name)
-#         print(task.metadata.prompt)
-
-
-# benchmark[0].metadata.type
-# task_types = set(
-#     task.metadata.type for benchmark in benchmarks for task in benchmark.tasks
-# )
-
-
-# task_types = set(task.metadata.type for task in benchmark.tasks)
-
-# task_types
-
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_path", type=str, default="")
-    parser.add_argument("--task")
-    parser.add_argument("--data_name", type=str)
-    parser.add_argument("--model_name_or_path", type=str, default="./tokenizer")
-    parser.add_argument("--use_flash_attn", action="store_true")
-    parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument(
-        "--out_dir", type=str, default=None, help="Where to store the final model."
-    )
-    parser.add_argument("--filename", type=str, default="")
-    parser.add_argument(
-        "--seed", type=int, default=None, help="A seed for reproducible training."
-    )
-    parser.add_argument("--preprocessing_num_workers", type=int, default=6)
-    parser.add_argument("--avg_token", action="store_true")
-    parser.add_argument("--save_distances", action="store_true")
-    parser.add_argument("--remove_duplicates", action="store_true")
-    parser.add_argument("--target_layer", type=str, default="res2")
-    parser.add_argument("--maxk", type=int, default=50)
-    parser.add_argument("--logging_steps", type=int, default=500)
+    parser.add_argument("--model_name_or_path", type=str)
+    parser.add_argument("--task_name", type=str, default="ArguAna")
     parser.add_argument("--benchmark", type=str, default=None)
-    parser.add_argument("--task_name", type=str, default=None)
-    parser.add_argument("--dataset_size", type=int, default=None)
-    parser.add_argument("--every", type=int, default=1)
-    parser.add_argument("--include_last_k", type=int, default=0)
-    parser.add_argument("--num_splits", type=int, default=3)
-    parser.add_argument("--samples_per_label", type=int, default=None)
-    parser.add_argument("--dataset_reduce_factor", type=int, default=1)
-    parser.add_argument("--only_output", action="store_true")
-    parser.add_argument("--use_gpu", action="store_true")
-
+    parser.add_argument("--filename", type=str, default="")
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--out_dir", type=str, default = "results/performace_evals")
     args = parser.parse_args()
     return args
 
 
 def main():
-
     args = parse_args()
 
-    results = {}
+    dist.init_process_group(
+        "nccl",
+        device_id=torch.device("cuda", LOCAL_RANK),
+        timeout=timedelta(seconds=60),
+    )
+    rank = dist.get_rank()
+    torch.cuda.set_device(LOCAL_RANK)
+    torch.set_float32_matmul_precision("high")
+    if rank == 0:
+        os.makedirs(args.out_dir, exist_ok=True)
+    dist.barrier()
+    world_size = dist.get_world_size() 
+
+    if "qwen3" in args.model_name_or_path.lower():
+        model_name = "qwen3_embedding"
+        if "8b" in args.model_name_or_path.lower():
+            model_name+="_8b"
+        elif "0.6b" in args.model_name_or_path.lower():
+            model_name += "_0.6b"
+    elif "embeddinggemma" in args.model_name_or_path.lower():
+        model_name = "embeddinggemma"
+    else:
+        raise ValueError(
+            f"Unrecognized model '{args.model_name_or_path}'. "
+            "Expected a path containing 'qwen3' or 'embeddinggemma'."
+        )
+
     bench_dict = {
         "mteb_multilingual_v2": "MTEB(Multilingual, v2)",
         "mteb_eng_v2": "MTEB(eng, v2)",
+        "mteb_eng_v2_subset": "MTEB(eng, v2)"
     }
+
+    if args.benchmark:
+        benchmark = mteb.get_benchmark(bench_dict[args.benchmark])
+        tasks = []
+        if args.benchmark == "mteb_eng_v2_subset":
+            for task in benchmark.tasks:
+                if task.metadata.name in EVAL_TASK_DICT["mteb_eng_v2_reduced"]:
+                    tasks.append(task)
+        else:
+            for task in benchmark.tasks:
+                tasks.append(task)
+    else:
+        tasks = [mteb.get_task(args.task_name)]
+
 
     print("loading model")
     model = mteb.get_model(args.model_name_or_path)
 
-    # print("loading benchmark")
-    benchmark = mteb.get_benchmark(bench_dict[args.benchmark])
-
-    # task_types = set(task.metadata.type for task in benchmark.tasks)
-
-    tasks = []
-    for task in benchmark.tasks:
-        if task.metadata.type == "Retrieval":
-            tasks.append(task)
-
-    # tasks = mteb.get_tasks(tasks=["ArguAna"])
-
     print("evaluating tasks")
     start0 = time.time()
+    results = {}
+    results_by_type = defaultdict(list)
     for i, task in enumerate(tasks):
+
+        # double check that this aling with the one shot MTEB evaluate benchmark 
         print(
-            f"evaluating task: {task} ({i+1}/{len(tasks)}) {(time.time()-start0)/60:.1f}min"
+            f"evaluating task: {task.metadata.name} ({i+1}/{len(tasks)}) {(time.time()-start0)/60:.1f}min"
         )
         start = time.time()
-        res = mteb.evaluate(model, tasks=task, overwrite_strategy="always")
+        res = mteb.evaluate(model, tasks=task, overwrite_strategy="always", encode_kwargs={"batch_size": args.batch_size})
         end = time.time()
+        duration = end - start
         instance = res.task_results[0]
         splits = set(instance.scores.keys())
-        for split in splits:
-            results[instance.task_name] = {
-                "main_score": instance.scores[split][0]["main_score"],
-                "task_type": instance.task_type,
-                "time": f"{(end-start):.2f}",
-                "split": split,
-            }
+        if len(splits) > 1:
+            print(f"{task.metadata.name} has more than 1 split {splits}")
+        split = "test" if "test" in splits else next(iter(splits))
+        main_score = instance.scores[split][0]["main_score"]
+        results[instance.task_name] = {
+            "main_score": main_score,
+            "task_type": instance.task_type,
+            "time": f"{duration:.2f}",
+            "split": split,
+        }
 
-        print({np.mean([score["main_score"] for score in results.values()])})
+        print(results)
+        print(np.mean([score["main_score"] for score in results.values()]))
+        results_by_type[instance.task_type].append({instance.task_name: ({"main_score": main_score}, duration)})
+
+    summary = compute_averages(results_by_type)
+
+    filename = ""
+    if args.filename:
+        filename = f"_{args.filename}"
 
     print(results)
-    # with open("./results.json", "w") as f:
-    #     json.dump(results, f, indent=4)
+    print(summary)
+    label = args.benchmark if args.benchmark else args.task_name
+
+    base = os.path.join(args.out_dir, f"mteb_{model_name}_{label}{filename}")
+    with open(f"{base}_results.json", "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=4)
+    with open(f"{base}_summary.json", "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=4)
 
 
 if __name__ == "__main__":
+    WORLD_SIZE = int(os.environ["WORLD_SIZE"])
+    assert WORLD_SIZE==1
+    LOCAL_RANK = int(os.environ["LOCAL_RANK"])
+    RANK = int(os.environ["RANK"])
     main()

@@ -327,13 +327,20 @@ class EmbeddingGemmaLossHardNegativesOLD(nn.Module):
 
 
 class F2LLMInBatchLoss(nn.Module):
-    """Cross-GPU in-batch contrastive loss (F2LLM ``inbatch_loss``).
+    """Cross-GPU in-batch contrastive loss with false-negative masking.
+
+    Equivalent to ``inbatch_loss2`` from ``f2llm_repro/f2llm_train.py``:
 
     1. L2-normalise queries.
-    2. Gather document embeddings across all DDP ranks (with gradient support).
+    2. Gather document embeddings and doc IDs across all DDP ranks.
     3. L2-normalise the gathered documents.
     4. Compute cosine-similarity logits scaled by ``1 / temperature``.
-    5. Cross-entropy with labels shifted by ``batch_size * rank``.
+    5. Mask positions where ``all_doc_ids[j] == doc_ids[i]`` (false negatives)
+       while always keeping the true positive unmasked.
+    6. Cross-entropy with labels shifted by ``batch_size * rank``.
+
+    When ``doc_ids`` is ``None`` the masking step is skipped (equivalent to
+    the original ``inbatch_loss`` without masking).
 
     **torch.compile note:** distributed state (``rank``, ``distributed`` flag)
     is resolved once at ``__init__`` so that ``forward()`` contains no opaque
@@ -350,10 +357,12 @@ class F2LLMInBatchLoss(nn.Module):
 
     def forward(
         self,
-        query_embeddings: torch.Tensor,  # (B, D)
-        doc_embeddings: torch.Tensor,  # (B, D)
+        query_embeddings: torch.Tensor,         # (B, D)
+        doc_embeddings: torch.Tensor,           # (B, D)
+        doc_ids: torch.Tensor | None = None,    # (B,) positive doc IDs for masking
     ) -> torch.Tensor:
         bs = query_embeddings.size(0)
+        dev = query_embeddings.device
         a_norm = F.normalize(query_embeddings, p=2, dim=-1)
 
         # Gather doc embeddings across GPUs (supports backward through all_gather)
@@ -361,24 +370,47 @@ class F2LLMInBatchLoss(nn.Module):
             b_cross_gpus = torch.cat(
                 torch.distributed.nn.functional.all_gather(doc_embeddings), dim=0
             )
+            if doc_ids is not None:
+                all_doc_ids = torch.cat(
+                    torch.distributed.nn.functional.all_gather(doc_ids), dim=0
+                )
+            else:
+                all_doc_ids = None
         else:
             b_cross_gpus = doc_embeddings
+            all_doc_ids = doc_ids
 
         b_norm = F.normalize(b_cross_gpus, p=2, dim=-1)
 
         logits = torch.matmul(a_norm, b_norm.t()) / self.temperature  # (B, B*world)
-        labels = torch.arange(bs, device=logits.device) + bs * self._rank
+        labels = torch.arange(bs, device=dev) + bs * self._rank
+
+        if all_doc_ids is not None:
+            # same_id[i, j] = True when context j has the same doc_id as the
+            # positive of query i (false negative).
+            same_id = doc_ids[:, None] == all_doc_ids[None, :]  # (B, B*world)
+            # The true positive is never masked even if it shares the doc_id.
+            true_pos = torch.zeros_like(same_id)
+            true_pos[torch.arange(bs, device=dev), labels] = True
+            logits = logits.masked_fill(same_id & ~true_pos, float("-inf"))
 
         return self.criterion(logits, labels).mean()
 
 
 class F2LLMHardNegativeLoss(nn.Module):
-    """Per-query hard-negative contrastive loss (F2LLM ``hard_loss``).
+    """Per-query hard-negative contrastive loss with false-negative masking.
+
+    Equivalent to ``hard_loss2`` from ``f2llm_repro/f2llm_train.py``:
 
     1. Concatenate positive (index 0) with hard negatives → ``(B, 1+K, D)``.
     2. L2-normalise queries and the combined doc tensor.
     3. Compute per-element cosine similarity → ``(B, 1+K)``.
-    4. Cross-entropy with label = 0 (positive is always first).
+    4. Mask hard negatives that share the same doc_id as the positive
+       (``hard_neg_doc_ids[i, j] == doc_ids[i]``); index 0 is never masked.
+    5. Cross-entropy with label = 0 (positive is always first).
+
+    When ``doc_ids`` or ``hard_neg_doc_ids`` is ``None`` the masking step is
+    skipped (equivalent to the original ``hard_loss`` without masking).
 
     **torch.compile note:** ``hard_neg_embeddings`` must be a tensor (not
     ``None``).  An input-type guard (``is None``) causes specialisation and
@@ -394,11 +426,14 @@ class F2LLMHardNegativeLoss(nn.Module):
 
     def forward(
         self,
-        query_embeddings: torch.Tensor,  # (B, D)
-        doc_embeddings: torch.Tensor,  # (B, D) positives
-        hard_neg_embeddings: torch.Tensor,  # (B, K, D)
+        query_embeddings: torch.Tensor,                  # (B, D)
+        doc_embeddings: torch.Tensor,                    # (B, D) positives
+        hard_neg_embeddings: torch.Tensor,               # (B, K, D)
+        doc_ids: torch.Tensor | None = None,             # (B,) positive doc IDs
+        hard_neg_doc_ids: torch.Tensor | None = None,    # (B, K) hard-neg doc IDs
     ) -> torch.Tensor:
         bs = query_embeddings.size(0)
+        dev = query_embeddings.device
         a_norm = F.normalize(query_embeddings, p=2, dim=-1)
 
         # (B, 1+K, D)
@@ -408,22 +443,34 @@ class F2LLMHardNegativeLoss(nn.Module):
         # Element-wise cosine similarity: (B, 1+K)
         logits = (a_norm.unsqueeze(1) * combined_norm).sum(-1) / self.temperature
 
-        labels = torch.zeros(bs, dtype=torch.long, device=logits.device)
+        if hard_neg_doc_ids is not None and doc_ids is not None:
+            # match[i, j] = True when hard negative j of query i shares the
+            # same doc_id as its positive → false negative, mask it out.
+            match = hard_neg_doc_ids == doc_ids[:, None]  # (B, K)
+            # Prepend False so index 0 (the positive) is never masked.
+            mask = torch.cat(
+                [torch.zeros(bs, 1, dtype=torch.bool, device=dev), match], dim=1
+            )  # (B, 1+K)
+            logits = logits.masked_fill(mask, float("-inf"))
+
+        labels = torch.zeros(bs, dtype=torch.long, device=dev)
         return self.criterion(logits, labels).mean()
 
 
 class F2LLMLoss(nn.Module):
     """Combined loss replicating CodeFuse-Embeddings/F2LLM training objective.
 
-    ``loss = inbatch_loss + hard_negative_loss``
+    ``loss = inbatch_loss2 + hard_loss2``  (both with false-negative masking)
 
-    * **inbatch_loss** — cross-GPU in-batch NCE (``F2LLMInBatchLoss``).
+    * **inbatch_loss** — cross-GPU in-batch NCE with false-negative masking
+      (``F2LLMInBatchLoss``), equivalent to ``inbatch_loss2`` from the
+      reference ``f2llm_repro/f2llm_train.py``.
     * **hard_negative_loss** — per-query NCE over positive + hard negatives
-      (``F2LLMHardNegativeLoss``).
+      with hard-negative masking (``F2LLMHardNegativeLoss``), equivalent to
+      ``hard_loss2`` from the reference.
 
-    The forward signature is compatible with the existing ``train.py`` loop:
-    ``doc_ids`` and ``query_ids`` are accepted but ignored (F2LLM does not
-    use duplicate masking).
+    Both losses accept doc_ids for masking.  Passing ``None`` degrades
+    gracefully to the unmasked versions (``inbatch_loss`` / ``hard_loss``).
 
     Per-batch in-batch control
     ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -459,14 +506,18 @@ class F2LLMLoss(nn.Module):
         query_embeddings: torch.Tensor,
         doc_embeddings: torch.Tensor,
         hard_neg_embeddings: torch.Tensor,
-        doc_ids: torch.Tensor | None = None,  # unused, kept for API compat
-        query_ids: torch.Tensor | None = None,  # unused, kept for API compat
-        use_inbatch: bool | None = None,  # per-call override
+        doc_ids: torch.Tensor | None = None,           # (B,) positive doc IDs
+        query_ids: torch.Tensor | None = None,         # unused, kept for API compat
+        hard_neg_doc_ids: torch.Tensor | None = None,  # (B, K) hard-neg doc IDs
+        use_inbatch: bool | None = None,               # per-call override
     ) -> torch.Tensor:
-        loss_hard = self.hard_neg(query_embeddings, doc_embeddings, hard_neg_embeddings)
+        loss_hard = self.hard_neg(
+            query_embeddings, doc_embeddings, hard_neg_embeddings,
+            doc_ids=doc_ids, hard_neg_doc_ids=hard_neg_doc_ids,
+        )
 
         _ib = self.use_inbatch if use_inbatch is None else use_inbatch
         if _ib:
-            return loss_hard + self.inbatch(query_embeddings, doc_embeddings)
+            return loss_hard + self.inbatch(query_embeddings, doc_embeddings, doc_ids=doc_ids)
 
         return loss_hard

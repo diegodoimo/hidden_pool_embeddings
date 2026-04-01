@@ -12,6 +12,7 @@ import torch.nn as nn
 from transformers import AutoModel, AutoTokenizer
 
 from models.t5gemma2model import get_model_t5gemma2_model
+from models.t5gemma2_decoder import get_model_t5gemma2_decoder
 
 
 class F2LLM:
@@ -128,6 +129,7 @@ class F2LLMT5Gemma2:
         attention_pooling = getattr(args, "attention_pooling", False)
         cls_query_pooling = getattr(args, "cls_query_pooling", False)
         attention_dim = getattr(args, "attention_dim", None)
+        attn_implementation = getattr(args, "attn_implementation", attn_implementation)
 
         # Build EmbeddingT5Gemma2 (encoder + MeanPooling + Projection + Normalize)
         self._embedding_model, _, _ = get_model_t5gemma2_model(
@@ -180,5 +182,73 @@ class F2LLMT5Gemma2:
                 None
                 if num_hard_neg == 0
                 else embeddings[2 * bs :].view(bs, num_hard_neg, -1)  # (bs, n_neg, H)
+            ),
+        }
+
+
+class F2LLMT5Gemma2Decoder:
+    """Drop-in replacement for F2LLM that uses the T5Gemma2 *decoder* as a
+    causal embedding model with EOS-token pooling (like Qwen3-Embedding).
+
+    Interface contract identical to ``F2LLMT5Gemma2`` (encoder variant):
+    - self.lm   : the EmbeddingT5Gemma2Decoder nn.Module.
+    - forward() : returns {query,passage,negative}_passage_features.
+    - Eval      : use EmbeddingModelEvalWrapper since forward already returns
+                  L2-normalised embeddings.
+    """
+
+    def __init__(
+        self,
+        model_path: str,
+        max_seq_length: int = 512,
+        args=None,
+        attn_implementation: str = "sdpa",
+    ):
+        self.args = args
+        self.device = None
+
+        attention_pooling = getattr(args, "attention_pooling", False)
+        attention_dim = getattr(args, "attention_dim", None)
+        attn_implementation = getattr(args, "attn_implementation", attn_implementation)
+
+        self._embedding_model, _, _ = get_model_t5gemma2_decoder(
+            model_name_or_path=model_path,
+            activation_checkpointing=False,
+            attention_pooling=attention_pooling,
+            attention_dim=attention_dim,
+            attn_implementation=attn_implementation,
+        )
+        self._embedding_model.encoder.config.use_cache = False
+
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self.max_seq_length = max_seq_length
+
+    @property
+    def lm(self):
+        return self._embedding_model
+
+    @lm.setter
+    def lm(self, value):
+        self._embedding_model = value
+
+    def set_device(self):
+        self.device = next(iter(self._embedding_model.parameters())).device
+
+    def forward(self, batch):
+        bs = batch["bs"]
+        num_hard_neg = int((len(batch["input_ids"]) - 2 * bs) / bs)
+
+        embeddings = self._embedding_model(
+            input_ids=batch["input_ids"],
+            attention_mask=batch["attention_mask"],
+        )
+
+        return {
+            "query_passage_features": embeddings[:bs],
+            "passage_passage_features": embeddings[bs : 2 * bs],
+            "negative_passage_features": (
+                None
+                if num_hard_neg == 0
+                else embeddings[2 * bs :].view(bs, num_hard_neg, -1)
             ),
         }

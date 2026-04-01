@@ -165,6 +165,13 @@ def parse_args():
         choices=[1, 2, 3],
         help="DeepSpeed ZeRO stage to use when --deepspeed is set (default: 2).",
     )
+    parser.add_argument(
+        "--max_eval_queries",
+        type=int,
+        default=None,
+        help="Cap the number of queries evaluated per task (random subsample). "
+        "Useful for large reranking tasks like MindSmallReranking (~2.4M queries).",
+    )
 
     args = parser.parse_args()
     return args

@@ -408,13 +408,27 @@ def collate_fn_with_padding(
     tokenizer=None,
     eot_id=None,
     add_special_tokens=False,
+    truncation_max_length=None,
 ):
+    """Tokenize batch prompts. If *truncation_max_length* is set, truncate so each
+    sequence fits in that many tokens **before** appending *eot_id* (when used),
+    matching MTEB-style encoding for long texts instead of dropping rows upstream.
+    """
 
     input_text = [item["prompt"] for item in batch]
+    _trunc_kwargs = {}
+    if truncation_max_length is not None:
+        _budget = (
+            (truncation_max_length - 1)
+            if eot_id is not None
+            else truncation_max_length
+        )
+        _trunc_kwargs = {"truncation": True, "max_length": _budget}
     tokens = tokenizer(
         input_text,
         add_special_tokens=add_special_tokens,
         return_attention_mask=False,
+        **_trunc_kwargs,
     )["input_ids"]
 
     if eot_id is not None:
@@ -596,9 +610,14 @@ def collate_fn_pretokenized_fast_pad_v2(
         eot_id=eot_id,
         padding_side=padding_side,
     )
+    # Pretokenized data uses ``positive_doc_id`` (int) and ``negative_doc_id``
+    # (list[int]) written by tokenize_data_f2llm.py.  ``query_id`` is a string.
+    # All are hashed to a 63-bit int so they live in a common ID space for
+    # false-negative masking inside F2LLMLoss.
+    ds_name = batch[0]["dataset_name"]
     pos_ids = torch.tensor(
         [
-            _str_to_int_id(f"{item['dataset_name']}/{item['positive_id']}")
+            _str_to_int_id(f"{item['dataset_name']}/{item['positive_doc_id']}")
             for item in batch
         ],
         dtype=torch.long,
@@ -610,6 +629,24 @@ def collate_fn_pretokenized_fast_pad_v2(
         ],
         dtype=torch.long,
     )
+    # neg_doc_ids[i, j] is the hashed doc ID of the j-th hard negative for
+    # query i — aligned with negative_token_ids[:num_hard_negatives].
+    # Only built when the dataset provides ``negative_doc_id`` (always true
+    # for data produced by tokenize_data_f2llm.py).
+    if "negative_doc_id" in batch[0]:
+        neg_doc_ids = torch.tensor(
+            [
+                [
+                    _str_to_int_id(f"{item['dataset_name']}/{item['negative_doc_id'][j]}")
+                    for j in range(num_hard_negatives)
+                ]
+                for item in batch
+            ],
+            dtype=torch.long,
+        )
+    else:
+        neg_doc_ids = None
+
     return {
         "query_token_ids": query_padded,
         "query_attention_mask": query_mask,
@@ -617,6 +654,7 @@ def collate_fn_pretokenized_fast_pad_v2(
         "all_doc_attention_mask": all_doc_mask,
         "pos_ids": pos_ids,
         "query_ids": q_ids,
+        "neg_doc_ids": neg_doc_ids,
         "num_hard_negatives": num_hard_negatives,
-        "dataset_name": batch[0]["dataset_name"],
+        "dataset_name": ds_name,
     }

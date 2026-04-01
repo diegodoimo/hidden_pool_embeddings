@@ -120,6 +120,7 @@ class GatedAttention(nn.Module):
             pooled: (B, D) - the aggregated representation.
             attn_weights: (B, num_heads, 1, K) - attention weights over layers.
         """
+        hidden_states = hidden_states.to(self.U.weight.dtype)
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, self.num_attention_heads, self.head_dim)
 
@@ -146,12 +147,18 @@ class EncoderWithPooling(nn.Module):
     """
     Wraps an encoder model to perform pooling and L2 normalization in the forward pass.
     The wrapped model's forward should return an object with `last_hidden_state` (e.g. BaseModelOutput).
+
+    If *projection_layers* is provided it is applied between pooling and
+    normalization.  This is needed for models like ``embeddinggemma-300m``
+    whose SentenceTransformer checkpoint ships two Dense layers (768→3072→768)
+    on top of mean-pooling.
     """
 
-    def __init__(self, model, pool_fn):
+    def __init__(self, model, pool_fn, projection_layers=None):
         super().__init__()
         self.model = model
         self.pool_fn = pool_fn
+        self.projection = projection_layers
 
     @property
     def device(self):
@@ -162,12 +169,77 @@ class EncoderWithPooling(nn.Module):
             input_ids=input_ids, attention_mask=attention_mask, **kwargs
         )
         pooled = self.pool_fn(output.last_hidden_state, attention_mask)
+        if self.projection is not None:
+            pooled = self.projection(pooled)
         return F.normalize(pooled, p=2, dim=1)
 
 
-def add_pooling_layers(model, pool_fn):
-    """Wrap a model so its forward pass includes pooling and L2 normalization."""
-    return EncoderWithPooling(model, pool_fn)
+def add_pooling_layers(model, pool_fn, projection_layers=None):
+    """Wrap a model so its forward pass includes pooling and L2 normalization.
+
+    *projection_layers* (optional ``nn.Module``) is inserted between pooling
+    and L2-norm — use :func:`load_st_dense_layers` to build one for models
+    that ship Dense projections in their SentenceTransformer checkpoint.
+    """
+    return EncoderWithPooling(model, pool_fn, projection_layers=projection_layers)
+
+
+def load_st_dense_layers(model_name_or_path: str, dtype=None):
+    """Load extra Dense layers from a SentenceTransformer checkpoint.
+
+    Models like ``google/embeddinggemma-300m`` include one or more Dense
+    projection modules (``2_Dense``, ``3_Dense``, …) that sit between mean
+    pooling and L2-normalisation.  When the base transformer is loaded with
+    ``AutoModel.from_pretrained`` these layers are absent — this helper
+    restores them.
+
+    Returns ``None`` if the checkpoint has no Dense layers.
+    """
+    import json
+    from pathlib import Path
+    from safetensors.torch import load_file as safe_load
+
+    local_dir = Path(model_name_or_path)
+    if not local_dir.is_dir():
+        from huggingface_hub import snapshot_download
+        local_dir = Path(snapshot_download(model_name_or_path, local_files_only=True))
+
+    modules_path = local_dir / "modules.json"
+    if not modules_path.exists():
+        return None
+
+    with open(modules_path) as f:
+        modules = json.load(f)
+
+    dense_modules = [
+        m for m in modules
+        if m["type"] == "sentence_transformers.models.Dense"
+    ]
+    if not dense_modules:
+        return None
+
+    layers = []
+    for m in dense_modules:
+        cfg_path = local_dir / m["path"] / "config.json"
+        wt_path = local_dir / m["path"] / "model.safetensors"
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+
+        linear = nn.Linear(
+            cfg["in_features"], cfg["out_features"], bias=cfg.get("bias", True)
+        )
+        state = safe_load(str(wt_path))
+        mapped = {}
+        for k, v in state.items():
+            new_key = k.removeprefix("linear.")
+            mapped[new_key] = v
+        linear.load_state_dict(mapped)
+        layers.append(linear)
+
+    proj = nn.Sequential(*layers)
+    if dtype is not None:
+        proj = proj.to(dtype)
+    return proj
 
 
 class Normalize(nn.Module):

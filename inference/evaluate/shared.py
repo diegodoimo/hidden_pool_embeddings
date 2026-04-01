@@ -48,7 +48,13 @@ class EvalContext:
 # ---------------------------------------------------------------------------
 
 
-def make_collate_fn(tokenizer, padding_side, eot_id, add_special_tokens):
+def make_collate_fn(
+    tokenizer,
+    padding_side,
+    eot_id,
+    add_special_tokens,
+    truncation_max_length=None,
+):
     """Build a reusable collate function from tokenizer params."""
     return partial(
         collate_fn_with_padding,
@@ -57,14 +63,21 @@ def make_collate_fn(tokenizer, padding_side, eot_id, add_special_tokens):
         tokenizer=tokenizer,
         eot_id=eot_id,
         add_special_tokens=add_special_tokens,
+        truncation_max_length=truncation_max_length,
     )
 
 
-def encode_dataset(model, dataset, batch_size, collate_fn):
+def encode_dataset(
+    model,
+    dataset,
+    batch_size,
+    collate_fn,
+    prompt_type=PromptType.query,
+):
     """Encode a prepared dataset using the DDP-aware pipeline.
 
-    This is a standalone replacement for the former
-    ``evaluate_retrieval._encode_dataset`` method.
+    *prompt_type* is passed through to ``encode()`` (e.g. document chunking);
+    prompts are already baked into *dataset* via ``create_dataset``.
     """
     sampler = LenghtSortedSampler(dataset)
     loader = DataLoader(
@@ -80,7 +93,7 @@ def encode_dataset(model, dataset, batch_size, collate_fn):
     embeddings = encode(
         model,
         loader,
-        prompt_type=PromptType.query,
+        prompt_type=prompt_type,
         world_size=world_size,
     )
     dist.barrier()
@@ -93,9 +106,19 @@ def encode_dataset(model, dataset, batch_size, collate_fn):
 
 
 def prepare_text_dataset(
-    texts, task_metadata, instruction_template, tokenizer, rank, max_length=8192
+    texts,
+    task_metadata,
+    instruction_template,
+    tokenizer,
+    rank,
+    max_length=8192,
+    prompt_type=PromptType.query,
+    skip_length_filter: bool = False,
 ):
     """Create a prompt-augmented HF dataset from raw texts for encoding.
+
+    *prompt_type* should match MTEB per-column behavior (e.g. STS column1 vs
+    column2, or document for plain passage encoding).
 
     Returns
     -------
@@ -111,17 +134,23 @@ def prepare_text_dataset(
         task_metadata=task_metadata,
         instruction_template=instruction_template,
         tokenizer=tokenizer,
-        prompt_type=PromptType.query,
+        prompt_type=prompt_type,
         max_length=max_length,
+        skip_length_filter=skip_length_filter,
     )
     removed_indices = (
         set(int(x) for x in ds.removed_ids) if ds.removed_ids else set()
     )
     if removed_indices and rank == 0:
-        print(
-            f"  WARNING: {len(removed_indices)}/{len(texts)} texts filtered "
-            f"(>{max_length} tokens or empty)"
-        )
+        if skip_length_filter:
+            print(
+                f"  WARNING: {len(removed_indices)}/{len(texts)} empty texts removed"
+            )
+        else:
+            print(
+                f"  WARNING: {len(removed_indices)}/{len(texts)} texts filtered "
+                f"(>{max_length} tokens or empty)"
+            )
     return ds, removed_indices
 
 

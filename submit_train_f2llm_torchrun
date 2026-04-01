@@ -2,12 +2,12 @@
 #SBATCH --partition=H100
 ##SBATCH --partition=DGX
 #SBATCH --account=lade
-##SBATCH --nodelist=dgx003
+#SBATCH --nodelist=dgx004
 #SBATCH --nodes=1
-#SBATCH --time=6:00:00
+#SBATCH --time=48:00:00
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=56
-#SBATCH --mem=550G
+#SBATCH --mem=450G
 #SBATCH --job-name=test
 #SBATCH --gres=gpu:H100:4
 
@@ -54,9 +54,11 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train_f2llm_repro.py \
+    --cls_query_pooling \
+    --attention_pooling \
     --model_path google/t5gemma-2-270m-270m  \
     --experiment_id trial \
-    --train_data_path ./results/f2llm_tokenized/f2llm-prompt_qwen3-tok \
+    --train_data_path ./results/f2llm_tokenized \
     --num_workers $WORKERS_PER_RANK \
     --output_dir ./f2llm_repro/results/train \
     --tb_dir ./f2llm_repro/results/tensorboard \
@@ -66,16 +68,18 @@ torchrun \
     --min_lr 1e-7 \
     --weight_decay 0.01 \
     --warmup_steps 500 \
-    --train_epochs 2 \
+    --train_epochs 1 \
     --log_interval 500 \
     --validation_interval 2000 \
     --num_hard_neg 7 \
     --eval_set mteb_eng_v2_reduced \
     --out_filename "f2llm_eval_prompts" \
-    --measure_baselines \
+    #--measure_baselines \
     #--only_retrieval \
     #--learning_rate 1e-5
     #--measure_baselines \
     #--model_path google/t5gemma-2-270m-270m  \
     #--train_data_path ./f2llm_repro/results/datasets_tokenized/f2llm/f2llm-prompt_t5gemma-2-tok \
     #--model_path Qwen/Qwen3-0.6B  \
+    #--cls_query_pooling \
+    #--attention_pooling \

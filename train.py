@@ -32,6 +32,7 @@ from utils.create_datasets import (
     create_and_tokenize_hard_negatives_datasets,
     create_hard_negatives_datasets_from_pretokenized,
     create_per_dataset_from_pretokenized,
+    create_per_dataset_from_pretokenized_f2llm,
     get_eval_tasks,
 )
 from utils.dataloader_helpers import (
@@ -407,6 +408,7 @@ class Trainer:
                 all_doc_mask = batch["all_doc_attention_mask"]
                 doc_ids = batch["pos_ids"]
                 query_ids = batch["query_ids"]
+                neg_doc_ids = batch.get("neg_doc_ids")   # (B, K) or None
                 num_neg = batch["num_hard_negatives"]
 
                 with self.autocast_ctx:
@@ -429,6 +431,7 @@ class Trainer:
                             hard_neg_embeddings=neg_embeddings,
                             doc_ids=doc_ids,
                             query_ids=query_ids,
+                            hard_neg_doc_ids=neg_doc_ids,
                             use_inbatch=_ib,
                         )
                     else:
@@ -644,8 +647,6 @@ def main():
     elif args.train_subset == "retrieval":
         train_list = RETRIEVAL_SUBSET
 
-    teacher_model = args.negatives_dir.split("/")[-1]
-
     dist.barrier()
     if RANK == 0:
         print(f"datasets prepared in {time.time()-start:.1f}s")
@@ -653,9 +654,11 @@ def main():
 
     # ------------------------------------------------------------------
     # F2LLM multi-dataset path: per-dataset DataLoaders + MultiDatasetLoader
+    # Expects flat parquet files at {negatives_dir}/{dataset_name}.parquet
+    # (the layout written by tokenize_data_f2llm.py).
     # ------------------------------------------------------------------
     if args.batch_strategy == "f2llm_multi":
-        per_dataset_dict = create_per_dataset_from_pretokenized(
+        per_dataset_dict = create_per_dataset_from_pretokenized_f2llm(
             base_dir=args.negatives_dir,
             rank=RANK,
             datasets_subset=train_list,
@@ -760,6 +763,7 @@ def main():
         add_special_tokens=add_special_tokens,
         eot_id=eot_id,
         max_samples=1_000_000,
+        max_eval_queries=args.max_eval_queries,
     )
 
     if args.loss_type == "f2llm":
@@ -774,7 +778,7 @@ def main():
     dist.barrier()
 
     _ds_prefix = "deepspeed_" if getattr(args, "deepspeed", False) else ""
-    suffix = f"{_ds_prefix}{model_name}_train-{teacher_model}_gpus{WORLD_SIZE}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_{args.batch_strategy}"
+    suffix = f"{_ds_prefix}{model_name}_gpus{WORLD_SIZE}_bs{args.batch_size}_lr{args.learning_rate}_wd{args.weight_decay}_{args.batch_strategy}_ep{args.num_train_epochs}"
     if args.out_filename:
         args.out_filename = f"{args.out_filename}_{suffix}"
     else:

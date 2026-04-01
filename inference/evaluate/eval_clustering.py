@@ -10,6 +10,10 @@ from inference.evaluate.shared import (
     EvalContext,
 )
 
+# Match MTEB: keep every subsampled row and truncate at tokenization (encode), instead of
+# dropping rows whose prompts exceed a length budget in create_dataset.
+CLUSTERING_TRUNCATION_MAX_LENGTH = 8192
+
 
 def _prepare_clustering(
     task, task_name, eval_split, instruction_template, datasets, tokenizer, rank
@@ -48,8 +52,21 @@ def _prepare_clustering(
         if rank == 0:
             print(f"  [{hf_subset}] {len(sentences)} samples for clustering")
 
+        # Legacy (commented): same max_length filter as other tasks — removed long documents
+        # entirely, unlike MTEB AbsTaskClustering._evaluate_subset, which keeps all
+        # downsampled rows and relies on the encoder to truncate.
+        # texts_ds, removed = prepare_text_dataset(
+        #     sentences, task.metadata, instruction_template, tokenizer, rank
+        # )
+
         texts_ds, removed = prepare_text_dataset(
-            sentences, task.metadata, instruction_template, tokenizer, rank
+            sentences,
+            task.metadata,
+            instruction_template,
+            tokenizer,
+            rank,
+            max_length=CLUSTERING_TRUNCATION_MAX_LENGTH,
+            skip_length_filter=True,
         )
 
         if removed:
@@ -76,11 +93,21 @@ def evaluate_one_clustering(task_data, model, batch_size, eval_context: EvalCont
     task_obj = task_data["task_obj"]
     main_score = task_data["main_score"]
 
+    # Legacy (commented): collate without truncation — long prompts only worked if rows
+    # were pre-filtered in prepare_text_dataset.
+    # collate_fn = make_collate_fn(
+    #     eval_context.tokenizer,
+    #     eval_context.padding_side,
+    #     eval_context.eot_id,
+    #     eval_context.add_special_tokens,
+    # )
+
     collate_fn = make_collate_fn(
         eval_context.tokenizer,
         eval_context.padding_side,
         eval_context.eot_id,
         eval_context.add_special_tokens,
+        truncation_max_length=CLUSTERING_TRUNCATION_MAX_LENGTH,
     )
     embeddings = encode_dataset(model, dataset["texts"], batch_size, collate_fn)
     embeddings_np = embeddings.cpu().numpy()

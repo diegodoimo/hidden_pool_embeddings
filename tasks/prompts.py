@@ -45,8 +45,7 @@ TASK_TYPE_TO_TASK_METADATA = {
 }
 
 
-# delclared in the paper but not true. There are a lot of paraphrases for a single dataset.
-
+# Delclared in the paper but not true. There are a lot of paraphrases for a single dataset.
 # Dataset name -> prompt
 F2LLM_PROMPTS = {
     # Retrieval — question answering

@@ -40,6 +40,47 @@ from inference.evaluate.eval_bitext_mining import (
 from inference.evaluate.shared import EvalContext
 
 
+
+
+def compute_averages(results):
+    """Compute per-type, micro, and macro averages from the results dict.
+
+    Parameters
+    ----------
+    results : dict
+        Output of ``evaluate``: mapping task_type ->
+        [{task_name: (score_dict, duration)}].
+
+    Returns
+    -------
+    dict with keys:
+        - one key per task_type  -> average score over all tasks in that type
+        - "micro_average"        -> average over every individual task
+        - "macro_average"        -> average of the per-type averages
+    """
+    summary = {}
+    all_scores = []
+    type_averages = []
+
+    for task_type, task_list in results.items():
+        type_scores = []
+        for task_dict in task_list:
+            for _name, (score_dict, _duration) in task_dict.items():
+                score = list(score_dict.values())[0]
+                type_scores.append(score)
+        type_avg = float(sum(type_scores) / len(type_scores))
+        summary[task_type] = type_avg
+        all_scores.extend(type_scores)
+        type_averages.append(type_avg)
+
+    summary["micro_average"] = float(sum(all_scores) / len(all_scores))
+    summary["macro_average"] = float(sum(type_averages) / len(type_averages))
+    return summary
+
+
+
+
+
 class evaluate_retrieval:
 
     def __init__(
@@ -51,6 +92,7 @@ class evaluate_retrieval:
         add_special_tokens=False,
         eot_id=None,
         max_samples=1_000_000,
+        max_eval_queries=None,
     ):
 
         self.world_size = dist.get_world_size()
@@ -61,10 +103,11 @@ class evaluate_retrieval:
         self.eot_id = eot_id
         self.instruction_template = instruction_template
         self.max_samples = max_samples
+        self.max_eval_queries = max_eval_queries
 
         t1 = time.time()
         _print_ram(label="before loading datasets", rank=self.rank)
-        self.datasets = self.prepare_datasets(tasks = tasks, instruction_template = self.instruction_template, max_samples=self.max_samples)
+        self.datasets = self.prepare_datasets(tasks = tasks, instruction_template = self.instruction_template, max_samples=self.max_samples, max_eval_queries=self.max_eval_queries)
         dist.barrier()
         _print_ram(label="after loading datasets", rank=self.rank)
         if self.rank == 0:
@@ -72,7 +115,7 @@ class evaluate_retrieval:
 
     def update_datasets(self, tasks):
         del self.datasets
-        self.datasets = self.prepare_datasets(tasks=tasks, instruction_template=self.instruction_template, max_samples=self.max_samples)
+        self.datasets = self.prepare_datasets(tasks=tasks, instruction_template=self.instruction_template, max_samples=self.max_samples, max_eval_queries=self.max_eval_queries)
 
     def _get_max_split_size_from_hub(self, task):
         """Query HF Hub for the largest split size (rows) without downloading data.
@@ -120,6 +163,7 @@ class evaluate_retrieval:
         tasks,
         instruction_template,
         max_samples=1_000_000,
+        max_eval_queries=None,
     ):
 
         datasets = {}
@@ -144,7 +188,12 @@ class evaluate_retrieval:
             )
             if self.rank == 0 and total_rows == 0:
                 print(f"  (hub metadata unavailable, skipping size pre-check)")
-            if total_rows > max_samples:
+            # Hub metadata sums every config/split on the dataset card; for Reranking that
+            # often massively overcounts unrelated configs, so we skip tasks like
+            # MindSmallReranking while MTEB still evaluates them — then the Reranking
+            # category average is wrong (e.g. only AskUbuntu ~0.63 vs golden ~0.47).
+            skip_for_size = total_rows > max_samples and task_type != "Reranking"
+            if skip_for_size:
                 if self.rank == 0:
                     print(
                         f"  SKIPPING {task_name}: total across {num_configs} configs "
@@ -152,12 +201,6 @@ class evaluate_retrieval:
                         f"limit={max_samples})"
                     )
                 continue
-
-            # if self.rank == 0 and total_rows > 0:
-            #     print(
-            #         f"  {num_configs} configs, {total_rows} total rows "
-            #         f"(largest: {max_rows} in {size_info})"
-            #     )
 
             task.load_data()
             if task_type == "Retrieval":
@@ -169,6 +212,7 @@ class evaluate_retrieval:
                     datasets,
                     self.tokenizer,
                     self.rank,
+                    max_eval_queries=max_eval_queries,
                 )
             elif task_type == "PairClassification":
                 _prepare_pair_classification_fn(
@@ -249,6 +293,7 @@ class evaluate_retrieval:
                     datasets,
                     self.tokenizer,
                     self.rank,
+                    max_eval_queries=max_eval_queries,
                 )
             else:
                 if self.rank == 0:
@@ -257,41 +302,7 @@ class evaluate_retrieval:
 
         return datasets
 
-    @staticmethod
-    def compute_averages(results):
-        """Compute per-type, micro, and macro averages from the results dict.
 
-        Parameters
-        ----------
-        results : dict
-            Output of ``evaluate``: mapping task_type ->
-            [{task_name: (score_dict, duration)}].
-
-        Returns
-        -------
-        dict with keys:
-            - one key per task_type  -> average score over all tasks in that type
-            - "micro_average"        -> average over every individual task
-            - "macro_average"        -> average of the per-type averages
-        """
-        summary = {}
-        all_scores = []
-        type_averages = []
-
-        for task_type, task_list in results.items():
-            type_scores = []
-            for task_dict in task_list:
-                for _name, (score_dict, _duration) in task_dict.items():
-                    score = list(score_dict.values())[0]
-                    type_scores.append(score)
-            type_avg = float(sum(type_scores) / len(type_scores))
-            summary[task_type] = type_avg
-            all_scores.extend(type_scores)
-            type_averages.append(type_avg)
-
-        summary["micro_average"] = float(sum(all_scores) / len(all_scores))
-        summary["macro_average"] = float(sum(type_averages) / len(type_averages))
-        return summary
 
     def evaluate(self, model, batch_size=64):
 
@@ -359,5 +370,5 @@ class evaluate_retrieval:
                 print(f"{name} evaluated in {duration/60:.2f} min")
             results[task_type].append({name: (output_res, duration)})
 
-        summary = self.compute_averages(results)
+        summary = compute_averages(results)
         return results, summary

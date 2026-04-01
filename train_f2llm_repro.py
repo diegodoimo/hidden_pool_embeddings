@@ -1,10 +1,11 @@
 from f2llm_repro.f2llm_train import (
     accelerate_train,
+    load_training_state,
     CLASSIFICATION_DATASETS,
     RETRIEVAL_DATASETS,
     EmbeddingModelEvalWrapper,
 )
-from f2llm_repro.model import F2LLM, F2LLMT5Gemma2
+from f2llm_repro.model import F2LLM, F2LLMT5Gemma2, F2LLMT5Gemma2Decoder
 from transformers import AutoTokenizer, set_seed, get_scheduler
 import os, json, random
 from datasets import load_dataset
@@ -334,7 +335,60 @@ def parse_args():
         default=200,
         help="Flush batch metadata to disk every N batches per rank.",
     )
+    parser.add_argument(
+        "--attention_pooling",
+        action="store_true",
+        help="Use gated-attention pooling over per-layer hidden states "
+        "(EmbeddingT5Gemma2HiddenPool) instead of plain mean pooling.",
+    )
+    parser.add_argument(
+        "--cls_query_pooling",
+        action="store_true",
+        help="Use a learnable CLS query token with gated-attention pooling "
+        "(EmbeddingT5Gemma2HiddenPoolCLS). Implies --attention_pooling.",
+    )
+    parser.add_argument(
+        "--attention_dim",
+        type=int,
+        default=None,
+        help="Per-head dimension for gated-attention pooling. "
+        "Defaults to hidden_size when None.",
+    )
+    parser.add_argument(
+        "--attn_implementation",
+        type=str,
+        default="sdpa",
+        choices=["eager", "sdpa", "flash_attention_2"],
+        help="Attention kernel: 'eager' (full O(L^2) materialisation), "
+        "'sdpa' (fused PyTorch SDPA), 'flash_attention_2' (FlashAttn2). "
+        "Default: 'sdpa'.",
+    )
+    parser.add_argument(
+        "--use_decoder",
+        action="store_true",
+        help="Use the T5Gemma2 *decoder* (causal, EOS-pooling) instead of the "
+        "encoder (bidirectional, mean-pooling). Only applies when model_path "
+        "contains 't5gemma-2'.",
+    )
+    parser.add_argument(
+        "--max_eval_queries",
+        type=int,
+        default=200000,
+        help="Cap the number of queries evaluated per task (random subsample). "
+        "Useful for large reranking tasks like MindSmallReranking (~2.4M queries).",
+    )
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        type=str,
+        default=None,
+        help="Path to a checkpoint directory saved by save_training_state "
+        "(e.g. output_dir/checkpoint_epoch_2). Resumes model, optimizer, "
+        "scheduler, and training loop from that point.",
+    )
     args = parser.parse_args()
+
+    if args.cls_query_pooling:
+        args.attention_pooling = True
 
     args.output_dir = f"{args.output_dir}/{args.experiment_id}"
     args.tb_dir = f"{args.tb_dir}/{args.experiment_id}"
@@ -361,6 +415,7 @@ def main():
 
     # Detect model family once; drives model class + evaluator settings.
     is_t5gemma2 = "t5gemma-2" in args.model_path.lower()
+    is_t5gemma2_decoder = is_t5gemma2 and getattr(args, "use_decoder", False)
 
     # Hard-coded cache directories per model family (overridable via --cache_dir).
     if args.cache_dir is None:
@@ -380,29 +435,60 @@ def main():
     #train_datasets, valid_datasets = [], []
     train_datasets = []
     accelerator.print("loading datasets")
-    with accelerator.main_process_first():
-        for f in sorted(
-            f for f in os.listdir(args.train_data_path) if f.endswith(".parquet")
-        ):
-            dataset_name = f.split(".parquet")[0]
-            if dataset_name not in RETRIEVAL_DATASETS and args.only_retrieval:
-                continue
 
-            accelerator.print(f"loading {dataset_name}")
+    tokenized_folder_suffix = "f2llm-prompt_qwen3-tok"
+    if "t5gemma-2" in args.model_path.lower():
+        tokenized_folder_suffix = "f2llm-prompt_t5gemma-2-tok"
+        
+    args.train_data_path = os.path.join(args.train_data_path, tokenized_folder_suffix)
+    # NOTE: main_process_first() was removed because the NCCL barrier it
+    # creates can time out (default 30 min) when rank 0 sequentially loads
+    # many datasets from CephFS.  All ranks now load in parallel; HuggingFace
+    # datasets handles concurrent cache creation via file locking.
+    #
+    # with accelerator.main_process_first():
+    #     for f in sorted(
+    #         f for f in os.listdir(args.train_data_path) if f.endswith(".parquet")
+    #     ):
+    #         dataset_name = f.split(".parquet")[0]
+    #         if dataset_name not in RETRIEVAL_DATASETS and args.only_retrieval:
+    #             continue
+    #         accelerator.print(f"loading {dataset_name}")
+    #         dataset = load_dataset(
+    #             "parquet",
+    #             data_files=os.path.join(args.train_data_path, f),
+    #             cache_dir=args.cache_dir,
+    #         )["train"]
+    #         dataset = dataset.add_column("dataset_name", [dataset_name] * len(dataset))
+    #         dataset = dataset.map(
+    #             lambda _, idx: {"data_index": idx},
+    #             with_indices=True,
+    #             desc=f"adding data_index to {dataset_name}",
+    #         )
+    #         train_datasets.append((dataset_name, dataset))
 
-            dataset = load_dataset(
-                "parquet",
-                data_files=os.path.join(args.train_data_path, f),
-                cache_dir=args.cache_dir,
-            )["train"]
+    for f in sorted(
+        f for f in os.listdir(args.train_data_path) if f.endswith(".parquet")
+    ):
+        dataset_name = f.split(".parquet")[0]
+        if dataset_name not in RETRIEVAL_DATASETS and args.only_retrieval:
+            continue
 
-            dataset = dataset.add_column("dataset_name", [dataset_name] * len(dataset))
-            dataset = dataset.map(
-                lambda _, idx: {"data_index": idx},
-                with_indices=True,
-                desc=f"adding data_index to {dataset_name}",
-            )
-            train_datasets.append((dataset_name, dataset))
+        accelerator.print(f"loading {dataset_name}")
+
+        dataset = load_dataset(
+            "parquet",
+            data_files=os.path.join(args.train_data_path, f),
+            cache_dir=args.cache_dir,
+        )["train"]
+
+        dataset = dataset.add_column("dataset_name", [dataset_name] * len(dataset))
+        dataset = dataset.map(
+            lambda _, idx: {"data_index": idx},
+            with_indices=True,
+            desc=f"adding data_index to {dataset_name}",
+        )
+        train_datasets.append((dataset_name, dataset))
             # dataset = dataset.train_test_split(train_size=0.99, shuffle=True, seed=0)
             # train_datasets.append((dataset_name, dataset["train"]))
             # valid_datasets.append((dataset_name, dataset["test"]))
@@ -436,8 +522,16 @@ def main():
         )
         override_train_step = True
 
-    if is_t5gemma2:
+    if is_t5gemma2_decoder:
+        model_name = "t5gemma2_decoder"
+        if args.attention_pooling:
+            model_name += "_attn_pooling"
+    elif is_t5gemma2:
         model_name = "t5gemma2"
+        if args.attention_pooling:
+            model_name += "_attn_pooling"
+        if args.cls_query_pooling:
+            model_name += "_cls_query"
     elif "qwen3" in args.model_path.lower():
         model_name = "qwen3"
     else:
@@ -460,9 +554,11 @@ def main():
     )
 
     accelerator.print("loading model")
-    if is_t5gemma2:
+    if is_t5gemma2_decoder:
+        model = F2LLMT5Gemma2Decoder(args.model_path, args.max_seq_length, args=args)
+        model.lm.encoder.gradient_checkpointing_enable()
+    elif is_t5gemma2:
         model = F2LLMT5Gemma2(args.model_path, args.max_seq_length, args=args)
-        # gradient_checkpointing must target the underlying T5Gemma2Encoder
         model.lm.encoder.gradient_checkpointing_enable()
     else:
         model = F2LLM(args.model_path, args.max_seq_length, args=args)
@@ -522,9 +618,8 @@ def main():
         else None
     )
     eval_tasks = get_eval_tasks(args.eval_set, task_types)
-    # Evaluator settings depend on whether the model is a causal LM (qwen-style,
-    # last-token pooling, no special tokens added by tokenizer) or a bidirectional
-    # encoder (T5Gemma2-style, mean pooling, tokenizer adds BOS/EOS itself).
+    # Evaluator settings: T5Gemma2 (encoder or decoder) uses a tokenizer that
+    # adds BOS/EOS automatically; Qwen-style models use manual EOS appending.
 
     _eval_instruction_template = instruction_template_f2llm
     if is_t5gemma2:
@@ -545,7 +640,14 @@ def main():
         add_special_tokens=_eval_add_special_tokens,
         eot_id=_eval_eot_id,
         max_samples=1_000_000,
+        max_eval_queries=args.max_eval_queries,
     )
+
+    start_epoch, start_step = 0, 0
+    if args.resume_from_checkpoint:
+        start_epoch, start_step = load_training_state(
+            accelerator, args.resume_from_checkpoint
+        )
 
     accelerator.print("start training")
 
@@ -560,7 +662,9 @@ def main():
             sum(len(d[1]) for d in train_datasets),
             evaluator=evaluator,
             per_device_eval_batch_size=args.per_device_eval_batch_size,
-            eval_wrapper_class=EmbeddingModelEvalWrapper if is_t5gemma2 else None,
+            eval_wrapper_class=EmbeddingModelEvalWrapper if (is_t5gemma2 or is_t5gemma2_decoder) else None,
+            start_epoch=start_epoch,
+            start_step=start_step,
         )
     finally:
         batch_recorder.close()
