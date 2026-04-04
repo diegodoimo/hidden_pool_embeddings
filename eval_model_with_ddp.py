@@ -22,6 +22,10 @@ from models.t5gemma2model import get_model_t5gemma2_model
 from models.t5gemma2_decoder import get_model_t5gemma2_decoder
 import mteb
 from datetime import timedelta
+from inference.target_layers import (
+    get_qwen_target_layers,
+    get_embeddinggemma_target_layers,
+)
 
 
 def parse_args():
@@ -77,12 +81,15 @@ def main():
         pool_fn = last_token_pool
         add_special_tokens = False
         eot_id = tokenizer.pad_token_id
+
+        target_layers_fn = get_qwen_target_layers
     elif "embeddinggemma" in path_lower:
         model_name = "embeddinggemma"
         instruction_template = instruction_template_embeddinggemma
         pool_fn = mean_pool
         add_special_tokens = True
         eot_id = None
+        target_layer_fn = get_qwen_target_layers
     elif "f2llm" in path_lower:
         model_name = "f2llm"
         if "0.6b" in path_lower:
@@ -172,8 +179,16 @@ def main():
     model = torch.compile(model)
 
     if args.evaluate_hidden_states:
+        n_layer = model.config.num_hidden_layers
+        target_layers = target_layers_fn(model, n_layer, option="", every=1)
+
+        m = model.module if hasattr(model, "module") else model
+        use_last_token = getattr(m, "pool_fn", None) is last_token_pool
         results, summary = retrieval_evaluator.evaluate_hidden_states(
-            model, batch_size=args.batch_size
+            model,
+            batch_size=args.batch_size,
+            target_layers=target_layers,
+            use_last_token=use_last_token,
         )
 
     else:

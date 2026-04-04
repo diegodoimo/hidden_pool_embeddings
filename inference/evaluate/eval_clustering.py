@@ -135,7 +135,12 @@ def evaluate_one_clustering(task_data, model, batch_size, eval_context: EvalCont
 
 @torch.inference_mode()
 def evaluate_hidden_states_clustering(
-    task_data, model, batch_size, eval_context: EvalContext, target_layers, use_last_token=False
+    task_data,
+    model,
+    batch_size,
+    eval_context: EvalContext,
+    target_layers,
+    use_last_token=False,
 ):
     model.eval()
     dataset = task_data["dataset"]
@@ -149,8 +154,13 @@ def evaluate_hidden_states_clustering(
         truncation_max_length=CLUSTERING_TRUNCATION_MAX_LENGTH,
     )
     embeddings_dict = encode_dataset(
-        model, dataset["texts"], batch_size, collate_fn,
-        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+        model,
+        dataset["texts"],
+        batch_size,
+        collate_fn,
+        extract_hidden_repr=True,
+        target_layers=target_layers,
+        use_last_token=use_last_token,
     )
 
     labels = dataset["labels"]

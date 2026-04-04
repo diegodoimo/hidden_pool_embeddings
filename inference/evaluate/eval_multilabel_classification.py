@@ -142,7 +142,12 @@ def evaluate_one_multilabel_classification(
 
 @torch.inference_mode()
 def evaluate_hidden_states_multilabel_classification(
-    task_data, model, batch_size, eval_context: EvalContext, target_layers, use_last_token=False
+    task_data,
+    model,
+    batch_size,
+    eval_context: EvalContext,
+    target_layers,
+    use_last_token=False,
 ):
     model.eval()
     dataset = task_data["dataset"]
@@ -156,12 +161,22 @@ def evaluate_hidden_states_multilabel_classification(
         eval_context.add_special_tokens,
     )
     train_embeddings_dict = encode_dataset(
-        model, dataset["train_texts"], batch_size, collate_fn,
-        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+        model,
+        dataset["train_texts"],
+        batch_size,
+        collate_fn,
+        extract_hidden_repr=True,
+        target_layers=target_layers,
+        use_last_token=use_last_token,
     )
     test_embeddings_dict = encode_dataset(
-        model, dataset["test_texts"], batch_size, collate_fn,
-        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+        model,
+        dataset["test_texts"],
+        batch_size,
+        collate_fn,
+        extract_hidden_repr=True,
+        target_layers=target_layers,
+        use_last_token=use_last_token,
     )
 
     train_labels = dataset["train_labels"]
@@ -184,7 +199,9 @@ def evaluate_hidden_states_multilabel_classification(
             )
             x_train = x_train_all[sample_indices]
             y_train = binarizer.transform([train_labels[idx] for idx in sample_indices])
-            y_pred, classifier = _evaluate_classifier(x_train, y_train, x_test, task_obj.evaluator)
+            y_pred, classifier = _evaluate_classifier(
+                x_train, y_train, x_test, task_obj.evaluator
+            )
             scores_exp = task_obj._calculate_scores(y_test, y_pred, x_test, classifier)
             scores.append(scores_exp)
 

@@ -93,7 +93,9 @@ def _prepare_pair_classification(
 
 
 @torch.inference_mode()
-def evaluate_one_pair_classification(task_data, model, batch_size, eval_context: EvalContext):
+def evaluate_one_pair_classification(
+    task_data, model, batch_size, eval_context: EvalContext
+):
     model.eval()
     dataset = task_data["dataset"]
     task_obj = task_data["task_obj"]
@@ -131,7 +133,12 @@ def evaluate_one_pair_classification(task_data, model, batch_size, eval_context:
 
 @torch.inference_mode()
 def evaluate_hidden_states_pair_classification(
-    task_data, model, batch_size, eval_context: EvalContext, target_layers, use_last_token=False
+    task_data,
+    model,
+    batch_size,
+    eval_context: EvalContext,
+    target_layers,
+    use_last_token=False,
 ):
     model.eval()
     dataset = task_data["dataset"]
@@ -145,8 +152,13 @@ def evaluate_hidden_states_pair_classification(
         eval_context.add_special_tokens,
     )
     embeddings_dict = encode_dataset(
-        model, dataset["texts"], batch_size, collate_fn,
-        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+        model,
+        dataset["texts"],
+        batch_size,
+        collate_fn,
+        extract_hidden_repr=True,
+        target_layers=target_layers,
+        use_last_token=use_last_token,
     )
 
     layer_performance = {}

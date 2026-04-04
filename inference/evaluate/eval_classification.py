@@ -129,8 +129,16 @@ def evaluate_one_classification(
         eval_context.eot_id,
         eval_context.add_special_tokens,
     )
-    X_train_all = encode_dataset(model, dataset["train_texts"], batch_size, collate_fn).cpu().numpy()
-    X_test = encode_dataset(model, dataset["test_texts"], batch_size, collate_fn).cpu().numpy()
+    X_train_all = (
+        encode_dataset(model, dataset["train_texts"], batch_size, collate_fn)
+        .cpu()
+        .numpy()
+    )
+    X_test = (
+        encode_dataset(model, dataset["test_texts"], batch_size, collate_fn)
+        .cpu()
+        .numpy()
+    )
 
     avg_scores = _run_clf_experiments(
         task_obj, X_train_all, dataset["train_labels"], X_test, dataset["test_labels"]
@@ -140,7 +148,12 @@ def evaluate_one_classification(
 
 @torch.inference_mode()
 def evaluate_hidden_states_classification(
-    task_data, model, batch_size, eval_context: EvalContext, target_layers, use_last_token=False
+    task_data,
+    model,
+    batch_size,
+    eval_context: EvalContext,
+    target_layers,
+    use_last_token=False,
 ):
     model.eval()
     dataset = task_data["dataset"]
@@ -154,12 +167,22 @@ def evaluate_hidden_states_classification(
         eval_context.add_special_tokens,
     )
     train_embeddings_dict = encode_dataset(
-        model, dataset["train_texts"], batch_size, collate_fn,
-        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+        model,
+        dataset["train_texts"],
+        batch_size,
+        collate_fn,
+        extract_hidden_repr=True,
+        target_layers=target_layers,
+        use_last_token=use_last_token,
     )
     test_embeddings_dict = encode_dataset(
-        model, dataset["test_texts"], batch_size, collate_fn,
-        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+        model,
+        dataset["test_texts"],
+        batch_size,
+        collate_fn,
+        extract_hidden_repr=True,
+        target_layers=target_layers,
+        use_last_token=use_last_token,
     )
 
     train_labels = dataset["train_labels"]

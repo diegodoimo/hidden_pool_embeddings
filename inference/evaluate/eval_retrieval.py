@@ -11,7 +11,12 @@ from mteb._evaluators.retrieval_metrics import (
     make_score_dict,
 )
 
-from inference.helpers import abs_task_preprocessing, search, encode, estimate_chunk_sizes
+from inference.helpers import (
+    abs_task_preprocessing,
+    search,
+    encode,
+    estimate_chunk_sizes,
+)
 from utils.create_datasets import create_dataset
 from utils.dataloader_helpers import LenghtSortedSampler
 
@@ -19,7 +24,13 @@ from inference.evaluate.shared import make_collate_fn, encode_dataset, EvalConte
 
 
 def _prepare_retrieval(
-    task, task_name, eval_split, instruction_template, datasets, tokenizer, rank,
+    task,
+    task_name,
+    eval_split,
+    instruction_template,
+    datasets,
+    tokenizer,
+    rank,
 ):
     task.convert_v1_dataset_format_to_v2(num_proc=None)
     subset_list = abs_task_preprocessing(task, eval_split)
@@ -139,12 +150,22 @@ def evaluate_hidden_states_retrieval(
     doc_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["corpus"]["id"])}
 
     query_embeddings_dict = encode_dataset(
-        model, dataset["queries"], batch_size, collate_fn,
-        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+        model,
+        dataset["queries"],
+        batch_size,
+        collate_fn,
+        extract_hidden_repr=True,
+        target_layers=target_layers,
+        use_last_token=use_last_token,
     )
     corpus_embeddings_dict = encode_dataset(
-        model, dataset["corpus"], batch_size, collate_fn,
-        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+        model,
+        dataset["corpus"],
+        batch_size,
+        collate_fn,
+        extract_hidden_repr=True,
+        target_layers=target_layers,
+        use_last_token=use_last_token,
     )
 
     layer_performance = {}
@@ -164,18 +185,24 @@ def evaluate_hidden_states_retrieval(
             c_end = min(c_start + chunk_size, n_corpus)
             scores = torch.matmul(query_norm, corpus_norm[c_start:c_end].T)
             k_take = min(top_k, c_end - c_start)
-            chunk_top_scores, chunk_top_local = torch.topk(scores, k=k_take, dim=1, largest=True)
+            chunk_top_scores, chunk_top_local = torch.topk(
+                scores, k=k_take, dim=1, largest=True
+            )
             chunk_top_global = chunk_top_local + c_start
             combined_scores = torch.cat([top_scores_layer, chunk_top_scores], dim=1)
             combined_indices = torch.cat([top_indices_layer, chunk_top_global], dim=1)
-            top_k_vals, top_k_pos = torch.topk(combined_scores, k=top_k, dim=1, largest=True)
+            top_k_vals, top_k_pos = torch.topk(
+                combined_scores, k=top_k, dim=1, largest=True
+            )
             top_scores_layer = top_k_vals
             top_indices_layer = torch.gather(combined_indices, 1, top_k_pos)
 
         results = {}
         for i in range(n_queries):
             results[query_idx_to_id[i]] = {
-                doc_idx_to_id[int(top_indices_layer[i, j].item())]: top_scores_layer[i, j].item()
+                doc_idx_to_id[int(top_indices_layer[i, j].item())]: top_scores_layer[
+                    i, j
+                ].item()
                 for j in range(top_k)
                 if int(top_indices_layer[i, j].item()) >= 0
             }
@@ -188,16 +215,37 @@ def evaluate_hidden_states_retrieval(
                         results[qid].pop(pid)
 
         (
-            all_scores, ndcg, _map, recall, precision, naucs, mrr, naucs_mrr, cv_recall,
-        ) = calculate_retrieval_scores(results, qrels, list(k_values), skip_first_result)
+            all_scores,
+            ndcg,
+            _map,
+            recall,
+            precision,
+            naucs,
+            mrr,
+            naucs_mrr,
+            cv_recall,
+        ) = calculate_retrieval_scores(
+            results, qrels, list(k_values), skip_first_result
+        )
 
         task_specific_scores_ = task_specific_scores(
-            all_scores, dataset["relevant_docs"], results,
-            hf_split=hf_split, hf_subset=hf_subset,
+            all_scores,
+            dataset["relevant_docs"],
+            results,
+            hf_split=hf_split,
+            hf_subset=hf_subset,
         )
         scores_dict = make_score_dict(
-            ndcg, _map, recall, precision, mrr, naucs, naucs_mrr, cv_recall,
-            task_specific_scores_, None,
+            ndcg,
+            _map,
+            recall,
+            precision,
+            mrr,
+            naucs,
+            naucs_mrr,
+            cv_recall,
+            task_specific_scores_,
+            None,
         )
         layer_performance[layer] = scores_dict[main_score]
 

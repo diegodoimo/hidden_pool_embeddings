@@ -13,7 +13,13 @@ from inference.evaluate.shared import make_collate_fn, EvalContext, encode_datas
 
 
 def _prepare_reranking(
-    task, task_name, eval_split, instruction_template, datasets, tokenizer, rank,
+    task,
+    task_name,
+    eval_split,
+    instruction_template,
+    datasets,
+    tokenizer,
+    rank,
     max_eval_queries=None,
 ):
     task.convert_v1_dataset_format_to_v2(num_proc=None)
@@ -97,6 +103,7 @@ def _prepare_reranking(
             and len(queries_dataset) > max_eval_queries
         ):
             import random as _rng
+
             all_qids = list(queries_dataset["id"])
             sampled_qids = set(_rng.Random(42).sample(all_qids, max_eval_queries))
             if rank == 0:
@@ -204,9 +211,7 @@ def evaluate_one_reranking(
     )
     dist.barrier()
 
-    corpus_embeddings = encode_dataset(
-        model, dataset["corpus"], batch_size, collate_fn
-    )
+    corpus_embeddings = encode_dataset(model, dataset["corpus"], batch_size, collate_fn)
     id_to_row = {did: i for i, did in enumerate(dataset["corpus"]["id"])}
 
     results = {}
@@ -310,12 +315,22 @@ def evaluate_hidden_states_reranking(
     query_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["queries"]["id"])}
 
     query_embeddings_dict = encode_dataset(
-        model, dataset["queries"], batch_size, collate_fn,
-        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+        model,
+        dataset["queries"],
+        batch_size,
+        collate_fn,
+        extract_hidden_repr=True,
+        target_layers=target_layers,
+        use_last_token=use_last_token,
     )
     corpus_embeddings_dict = encode_dataset(
-        model, dataset["corpus"], batch_size, collate_fn,
-        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+        model,
+        dataset["corpus"],
+        batch_size,
+        collate_fn,
+        extract_hidden_repr=True,
+        target_layers=target_layers,
+        use_last_token=use_last_token,
     )
 
     id_to_row = {did: i for i, did in enumerate(dataset["corpus"]["id"])}
@@ -350,16 +365,37 @@ def evaluate_hidden_states_reranking(
                         results[qid].pop(pid)
 
         (
-            all_scores, ndcg, _map, recall, precision, naucs, mrr, naucs_mrr, cv_recall,
-        ) = calculate_retrieval_scores(results, qrels, list(k_values), skip_first_result)
+            all_scores,
+            ndcg,
+            _map,
+            recall,
+            precision,
+            naucs,
+            mrr,
+            naucs_mrr,
+            cv_recall,
+        ) = calculate_retrieval_scores(
+            results, qrels, list(k_values), skip_first_result
+        )
 
         task_specific_scores_ = task_specific_scores(
-            all_scores, dataset["relevant_docs"], results,
-            hf_split=hf_split, hf_subset=hf_subset,
+            all_scores,
+            dataset["relevant_docs"],
+            results,
+            hf_split=hf_split,
+            hf_subset=hf_subset,
         )
         scores_dict = make_score_dict(
-            ndcg, _map, recall, precision, mrr, naucs, naucs_mrr, cv_recall,
-            task_specific_scores_, None,
+            ndcg,
+            _map,
+            recall,
+            precision,
+            mrr,
+            naucs,
+            naucs_mrr,
+            cv_recall,
+            task_specific_scores_,
+            None,
         )
         layer_performance[layer] = scores_dict[main_score]
 

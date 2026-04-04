@@ -51,6 +51,7 @@ from inference.evaluate.eval_clustering import (
     evaluate_hidden_states_clustering,
 )
 from inference.evaluate.shared import EvalContext
+from models.modules import last_token_pool
 
 
 def compute_layerwise_averages(results):
@@ -442,10 +443,25 @@ class evaluate_retrieval:
         return results, summary
 
     def evaluate_hidden_states(
-        self, model, batch_size=64, target_layers=None, use_last_token=False
+        self,
+        model,
+        batch_size=64,
+        target_layers=None,
+        use_last_token=None,
     ):
+        """Evaluate hidden-state representations layer by layer.
 
+        *use_last_token* is auto-detected from the model's pooling function
+        (True for last-token poolers, False for mean poolers such as
+        embeddinggemma).  Pass an explicit bool to override detection.
+        """
         model.eval()
+
+        if use_last_token is None:
+            m = model.module if hasattr(model, "module") else model
+            use_last_token = getattr(m, "pool_fn", None) is last_token_pool
+        if self.rank == 0:
+            print(f"hidden-states pooling: {'last_token' if use_last_token else 'mean'}")
 
         results = defaultdict(list)
         eval_context = EvalContext(

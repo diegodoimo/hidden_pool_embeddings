@@ -102,9 +102,7 @@ def _prepare_sts(
         )
         if rem1 or rem2:
             valid = [
-                i
-                for i in range(len(sentence1))
-                if i not in rem1 and i not in rem2
+                i for i in range(len(sentence1)) if i not in rem1 and i not in rem2
             ]
             if rank == 0:
                 print(
@@ -135,9 +133,7 @@ def _prepare_sts(
         )
         if rem1b or rem2b:
             valid = [
-                i
-                for i in range(len(sentence1))
-                if i not in rem1b and i not in rem2b
+                i for i in range(len(sentence1)) if i not in rem1b and i not in rem2b
             ]
             sentence1 = [sentence1[i] for i in valid]
             sentence2 = [sentence2[i] for i in valid]
@@ -189,12 +185,8 @@ def evaluate_one_sts(task_data, model, batch_size, eval_context: EvalContext):
         eval_context.eot_id,
         eval_context.add_special_tokens,
     )
-    embeddings1 = encode_dataset(
-        model, dataset["texts1"], batch_size, collate_fn
-    )
-    embeddings2 = encode_dataset(
-        model, dataset["texts2"], batch_size, collate_fn
-    )
+    embeddings1 = encode_dataset(model, dataset["texts1"], batch_size, collate_fn)
+    embeddings2 = encode_dataset(model, dataset["texts2"], batch_size, collate_fn)
     embeddings1 = embeddings1.cpu().numpy()
     embeddings2 = embeddings2.cpu().numpy()
 
@@ -223,7 +215,12 @@ def evaluate_one_sts(task_data, model, batch_size, eval_context: EvalContext):
 
 @torch.inference_mode()
 def evaluate_hidden_states_sts(
-    task_data, model, batch_size, eval_context: EvalContext, target_layers, use_last_token=False
+    task_data,
+    model,
+    batch_size,
+    eval_context: EvalContext,
+    target_layers,
+    use_last_token=False,
 ):
     model.eval()
     dataset = task_data["dataset"]
@@ -237,16 +234,28 @@ def evaluate_hidden_states_sts(
         eval_context.add_special_tokens,
     )
     embeddings1_dict = encode_dataset(
-        model, dataset["texts1"], batch_size, collate_fn,
-        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+        model,
+        dataset["texts1"],
+        batch_size,
+        collate_fn,
+        extract_hidden_repr=True,
+        target_layers=target_layers,
+        use_last_token=use_last_token,
     )
     embeddings2_dict = encode_dataset(
-        model, dataset["texts2"], batch_size, collate_fn,
-        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+        model,
+        dataset["texts2"],
+        batch_size,
+        collate_fn,
+        extract_hidden_repr=True,
+        target_layers=target_layers,
+        use_last_token=use_last_token,
     )
 
     layer_performance = {}
-    for (layer, emb1), (_, emb2) in zip(embeddings1_dict.items(), embeddings2_dict.items()):
+    for (layer, emb1), (_, emb2) in zip(
+        embeddings1_dict.items(), embeddings2_dict.items()
+    ):
         emb1_np = emb1.numpy()
         emb2_np = emb2.numpy()
 

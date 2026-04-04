@@ -277,7 +277,12 @@ def evaluate_one_summarization(task_data, model, batch_size, eval_context: EvalC
 
 @torch.inference_mode()
 def evaluate_hidden_states_summarization(
-    task_data, model, batch_size, eval_context: EvalContext, target_layers, use_last_token=False
+    task_data,
+    model,
+    batch_size,
+    eval_context: EvalContext,
+    target_layers,
+    use_last_token=False,
 ):
     model.eval()
     dataset = task_data["dataset"]
@@ -290,12 +295,22 @@ def evaluate_hidden_states_summarization(
         eval_context.add_special_tokens,
     )
     human_embs_dict = encode_dataset(
-        model, dataset["texts_human"], batch_size, collate_fn,
-        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+        model,
+        dataset["texts_human"],
+        batch_size,
+        collate_fn,
+        extract_hidden_repr=True,
+        target_layers=target_layers,
+        use_last_token=use_last_token,
     )
     machine_embs_dict = encode_dataset(
-        model, dataset["texts_machine"], batch_size, collate_fn,
-        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+        model,
+        dataset["texts_machine"],
+        batch_size,
+        collate_fn,
+        extract_hidden_repr=True,
+        target_layers=target_layers,
+        use_last_token=use_last_token,
     )
 
     human_lens = dataset["human_lens"]
@@ -325,8 +340,12 @@ def evaluate_hidden_states_summarization(
             if len(set(human_scores_row)) == 1 or len(set(cosine_pred)) == 1:
                 continue
 
-            cosine_spearman_scores.append(spearmanr(human_scores_row, cosine_pred).statistic)
-            cosine_pearson_scores.append(pearsonr(human_scores_row, cosine_pred).statistic)
+            cosine_spearman_scores.append(
+                spearmanr(human_scores_row, cosine_pred).statistic
+            )
+            cosine_pearson_scores.append(
+                pearsonr(human_scores_row, cosine_pred).statistic
+            )
 
         scores = {
             "cosine_spearman": float(np.mean(cosine_spearman_scores)),
