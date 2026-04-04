@@ -12,7 +12,12 @@ from utils.create_datasets import (
     instruction_template_f2llm,
 )
 from tasks import EVAL_TASK_DICT
-from models.modules import add_pooling_layers, last_token_pool, mean_pool, load_st_dense_layers
+from models.modules import (
+    add_pooling_layers,
+    last_token_pool,
+    mean_pool,
+    load_st_dense_layers,
+)
 from models.t5gemma2model import get_model_t5gemma2_model
 from models.t5gemma2_decoder import get_model_t5gemma2_decoder
 import mteb
@@ -26,7 +31,7 @@ def parse_args():
     parser.add_argument("--benchmark", type=str, default=None)
     parser.add_argument("--filename", type=str, default="")
     parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--out_dir", type=str, default = "results/performace_evals")
+    parser.add_argument("--out_dir", type=str, default="results/performace_evals")
     parser.add_argument(
         "--max_eval_queries",
         type=int,
@@ -34,6 +39,7 @@ def parse_args():
         help="Cap the number of queries evaluated per task (random subsample). "
         "Useful for large reranking tasks like MindSmallReranking (~2.4M queries).",
     )
+    parser.add_argument("--evaluate_hidden_states", action="store_true")
     args = parser.parse_args()
     return args
 
@@ -87,12 +93,10 @@ def main():
             model_name += "_4b"
         instruction_template = instruction_template_f2llm
         is_t5gemma2_decoder = (
-            "t5gemma2_decoder" in path_lower
-            or "t5gemma-2-decoder" in path_lower
+            "t5gemma2_decoder" in path_lower or "t5gemma-2-decoder" in path_lower
         )
-        is_t5gemma2 = (
-            not is_t5gemma2_decoder
-            and ("t5gemma-2" in path_lower or "t5gemma2" in path_lower)
+        is_t5gemma2 = not is_t5gemma2_decoder and (
+            "t5gemma-2" in path_lower or "t5gemma2" in path_lower
         )
         if is_t5gemma2 or is_t5gemma2_decoder:
             pool_fn = mean_pool
@@ -111,9 +115,8 @@ def main():
     bench_dict = {
         "mteb_multilingual_v2": "MTEB(Multilingual, v2)",
         "mteb_eng_v2": "MTEB(eng, v2)",
-        "mteb_eng_v2_subset": "MTEB(eng, v2)"
+        "mteb_eng_v2_subset": "MTEB(eng, v2)",
     }
-
 
     if args.benchmark:
         benchmark = mteb.get_benchmark(bench_dict[args.benchmark])
@@ -168,16 +171,25 @@ def main():
     model = DDP(model, device_ids=[LOCAL_RANK])
     model = torch.compile(model)
 
-    results, summary = retrieval_evaluator.evaluate(model, batch_size=args.batch_size)
+    if args.evaluate_hidden_states:
+        results, summary = retrieval_evaluator.evaluate_hidden_states(
+            model, batch_size=args.batch_size
+        )
+
+    else:
+        results, summary = retrieval_evaluator.evaluate(
+            model, batch_size=args.batch_size
+        )
 
     filename = ""
+    if args.evaluate_hidden_states:
+        filename = "_hidden_states"
     if args.filename:
         filename = f"_{args.filename}"
     if args.max_eval_queries:
-        filename+=f"_{args.max_eval_queries//1000}k_max_queries"
+        filename += f"_{args.max_eval_queries//1000}k_max_queries"
+
     if rank == 0:
-        print(results)
-        print(summary)
         label = args.benchmark if args.benchmark else args.task_name
 
         base = os.path.join(args.out_dir, f"{model_name}_{label}{filename}")

@@ -202,6 +202,7 @@ def load_st_dense_layers(model_name_or_path: str, dtype=None):
     local_dir = Path(model_name_or_path)
     if not local_dir.is_dir():
         from huggingface_hub import snapshot_download
+
         local_dir = Path(snapshot_download(model_name_or_path, local_files_only=True))
 
     modules_path = local_dir / "modules.json"
@@ -212,8 +213,7 @@ def load_st_dense_layers(model_name_or_path: str, dtype=None):
         modules = json.load(f)
 
     dense_modules = [
-        m for m in modules
-        if m["type"] == "sentence_transformers.models.Dense"
+        m for m in modules if m["type"] == "sentence_transformers.models.Dense"
     ]
     if not dense_modules:
         return None

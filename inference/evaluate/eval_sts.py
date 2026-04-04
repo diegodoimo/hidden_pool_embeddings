@@ -221,6 +221,51 @@ def evaluate_one_sts(task_data, model, batch_size, eval_context: EvalContext):
     return {main_score: scores[main_score]}
 
 
+@torch.inference_mode()
+def evaluate_hidden_states_sts(
+    task_data, model, batch_size, eval_context: EvalContext, target_layers, use_last_token=False
+):
+    model.eval()
+    dataset = task_data["dataset"]
+    task_obj = task_data["task_obj"]
+    main_score = task_data["main_score"]
+
+    collate_fn = make_collate_fn(
+        eval_context.tokenizer,
+        eval_context.padding_side,
+        eval_context.eot_id,
+        eval_context.add_special_tokens,
+    )
+    embeddings1_dict = encode_dataset(
+        model, dataset["texts1"], batch_size, collate_fn,
+        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+    )
+    embeddings2_dict = encode_dataset(
+        model, dataset["texts2"], batch_size, collate_fn,
+        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+    )
+
+    layer_performance = {}
+    for (layer, emb1), (_, emb2) in zip(embeddings1_dict.items(), embeddings2_dict.items()):
+        emb1_np = emb1.numpy()
+        emb2_np = emb2.numpy()
+
+        cosine_scores = 1 - paired_cosine_distances(emb1_np, emb2_np)
+        manhattan_distances_ = -paired_manhattan_distances(emb1_np, emb2_np)
+        euclidean_distances_ = -paired_euclidean_distances(emb1_np, emb2_np)
+
+        scores_dict = {
+            "cosine_scores": cosine_scores.tolist(),
+            "manhattan_distances": manhattan_distances_.tolist(),
+            "euclidean_distances": euclidean_distances_.tolist(),
+            "similarity_scores": cosine_scores.tolist(),
+        }
+        scores = task_obj._calculate_scores(scores_dict, dataset["labels"])
+        layer_performance[layer] = scores[main_score]
+
+    return layer_performance
+
+
 # Legacy (pre–MTEB alignment): single pooled dataset of unique texts across both STS
 # columns, keyed by hash(text) (collision-prone) and one PromptType.query for every
 # line — wrong for asymmetric STS and not equivalent to AnySTSEvaluator's two passes.

@@ -92,9 +92,7 @@ def _prepare_summarization(
                 new_machine_lens.append(len(kept_m))
                 new_gold_scores.append([s for _, s in kept_m])
 
-        if rank == 0 and (
-            len(new_human_lens) < n_samples_orig or rem_h or rem_m
-        ):
+        if rank == 0 and (len(new_human_lens) < n_samples_orig or rem_h or rem_m):
             print(
                 f"  [{hf_subset}] summarization: dropped partial/long texts; "
                 f"{n_samples_orig - len(new_human_lens)} samples removed entirely"
@@ -182,7 +180,12 @@ def _model_similarity_pair(model, a: torch.Tensor, b: torch.Tensor) -> float:
     m = model.module if hasattr(model, "module") else model
     if hasattr(m, "similarity") and callable(m.similarity):
         return float(m.similarity(a, b))
-    return float(torch.dot(torch.nn.functional.normalize(a, dim=-1), torch.nn.functional.normalize(b, dim=-1)))
+    return float(
+        torch.dot(
+            torch.nn.functional.normalize(a, dim=-1),
+            torch.nn.functional.normalize(b, dim=-1),
+        )
+    )
 
 
 @torch.inference_mode()
@@ -197,12 +200,11 @@ def evaluate_one_summarization(task_data, model, batch_size, eval_context: EvalC
         eval_context.eot_id,
         eval_context.add_special_tokens,
     )
-    emb_human = encode_dataset(
-        model, dataset["texts_human"], batch_size, collate_fn
-    )
+    emb_human = encode_dataset(model, dataset["texts_human"], batch_size, collate_fn)
     emb_machine = encode_dataset(
         model, dataset["texts_machine"], batch_size, collate_fn
     )
+
     emb_human = emb_human.cpu().float()
     emb_machine = emb_machine.cpu().float()
 
@@ -271,6 +273,72 @@ def evaluate_one_summarization(task_data, model, batch_size, eval_context: EvalC
     }
 
     return {main_score: scores[main_score]}
+
+
+@torch.inference_mode()
+def evaluate_hidden_states_summarization(
+    task_data, model, batch_size, eval_context: EvalContext, target_layers, use_last_token=False
+):
+    model.eval()
+    dataset = task_data["dataset"]
+    main_score = task_data["main_score"]
+
+    collate_fn = make_collate_fn(
+        eval_context.tokenizer,
+        eval_context.padding_side,
+        eval_context.eot_id,
+        eval_context.add_special_tokens,
+    )
+    human_embs_dict = encode_dataset(
+        model, dataset["texts_human"], batch_size, collate_fn,
+        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+    )
+    machine_embs_dict = encode_dataset(
+        model, dataset["texts_machine"], batch_size, collate_fn,
+        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+    )
+
+    human_lens = dataset["human_lens"]
+    machine_lens = dataset["machine_lens"]
+    gold_scores = dataset["gold_scores"]
+
+    layer_performance = {}
+    for (layer, emb_human), (_, emb_machine) in zip(
+        human_embs_dict.items(), machine_embs_dict.items()
+    ):
+        embs_human_split = torch.split(emb_human.float(), human_lens, dim=0)
+        embs_machine_split = torch.split(emb_machine.float(), machine_lens, dim=0)
+
+        cosine_spearman_scores = []
+        cosine_pearson_scores = []
+
+        for embs_human_i, embs_machine_i, gold_row in zip(
+            embs_human_split, embs_machine_split, gold_scores
+        ):
+            cosine_pred = []
+            human_scores_row = []
+            for emb_m, gold_score in zip(embs_machine_i, gold_row):
+                cosine_max = float(torch.max(cos_sim(emb_m, embs_human_i)).item())
+                cosine_pred.append(cosine_max)
+                human_scores_row.append(gold_score)
+
+            if len(set(human_scores_row)) == 1 or len(set(cosine_pred)) == 1:
+                continue
+
+            cosine_spearman_scores.append(spearmanr(human_scores_row, cosine_pred).statistic)
+            cosine_pearson_scores.append(pearsonr(human_scores_row, cosine_pred).statistic)
+
+        scores = {
+            "cosine_spearman": float(np.mean(cosine_spearman_scores)),
+            "cosine_pearson": float(np.mean(cosine_pearson_scores)),
+            "dot_spearman": float(np.mean(cosine_spearman_scores)),
+            "dot_pearson": float(np.mean(cosine_pearson_scores)),
+            "pearson": float(np.mean(cosine_pearson_scores)),
+            "spearman": float(np.mean(cosine_spearman_scores)),
+        }
+        layer_performance[layer] = scores[main_score]
+
+    return layer_performance
 
 
 # Legacy (pre–MTEB alignment): merged human+machine texts into one list, deduplicated

@@ -5,41 +5,103 @@ import time
 
 from utils.helpers import _print_ram
 
-from inference.evaluate.eval_clustering import (
-    _prepare_clustering as _prepare_clustering_fn,
-    evaluate_one_clustering as evaluate_one_clustering_fn,
-)
 from inference.evaluate.eval_retrieval import (
-    _prepare_retrieval as _prepare_retrieval_fn,
-    evaluate_one as evaluate_one_fn,
+    _prepare_retrieval,
+    evaluate_one,
+    evaluate_hidden_states_retrieval,
+)
+from inference.evaluate.eval_reranking import (
+    _prepare_reranking,
+    evaluate_one_reranking,
+    evaluate_hidden_states_reranking,
 )
 from inference.evaluate.eval_pair_classification import (
-    _prepare_pair_classification as _prepare_pair_classification_fn,
-    evaluate_one_pair_classification as evaluate_one_pair_classification_fn,
+    _prepare_pair_classification,
+    evaluate_one_pair_classification,
+    evaluate_hidden_states_pair_classification,
 )
 from inference.evaluate.eval_multilabel_classification import (
-    _prepare_multilabel_classification as _prepare_multilabel_classification_fn,
-    evaluate_one_multilabel_classification as evaluate_one_multilabel_classification_fn,
+    _prepare_multilabel_classification,
+    evaluate_one_multilabel_classification,
+    evaluate_hidden_states_multilabel_classification,
 )
 from inference.evaluate.eval_classification import (
-    _prepare_classification as _prepare_classification_fn,
-    evaluate_one_classification as evaluate_one_classification_fn,
+    _prepare_classification,
+    evaluate_one_classification,
+    evaluate_hidden_states_classification,
 )
 from inference.evaluate.eval_sts import (
-    _prepare_sts as _prepare_sts_fn,
-    evaluate_one_sts as evaluate_one_sts_fn,
+    _prepare_sts,
+    evaluate_one_sts,
+    evaluate_hidden_states_sts,
 )
 from inference.evaluate.eval_summarization import (
-    _prepare_summarization as _prepare_summarization_fn,
-    evaluate_one_summarization as evaluate_one_summarization_fn,
+    _prepare_summarization,
+    evaluate_one_summarization,
+    evaluate_hidden_states_summarization,
 )
 from inference.evaluate.eval_bitext_mining import (
-    _prepare_bitext_mining as _prepare_bitext_mining_fn,
-    evaluate_one_bitext_mining as evaluate_one_bitext_mining_fn,
+    _prepare_bitext_mining,
+    evaluate_one_bitext_mining,
+    evaluate_hidden_states_bitext_mining,
+)
+from inference.evaluate.eval_clustering import (
+    _prepare_clustering,
+    evaluate_one_clustering,
+    evaluate_hidden_states_clustering,
 )
 from inference.evaluate.shared import EvalContext
 
 
+def compute_layerwise_averages(results):
+    """Compute per-layer summary statistics from hidden-states results.
+
+    Parameters
+    ----------
+    results : dict
+        Output of ``evaluate_hidden_states``: mapping task_type ->
+        [{task_name: (layer_dict, duration)}], where layer_dict is
+        {layer_name -> score}.
+
+    Returns
+    -------
+    dict[str, list[float]]
+        Keys are task types plus "micro_average" and "macro_average".
+        Values are lists of scores, one per layer, in layer order.
+    """
+    # Collect ordered layer names from the first available task
+    layer_names = None
+    for task_list in results.values():
+        for task_dict in task_list:
+            for layer_dict, _ in task_dict.values():
+                layer_names = list(layer_dict.keys())
+                break
+        if layer_names is not None:
+            break
+    if not layer_names:
+        return {}
+
+    summary = {
+        key: [] for key in list(results.keys()) + ["micro_average", "macro_average"]
+    }
+
+    for layer in layer_names:
+        all_scores = []
+        type_averages = []
+        for task_type, task_list in results.items():
+            type_scores = [
+                layer_dict[layer]
+                for task_dict in task_list
+                for layer_dict, _ in task_dict.values()
+            ]
+            type_avg = float(sum(type_scores) / len(type_scores))
+            summary[task_type].append(type_avg)
+            all_scores.extend(type_scores)
+            type_averages.append(type_avg)
+        summary["micro_average"].append(float(sum(all_scores) / len(all_scores)))
+        summary["macro_average"].append(float(sum(type_averages) / len(type_averages)))
+
+    return summary
 
 
 def compute_averages(results):
@@ -78,9 +140,6 @@ def compute_averages(results):
     return summary
 
 
-
-
-
 class evaluate_retrieval:
 
     def __init__(
@@ -107,7 +166,12 @@ class evaluate_retrieval:
 
         t1 = time.time()
         _print_ram(label="before loading datasets", rank=self.rank)
-        self.datasets = self.prepare_datasets(tasks = tasks, instruction_template = self.instruction_template, max_samples=self.max_samples, max_eval_queries=self.max_eval_queries)
+        self.datasets = self.prepare_datasets(
+            tasks=tasks,
+            instruction_template=self.instruction_template,
+            max_samples=self.max_samples,
+            max_eval_queries=self.max_eval_queries,
+        )
         dist.barrier()
         _print_ram(label="after loading datasets", rank=self.rank)
         if self.rank == 0:
@@ -115,7 +179,12 @@ class evaluate_retrieval:
 
     def update_datasets(self, tasks):
         del self.datasets
-        self.datasets = self.prepare_datasets(tasks=tasks, instruction_template=self.instruction_template, max_samples=self.max_samples, max_eval_queries=self.max_eval_queries)
+        self.datasets = self.prepare_datasets(
+            tasks=tasks,
+            instruction_template=self.instruction_template,
+            max_samples=self.max_samples,
+            max_eval_queries=self.max_eval_queries,
+        )
 
     def _get_max_split_size_from_hub(self, task):
         """Query HF Hub for the largest split size (rows) without downloading data.
@@ -204,7 +273,7 @@ class evaluate_retrieval:
 
             task.load_data()
             if task_type == "Retrieval":
-                _prepare_retrieval_fn(
+                _prepare_retrieval(
                     task,
                     task_name,
                     eval_split,
@@ -212,10 +281,9 @@ class evaluate_retrieval:
                     datasets,
                     self.tokenizer,
                     self.rank,
-                    max_eval_queries=max_eval_queries,
                 )
             elif task_type == "PairClassification":
-                _prepare_pair_classification_fn(
+                _prepare_pair_classification(
                     task,
                     task_name,
                     eval_split,
@@ -225,7 +293,7 @@ class evaluate_retrieval:
                     self.rank,
                 )
             elif task_type == "MultilabelClassification":
-                _prepare_multilabel_classification_fn(
+                _prepare_multilabel_classification(
                     task,
                     task_name,
                     eval_split,
@@ -235,7 +303,7 @@ class evaluate_retrieval:
                     self.rank,
                 )
             elif task_type == "Clustering":
-                _prepare_clustering_fn(
+                _prepare_clustering(
                     task,
                     task_name,
                     eval_split,
@@ -245,7 +313,7 @@ class evaluate_retrieval:
                     self.rank,
                 )
             elif task_type == "Classification":
-                _prepare_classification_fn(
+                _prepare_classification(
                     task,
                     task_name,
                     eval_split,
@@ -255,7 +323,7 @@ class evaluate_retrieval:
                     self.rank,
                 )
             elif task_type == "STS":
-                _prepare_sts_fn(
+                _prepare_sts(
                     task,
                     task_name,
                     eval_split,
@@ -265,7 +333,7 @@ class evaluate_retrieval:
                     self.rank,
                 )
             elif task_type == "Summarization":
-                _prepare_summarization_fn(
+                _prepare_summarization(
                     task,
                     task_name,
                     eval_split,
@@ -275,7 +343,7 @@ class evaluate_retrieval:
                     self.rank,
                 )
             elif task_type == "BitextMining":
-                _prepare_bitext_mining_fn(
+                _prepare_bitext_mining(
                     task,
                     task_name,
                     eval_split,
@@ -285,7 +353,7 @@ class evaluate_retrieval:
                     self.rank,
                 )
             elif task_type == "Reranking":
-                _prepare_retrieval_fn(
+                _prepare_reranking(
                     task,
                     task_name,
                     eval_split,
@@ -298,16 +366,14 @@ class evaluate_retrieval:
             else:
                 if self.rank == 0:
                     print(f"  WARNING: unsupported task type '{task_type}', skipping")
-            #_print_ram(label="dataset loaded", rank=self.rank)
+            # _print_ram(label="dataset loaded", rank=self.rank)
 
         return datasets
-
-
 
     def evaluate(self, model, batch_size=64):
 
         model.eval()
-        
+
         results = defaultdict(list)
         eval_context = EvalContext(
             tokenizer=self.tokenizer,
@@ -328,37 +394,39 @@ class evaluate_retrieval:
                 print(f"\nevaluating {name} task {i}/{n_tasks}")
 
             if task_type == "Retrieval":
-                output_res = evaluate_one_fn(task_data, model, batch_size, eval_context)
+                output_res = evaluate_one(task_data, model, batch_size, eval_context)
             elif task_type == "PairClassification":
-                output_res = evaluate_one_pair_classification_fn(
+                output_res = evaluate_one_pair_classification(
                     task_data, model, batch_size, eval_context
                 )
             elif task_type == "MultilabelClassification":
-                output_res = evaluate_one_multilabel_classification_fn(
+                output_res = evaluate_one_multilabel_classification(
                     task_data, model, batch_size, eval_context
                 )
             elif task_type == "Clustering":
-                output_res = evaluate_one_clustering_fn(
+                output_res = evaluate_one_clustering(
                     task_data, model, batch_size, eval_context
                 )
             elif task_type == "Classification":
-                output_res = evaluate_one_classification_fn(
+                output_res = evaluate_one_classification(
                     task_data, model, batch_size, eval_context
                 )
             elif task_type == "STS":
-                output_res = evaluate_one_sts_fn(
+                output_res = evaluate_one_sts(
                     task_data, model, batch_size, eval_context
                 )
             elif task_type == "Summarization":
-                output_res = evaluate_one_summarization_fn(
+                output_res = evaluate_one_summarization(
                     task_data, model, batch_size, eval_context
                 )
             elif task_type == "BitextMining":
-                output_res = evaluate_one_bitext_mining_fn(
+                output_res = evaluate_one_bitext_mining(
                     task_data, model, batch_size, eval_context
                 )
             elif task_type == "Reranking":
-                output_res = evaluate_one_fn(task_data, model, batch_size, eval_context)
+                output_res = evaluate_one_reranking(
+                    task_data, model, batch_size, eval_context
+                )
             else:
                 if self.rank == 0:
                     print(f"  skipping unsupported task type: {task_type}")
@@ -371,4 +439,124 @@ class evaluate_retrieval:
             results[task_type].append({name: (output_res, duration)})
 
         summary = compute_averages(results)
+        return results, summary
+
+    def evaluate_hidden_states(
+        self, model, batch_size=64, target_layers=None, use_last_token=False
+    ):
+
+        model.eval()
+
+        results = defaultdict(list)
+        eval_context = EvalContext(
+            tokenizer=self.tokenizer,
+            padding_side=self.padding_side,
+            eot_id=self.eot_id,
+            add_special_tokens=self.add_special_tokens,
+            world_size=self.world_size,
+            rank=self.rank,
+        )
+
+        n_tasks = len(self.datasets)
+        for i, (name, task_data) in enumerate(self.datasets.items()):
+
+            dist.barrier()
+            start = time.time()
+            task_type = task_data["task_type"]
+            if self.rank == 0:
+                print(f"\nevaluating {name} task {i}/{n_tasks}")
+
+            if task_type == "Retrieval":
+                output_res = evaluate_hidden_states_retrieval(
+                    task_data,
+                    model,
+                    batch_size,
+                    eval_context,
+                    target_layers,
+                    use_last_token,
+                )
+            elif task_type == "PairClassification":
+                output_res = evaluate_hidden_states_pair_classification(
+                    task_data,
+                    model,
+                    batch_size,
+                    eval_context,
+                    target_layers,
+                    use_last_token,
+                )
+            elif task_type == "MultilabelClassification":
+                output_res = evaluate_hidden_states_multilabel_classification(
+                    task_data,
+                    model,
+                    batch_size,
+                    eval_context,
+                    target_layers,
+                    use_last_token,
+                )
+            elif task_type == "Clustering":
+                output_res = evaluate_hidden_states_clustering(
+                    task_data,
+                    model,
+                    batch_size,
+                    eval_context,
+                    target_layers,
+                    use_last_token,
+                )
+            elif task_type == "Classification":
+                output_res = evaluate_hidden_states_classification(
+                    task_data,
+                    model,
+                    batch_size,
+                    eval_context,
+                    target_layers,
+                    use_last_token,
+                )
+            elif task_type == "STS":
+                output_res = evaluate_hidden_states_sts(
+                    task_data,
+                    model,
+                    batch_size,
+                    eval_context,
+                    target_layers,
+                    use_last_token,
+                )
+            elif task_type == "Summarization":
+                output_res = evaluate_hidden_states_summarization(
+                    task_data,
+                    model,
+                    batch_size,
+                    eval_context,
+                    target_layers,
+                    use_last_token,
+                )
+            elif task_type == "BitextMining":
+                output_res = evaluate_hidden_states_bitext_mining(
+                    task_data,
+                    model,
+                    batch_size,
+                    eval_context,
+                    target_layers,
+                    use_last_token,
+                )
+            elif task_type == "Reranking":
+                output_res = evaluate_hidden_states_reranking(
+                    task_data,
+                    model,
+                    batch_size,
+                    eval_context,
+                    target_layers,
+                    use_last_token,
+                )
+            else:
+                if self.rank == 0:
+                    print(f"  skipping unsupported task type: {task_type}")
+                continue
+
+            dist.barrier()
+            duration = time.time() - start
+            if self.rank == 0:
+                print(f"{name} evaluated in {duration/60:.2f} min")
+            results[task_type].append({name: (output_res, duration)})
+
+        summary = compute_layerwise_averages(results)
         return results, summary

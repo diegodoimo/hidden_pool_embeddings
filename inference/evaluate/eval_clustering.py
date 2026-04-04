@@ -131,3 +131,45 @@ def evaluate_one_clustering(task_data, model, batch_size, eval_context: EvalCont
     std_v = float(np.std(all_v))
 
     return {main_score: mean_v}
+
+
+@torch.inference_mode()
+def evaluate_hidden_states_clustering(
+    task_data, model, batch_size, eval_context: EvalContext, target_layers, use_last_token=False
+):
+    model.eval()
+    dataset = task_data["dataset"]
+    task_obj = task_data["task_obj"]
+
+    collate_fn = make_collate_fn(
+        eval_context.tokenizer,
+        eval_context.padding_side,
+        eval_context.eot_id,
+        eval_context.add_special_tokens,
+        truncation_max_length=CLUSTERING_TRUNCATION_MAX_LENGTH,
+    )
+    embeddings_dict = encode_dataset(
+        model, dataset["texts"], batch_size, collate_fn,
+        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+    )
+
+    labels = dataset["labels"]
+    labels = [l if isinstance(l, list) else [l] for l in labels]
+
+    layer_performance = {}
+    for layer, embeddings in embeddings_dict.items():
+        embeddings_np = embeddings.cpu().numpy()
+        v_measures, _ = _evaluate_clustering_bootstrapped(
+            embeddings_np,
+            labels,
+            n_clusters=task_obj.n_clusters,
+            cluster_size=task_obj.max_documents_per_cluster,
+            kmean_batch_size=task_obj.k_mean_batch_size,
+            max_depth=task_obj.max_depth,
+            rng_state=task_obj.rng_state,
+            seed=task_obj.seed,
+        )
+        all_v = list(itertools.chain.from_iterable(v_measures.values()))
+        layer_performance[layer] = float(np.mean(all_v))
+
+    return layer_performance

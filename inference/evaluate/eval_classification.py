@@ -78,32 +78,8 @@ def _prepare_classification(
         }
 
 
-@torch.inference_mode()
-def evaluate_one_classification(task_data, model, batch_size, eval_context: EvalContext):
-    model.eval()
-    dataset = task_data["dataset"]
-    task_obj = task_data["task_obj"]
-    main_score = task_data["main_score"]
-
-    collate_fn = make_collate_fn(
-        eval_context.tokenizer,
-        eval_context.padding_side,
-        eval_context.eot_id,
-        eval_context.add_special_tokens,
-    )
-    train_embeddings = encode_dataset(
-        model, dataset["train_texts"], batch_size, collate_fn
-    )
-    test_embeddings = encode_dataset(
-        model, dataset["test_texts"], batch_size, collate_fn
-    )
-
-    X_train_all = train_embeddings.cpu().numpy()
-    X_test = test_embeddings.cpu().numpy()
-
-    train_labels = dataset["train_labels"]
-    test_labels = dataset["test_labels"]
-
+def _run_clf_experiments(task_obj, x_train_all, train_labels, x_test, test_labels):
+    """Run n_experiments classification trials and return averaged scores."""
     evaluator_model = task_obj.evaluator_model
     if "random_state" in evaluator_model.get_params():
         evaluator_model = evaluator_model.set_params(random_state=task_obj.seed)
@@ -124,17 +100,11 @@ def evaluate_one_classification(task_data, model, batch_size, eval_context: Eval
                 sampled_idxs.append(i)
                 label_counter[label] += 1
 
-        X_train = X_train_all[sampled_idxs]
-        y_train = [train_labels[i] for i in sampled_idxs]
-
         clf = clone(evaluator_model)
-        clf.fit(X_train, y_train)
-        y_pred = clf.predict(X_test)
+        clf.fit(x_train_all[sampled_idxs], [train_labels[i] for i in sampled_idxs])
+        scores.append(task_obj._calculate_scores(test_labels, clf.predict(x_test)))
 
-        scores_exp = task_obj._calculate_scores(test_labels, y_pred)
-        scores.append(scores_exp)
-
-    avg_scores = {
+    return {
         k: (
             float(np.mean(values))
             if (values := [s[k] for s in scores if s[k] is not None])
@@ -143,4 +113,65 @@ def evaluate_one_classification(task_data, model, batch_size, eval_context: Eval
         for k in scores[0].keys()
     }
 
+
+@torch.inference_mode()
+def evaluate_one_classification(
+    task_data, model, batch_size, eval_context: EvalContext
+):
+    model.eval()
+    dataset = task_data["dataset"]
+    task_obj = task_data["task_obj"]
+    main_score = task_data["main_score"]
+
+    collate_fn = make_collate_fn(
+        eval_context.tokenizer,
+        eval_context.padding_side,
+        eval_context.eot_id,
+        eval_context.add_special_tokens,
+    )
+    X_train_all = encode_dataset(model, dataset["train_texts"], batch_size, collate_fn).cpu().numpy()
+    X_test = encode_dataset(model, dataset["test_texts"], batch_size, collate_fn).cpu().numpy()
+
+    avg_scores = _run_clf_experiments(
+        task_obj, X_train_all, dataset["train_labels"], X_test, dataset["test_labels"]
+    )
     return {main_score: avg_scores[main_score]}
+
+
+@torch.inference_mode()
+def evaluate_hidden_states_classification(
+    task_data, model, batch_size, eval_context: EvalContext, target_layers, use_last_token=False
+):
+    model.eval()
+    dataset = task_data["dataset"]
+    task_obj = task_data["task_obj"]
+    main_score = task_data["main_score"]
+
+    collate_fn = make_collate_fn(
+        eval_context.tokenizer,
+        eval_context.padding_side,
+        eval_context.eot_id,
+        eval_context.add_special_tokens,
+    )
+    train_embeddings_dict = encode_dataset(
+        model, dataset["train_texts"], batch_size, collate_fn,
+        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+    )
+    test_embeddings_dict = encode_dataset(
+        model, dataset["test_texts"], batch_size, collate_fn,
+        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+    )
+
+    train_labels = dataset["train_labels"]
+    test_labels = dataset["test_labels"]
+
+    layer_performance = {}
+    for (layer, X_train_all), (_, X_test) in zip(
+        train_embeddings_dict.items(), test_embeddings_dict.items()
+    ):
+        avg_scores = _run_clf_experiments(
+            task_obj, X_train_all.numpy(), train_labels, X_test.numpy(), test_labels
+        )
+        layer_performance[layer] = avg_scores[main_score]
+
+    return layer_performance

@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from mteb.types import PromptType
 from datasets import Dataset as HFDataset
 
-from inference.helpers import encode
+from inference.helpers import encode, encode_hidden_layers
 from utils.create_datasets import create_dataset
 from utils.dataloader_helpers import collate_fn_with_padding, LenghtSortedSampler
 
@@ -73,11 +73,17 @@ def encode_dataset(
     batch_size,
     collate_fn,
     prompt_type=PromptType.query,
+    extract_hidden_repr=False,
+    target_layers=None,
+    use_last_token=False,
 ):
     """Encode a prepared dataset using the DDP-aware pipeline.
 
     *prompt_type* is passed through to ``encode()`` (e.g. document chunking);
     prompts are already baked into *dataset* via ``create_dataset``.
+
+    When *extract_hidden_repr* is True, *target_layers* (list of module name
+    strings) must be provided; returns a dict[layer_name -> Tensor].
     """
     sampler = LenghtSortedSampler(dataset)
     loader = DataLoader(
@@ -90,12 +96,22 @@ def encode_dataset(
     )
     dist.barrier()
     world_size = dist.get_world_size()
-    embeddings = encode(
-        model,
-        loader,
-        prompt_type=prompt_type,
-        world_size=world_size,
-    )
+    if extract_hidden_repr:
+        assert target_layers is not None, "target_layers required when extract_hidden_repr=True"
+        embeddings = encode_hidden_layers(
+            model,
+            loader,
+            target_layers=target_layers,
+            world_size=world_size,
+            use_last_token=use_last_token,
+        )
+    else:
+        embeddings = encode(
+            model,
+            loader,
+            prompt_type=prompt_type,
+            world_size=world_size,
+        )
     dist.barrier()
     return embeddings
 
@@ -138,14 +154,10 @@ def prepare_text_dataset(
         max_length=max_length,
         skip_length_filter=skip_length_filter,
     )
-    removed_indices = (
-        set(int(x) for x in ds.removed_ids) if ds.removed_ids else set()
-    )
+    removed_indices = set(int(x) for x in ds.removed_ids) if ds.removed_ids else set()
     if removed_indices and rank == 0:
         if skip_length_filter:
-            print(
-                f"  WARNING: {len(removed_indices)}/{len(texts)} empty texts removed"
-            )
+            print(f"  WARNING: {len(removed_indices)}/{len(texts)} empty texts removed")
         else:
             print(
                 f"  WARNING: {len(removed_indices)}/{len(texts)} texts filtered "

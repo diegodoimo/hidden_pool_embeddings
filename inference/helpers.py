@@ -455,8 +455,10 @@ def encode(
         # Duplicates (from padding) harmlessly overwrite with the same value;
         # every valid index is guaranteed to be placed correctly.
         embeddings = torch.zeros(
-            num_samples, all_embeddings.shape[1],
-            device=all_embeddings.device, dtype=all_embeddings.dtype,
+            num_samples,
+            all_embeddings.shape[1],
+            device=all_embeddings.device,
+            dtype=all_embeddings.dtype,
         )
         embeddings[all_indices] = all_embeddings
         return embeddings
@@ -467,3 +469,118 @@ def encode(
     return embeddings
 
 
+@torch.inference_mode()
+def encode_hidden_layers(
+    model,
+    loader,
+    target_layers,
+    world_size,
+    use_last_token=False,
+):
+    """Extract and pool intermediate layer representations.
+
+    Pooling mirrors the final embedding layer:
+      - use_last_token=True  → last non-padding token
+      - use_last_token=False → mean over non-padding tokens (average pooling)
+
+    all_gather logic mirrors ``encode``: each rank processes its local shard,
+    then results are gathered once at the end and reordered via sampler indices.
+    This supports batch_size > 1 and avoids per-batch communication overhead.
+
+    Returns:
+        dict[str, Tensor]  layer_name -> Tensor[N_samples, hidden_dim]  (CPU)
+    """
+    indices = None
+    if hasattr(loader.sampler, "indices"):
+        indices = loader.sampler.indices
+        assert isinstance(indices, list)
+
+    num_samples = len(loader.dataset)
+
+    # Temporary storage for the current batch's hook outputs
+    hidden_states_tmp = {}
+
+    def make_hook(name):
+        def hook_fn(_module, _input, output):
+            # Some layers return tuples (e.g. attention layers); take hidden states
+            if isinstance(output, tuple):
+                output = output[0]
+            hidden_states_tmp[name] = output
+
+        return hook_fn
+
+    handles = [
+        module.register_forward_hook(make_hook(name))
+        for name, module in model.named_modules()
+        if name in target_layers
+    ]
+
+    # Accumulate pooled embeddings per layer across all local batches
+    layer_embeddings = {name: [] for name in target_layers}
+
+    try:
+        for batch in loader:
+            batch = {key: val.to(model.device) for key, val in batch.items()}
+            attention_mask = batch["attention_mask"]  # [B, T]
+
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                model(
+                    input_ids=batch["input_ids"],
+                    attention_mask=attention_mask,
+                )
+
+            seq_len = attention_mask.sum(dim=1)  # [B]
+
+            for name in target_layers:
+                activations = hidden_states_tmp[name]  # [B, T, D]
+
+                if use_last_token:
+                    B = seq_len.shape[0]
+                    pooled = activations[
+                        torch.arange(B, device=activations.device), seq_len - 1
+                    ]  # [B, D]
+                else:
+                    mask = attention_mask.unsqueeze(-1).to(
+                        activations.dtype
+                    )  # [B, T, 1]
+                    denom = mask.sum(dim=1)  # [B, 1]
+                    pooled = (activations * mask).sum(dim=1) / denom  # [B, D]
+
+                layer_embeddings[name].append(pooled.float().cpu())
+    finally:
+        for h in handles:
+            h.remove()
+
+    result = {}
+    for name in target_layers:
+        embeddings = torch.cat(layer_embeddings[name], dim=0)  # [local_N, D]
+
+        if world_size > 1:
+            embeddings = embeddings.to(model.device)
+            indices_tensor = torch.tensor(indices, device=model.device)
+
+            gathered = [torch.zeros_like(embeddings) for _ in range(world_size)]
+            dist.all_gather(gathered, embeddings)
+            all_embeddings = torch.cat(gathered, dim=0)
+
+            gathered_indices = [
+                torch.zeros_like(indices_tensor) for _ in range(world_size)
+            ]
+            dist.all_gather(gathered_indices, indices_tensor)
+            all_indices = torch.cat(gathered_indices, dim=0)
+
+            # Scatter into correct positions using the original indices.
+            # Duplicates (from DistributedSampler padding) harmlessly overwrite
+            # with the same value; every valid index is placed correctly.
+            out = torch.zeros(
+                num_samples, all_embeddings.shape[1], dtype=all_embeddings.dtype
+            )
+            out[all_indices.cpu()] = all_embeddings.cpu()
+            result[name] = out
+        else:
+            if indices is not None:
+                sorted_positions = torch.argsort(torch.tensor(indices))
+                embeddings = embeddings[sorted_positions]
+            result[name] = embeddings
+
+    return result

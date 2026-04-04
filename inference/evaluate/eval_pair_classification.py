@@ -127,3 +127,47 @@ def evaluate_one_pair_classification(task_data, model, batch_size, eval_context:
     scores = task_obj._compute_metrics(distances, dataset["labels"])
 
     return {main_score: scores[main_score]}
+
+
+@torch.inference_mode()
+def evaluate_hidden_states_pair_classification(
+    task_data, model, batch_size, eval_context: EvalContext, target_layers, use_last_token=False
+):
+    model.eval()
+    dataset = task_data["dataset"]
+    task_obj = task_data["task_obj"]
+    main_score = task_data["main_score"]
+
+    collate_fn = make_collate_fn(
+        eval_context.tokenizer,
+        eval_context.padding_side,
+        eval_context.eot_id,
+        eval_context.add_special_tokens,
+    )
+    embeddings_dict = encode_dataset(
+        model, dataset["texts"], batch_size, collate_fn,
+        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+    )
+
+    layer_performance = {}
+    for layer, embeddings in embeddings_dict.items():
+        embeddings_np = embeddings.numpy()
+        emb1 = embeddings_np[dataset["indices1"]]
+        emb2 = embeddings_np[dataset["indices2"]]
+
+        cosine_scores = 1 - paired_cosine_distances(emb1, emb2)
+        manhattan_distances_ = paired_manhattan_distances(emb1, emb2)
+        euclidean_distances_ = paired_euclidean_distances(emb1, emb2)
+        dot_scores = np.sum(emb1 * emb2, axis=1)
+
+        distances = PairClassificationDistances(
+            cosine_scores=cosine_scores.tolist(),
+            euclidean_distances=euclidean_distances_.tolist(),
+            manhattan_distances=manhattan_distances_.tolist(),
+            similarity_scores=cosine_scores.tolist(),
+            dot_scores=dot_scores.tolist(),
+        )
+        scores = task_obj._compute_metrics(distances, dataset["labels"])
+        layer_performance[layer] = scores[main_score]
+
+    return layer_performance

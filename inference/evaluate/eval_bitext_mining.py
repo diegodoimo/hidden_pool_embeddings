@@ -121,3 +121,53 @@ def evaluate_one_bitext_mining(task_data, model, batch_size, eval_context: EvalC
     scores = task_obj._compute_metrics(nearest_neighbors, gold)
 
     return {main_score: scores[main_score]}
+
+
+@torch.inference_mode()
+def evaluate_hidden_states_bitext_mining(
+    task_data, model, batch_size, eval_context: EvalContext, target_layers, use_last_token=False
+):
+    model.eval()
+    dataset = task_data["dataset"]
+    task_obj = task_data["task_obj"]
+    main_score = task_data["main_score"]
+
+    collate_fn = make_collate_fn(
+        eval_context.tokenizer,
+        eval_context.padding_side,
+        eval_context.eot_id,
+        eval_context.add_special_tokens,
+    )
+    embeddings_dict = encode_dataset(
+        model, dataset["texts"], batch_size, collate_fn,
+        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+    )
+
+    layer_performance = {}
+    for layer, embeddings in embeddings_dict.items():
+        embeddings_np = embeddings.numpy()
+        emb1 = embeddings_np[dataset["indices1"]]
+        emb2 = embeddings_np[dataset["indices2"]]
+
+        norms1 = np.linalg.norm(emb1, axis=1, keepdims=True)
+        norms2 = np.linalg.norm(emb2, axis=1, keepdims=True)
+        norms1[norms1 == 0] = 1
+        norms2[norms2 == 0] = 1
+        emb1_norm = emb1 / norms1
+        emb2_norm = emb2 / norms2
+
+        nearest_neighbors = []
+        chunk_size = 1000
+        for start in range(0, len(emb1_norm), chunk_size):
+            end = min(start + chunk_size, len(emb1_norm))
+            sim = emb1_norm[start:end] @ emb2_norm.T
+            top_idx = np.argmax(sim, axis=1)
+            top_scores = sim[np.arange(len(top_idx)), top_idx]
+            for idx, score in zip(top_idx, top_scores):
+                nearest_neighbors.append({"corpus_id": int(idx), "score": float(score)})
+
+        gold = list(zip(range(len(emb1)), range(len(emb1))))
+        scores = task_obj._compute_metrics(nearest_neighbors, gold)
+        layer_performance[layer] = scores[main_score]
+
+    return layer_performance

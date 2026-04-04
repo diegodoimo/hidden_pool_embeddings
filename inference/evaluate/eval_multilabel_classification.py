@@ -138,3 +138,57 @@ def evaluate_one_multilabel_classification(
     avg_scores = {k: float(np.mean([s[k] for s in scores])) for k in scores[0]}
 
     return {main_score: avg_scores[main_score]}
+
+
+@torch.inference_mode()
+def evaluate_hidden_states_multilabel_classification(
+    task_data, model, batch_size, eval_context: EvalContext, target_layers, use_last_token=False
+):
+    model.eval()
+    dataset = task_data["dataset"]
+    task_obj = task_data["task_obj"]
+    main_score = task_data["main_score"]
+
+    collate_fn = make_collate_fn(
+        eval_context.tokenizer,
+        eval_context.padding_side,
+        eval_context.eot_id,
+        eval_context.add_special_tokens,
+    )
+    train_embeddings_dict = encode_dataset(
+        model, dataset["train_texts"], batch_size, collate_fn,
+        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+    )
+    test_embeddings_dict = encode_dataset(
+        model, dataset["test_texts"], batch_size, collate_fn,
+        extract_hidden_repr=True, target_layers=target_layers, use_last_token=use_last_token,
+    )
+
+    train_labels = dataset["train_labels"]
+    test_labels = dataset["test_labels"]
+
+    binarizer = MultiLabelBinarizer()
+    y_test = binarizer.fit_transform(test_labels)
+
+    layer_performance = {}
+    for (layer, train_embs), (_, test_embs) in zip(
+        train_embeddings_dict.items(), test_embeddings_dict.items()
+    ):
+        x_train_all = train_embs.numpy()
+        x_test = test_embs.numpy()
+
+        scores = []
+        for _ in range(task_obj.n_experiments):
+            sample_indices, _ = task_obj._undersample_data_indices(
+                train_labels, task_obj.samples_per_label, None
+            )
+            x_train = x_train_all[sample_indices]
+            y_train = binarizer.transform([train_labels[idx] for idx in sample_indices])
+            y_pred, classifier = _evaluate_classifier(x_train, y_train, x_test, task_obj.evaluator)
+            scores_exp = task_obj._calculate_scores(y_test, y_pred, x_test, classifier)
+            scores.append(scores_exp)
+
+        avg_scores = {k: float(np.mean([s[k] for s in scores])) for k in scores[0]}
+        layer_performance[layer] = avg_scores[main_score]
+
+    return layer_performance
