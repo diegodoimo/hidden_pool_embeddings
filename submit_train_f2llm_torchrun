@@ -73,7 +73,7 @@ torchrun \
     --validation_interval 2000 \
     --num_hard_neg 7 \
     --eval_set mteb_eng_v2_reduced \
-    --out_filename "f2llm_eval_prompts" \
+    #--out_filename "f2llm_eval_prompts" \
     #--measure_baselines \
     #--only_retrieval \
     #--learning_rate 1e-5

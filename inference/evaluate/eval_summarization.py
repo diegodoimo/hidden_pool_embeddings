@@ -4,7 +4,7 @@ from scipy.stats import pearsonr, spearmanr
 
 from mteb.similarity_functions import cos_sim, dot_score
 
-from inference.helpers import abs_task_preprocessing
+from inference.helpers import abs_task_preprocessing, iter_deferred_layers
 from inference.evaluate.shared import (
     encode_dataset,
     make_collate_fn,
@@ -283,6 +283,7 @@ def evaluate_hidden_states_summarization(
     eval_context: EvalContext,
     target_layers,
     use_last_token=False,
+    layer_subset=None,
 ):
     model.eval()
     dataset = task_data["dataset"]
@@ -294,7 +295,7 @@ def evaluate_hidden_states_summarization(
         eval_context.eot_id,
         eval_context.add_special_tokens,
     )
-    human_embs_dict = encode_dataset(
+    deferred_human = encode_dataset(
         model,
         dataset["texts_human"],
         batch_size,
@@ -302,8 +303,9 @@ def evaluate_hidden_states_summarization(
         extract_hidden_repr=True,
         target_layers=target_layers,
         use_last_token=use_last_token,
+        deferred_gather=True,
     )
-    machine_embs_dict = encode_dataset(
+    deferred_machine = encode_dataset(
         model,
         dataset["texts_machine"],
         batch_size,
@@ -311,6 +313,7 @@ def evaluate_hidden_states_summarization(
         extract_hidden_repr=True,
         target_layers=target_layers,
         use_last_token=use_last_token,
+        deferred_gather=True,
     )
 
     human_lens = dataset["human_lens"]
@@ -318,8 +321,10 @@ def evaluate_hidden_states_summarization(
     gold_scores = dataset["gold_scores"]
 
     layer_performance = {}
-    for (layer, emb_human), (_, emb_machine) in zip(
-        human_embs_dict.items(), machine_embs_dict.items()
+    for layer, emb_human, emb_machine in iter_deferred_layers(
+        deferred_human, deferred_machine,
+        target_layers=target_layers,
+        layer_subset=layer_subset,
     ):
         embs_human_split = torch.split(emb_human.float(), human_lens, dim=0)
         embs_machine_split = torch.split(emb_machine.float(), machine_lens, dim=0)

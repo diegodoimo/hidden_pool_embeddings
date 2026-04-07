@@ -623,6 +623,7 @@ class T5Gemma2Encoder(T5Gemma2PreTrainedModel):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         output_hidden_states: Optional[bool] = None,
         cls_position: Optional[int] = None,
+        return_full_hidden_states: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutput:
         if (input_ids is None) ^ (inputs_embeds is not None):
@@ -693,7 +694,9 @@ class T5Gemma2Encoder(T5Gemma2PreTrainedModel):
 
         for layer_module in self.layers[: self.text_config.num_hidden_layers]:
             if output_hidden_states:
-                if cls_position is not None:
+                if return_full_hidden_states:
+                    all_hidden_states += (hidden_states,)  # (B, L, H)
+                elif cls_position is not None:
                     all_hidden_states += (hidden_states[:, cls_position, :],)
                 else:
                     all_hidden_states += (mean_pool(hidden_states, raw_attention_mask),)
@@ -707,7 +710,9 @@ class T5Gemma2Encoder(T5Gemma2PreTrainedModel):
             )
 
         if output_hidden_states:
-            if cls_position is not None:
+            if return_full_hidden_states:
+                all_hidden_states += (hidden_states,)  # (B, L, H)
+            elif cls_position is not None:
                 all_hidden_states += (hidden_states[:, cls_position, :],)
             else:
                 all_hidden_states += (mean_pool(hidden_states, raw_attention_mask),)

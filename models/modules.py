@@ -143,6 +143,67 @@ class GatedAttention(nn.Module):
         return attn_output, attn_weights
 
 
+class CLSCrossAttentionAdapter(nn.Module):
+    """Low-rank cross-attention adapter that computes a CLS representation
+    by attending to frozen encoder hidden states.
+
+    At each encoder layer this module takes:
+      - ``cls_query``     : (B, 1, H) — a learnable CLS embedding.
+      - ``hidden_states`` : (B, L, H) — frozen hidden states from that layer.
+      - ``attention_mask``: (B, L)    — 1 for real tokens, 0 for padding.
+
+    It produces a (B, H) CLS representation for that layer via low-rank
+    query/key/value projections (rank ``r`` << H), making it parameter-
+    efficient while still allowing the CLS token to selectively gather
+    information from the frozen backbone.
+    """
+
+    def __init__(self, hidden_size: int, rank: int = 64):
+        super().__init__()
+        self.rank = rank
+        self.q_proj = nn.Linear(hidden_size, rank, bias=False)
+        self.k_proj = nn.Linear(hidden_size, rank, bias=False)
+        self.v_proj = nn.Linear(hidden_size, rank, bias=False)
+        self.o_proj = nn.Linear(rank, hidden_size, bias=False)
+        self.scale = rank ** -0.5
+
+        # Initialise output projection near zero so that the adapter starts
+        # close to a no-op (residual-friendly).
+        nn.init.zeros_(self.o_proj.weight)
+
+    def forward(
+        self,
+        cls_query: torch.Tensor,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+            cls_query:      (B, 1, H)
+            hidden_states:  (B, L, H)
+            attention_mask:  (B, L)  — 1/True = attend, 0/False = ignore.
+
+        Returns:
+            (B, H) — adapted CLS representation for this layer.
+        """
+        q = self.q_proj(cls_query)                       # (B, 1, r)
+        k = self.k_proj(hidden_states)                   # (B, L, r)
+        v = self.v_proj(hidden_states)                   # (B, L, r)
+
+        attn = torch.matmul(q, k.transpose(-1, -2)) * self.scale  # (B, 1, L)
+
+        if attention_mask is not None:
+            attn = attn.masked_fill(
+                ~attention_mask.unsqueeze(1).bool(), float("-inf")
+            )
+
+        attn = F.softmax(attn, dim=-1, dtype=torch.float32).to(q.dtype)
+
+        out = torch.matmul(attn, v)    # (B, 1, r)
+        out = self.o_proj(out)         # (B, 1, H)
+        return out.squeeze(1)          # (B, H)
+
+
 class EncoderWithPooling(nn.Module):
     """
     Wraps an encoder model to perform pooling and L2 normalization in the forward pass.
@@ -163,6 +224,11 @@ class EncoderWithPooling(nn.Module):
     @property
     def device(self):
         return next(self.model.parameters()).device
+
+    @property
+    def config(self):
+        """Expose inner model config (torch.compile / Dynamo and eval scripts expect it)."""
+        return self.model.config
 
     def forward(self, input_ids, attention_mask, **kwargs):
         output = self.model(

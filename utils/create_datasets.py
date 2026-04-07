@@ -139,6 +139,15 @@ def instruction_template_f2llm(prompt_type, task_metadata, text, title="") -> st
     return prompt
 
 
+def instruction_template_noop(prompt_type, task_metadata, text, title="") -> str:
+    """Pass-through template for base (pretrained) models that have no
+    instruction-following capability.  Documents get an optional title prefix;
+    queries are returned as-is."""
+    if prompt_type == PromptType.document and len(title) > 0:
+        return f"{title} {text.strip()}"
+    return text.strip()
+
+
 def instruction_template_embeddinggemma(prompt_type, task_metadata, text, title=""):
 
     # we do not use  task specific instruction in embeddinggemma

@@ -19,7 +19,7 @@ from datasets import Dataset as HFDataset
 from inference.helpers import encode, encode_hidden_layers
 from utils.create_datasets import create_dataset
 from utils.dataloader_helpers import collate_fn_with_padding, LenghtSortedSampler
-
+import time
 
 # ---------------------------------------------------------------------------
 # Eval context
@@ -76,6 +76,7 @@ def encode_dataset(
     extract_hidden_repr=False,
     target_layers=None,
     use_last_token=False,
+    deferred_gather=False,
 ):
     """Encode a prepared dataset using the DDP-aware pipeline.
 
@@ -98,13 +99,18 @@ def encode_dataset(
     world_size = dist.get_world_size()
     if extract_hidden_repr:
         assert target_layers is not None, "target_layers required when extract_hidden_repr=True"
+        #start = time.time()
+
         embeddings = encode_hidden_layers(
             model,
             loader,
             target_layers=target_layers,
             world_size=world_size,
             use_last_token=use_last_token,
+            deferred_gather=deferred_gather,
         )
+        # end = time.time()
+        # print(f"encoding time: {(end-start)/60}min")
     else:
         embeddings = encode(
             model,

@@ -130,6 +130,8 @@ class F2LLMT5Gemma2:
         cls_query_pooling = getattr(args, "cls_query_pooling", False)
         attention_dim = getattr(args, "attention_dim", None)
         attn_implementation = getattr(args, "attn_implementation", attn_implementation)
+        lora_cls = getattr(args, "lora_cls", False)
+        lora_rank = getattr(args, "lora_rank", 64)
 
         # Build EmbeddingT5Gemma2 (encoder + MeanPooling + Projection + Normalize)
         self._embedding_model, _, _ = get_model_t5gemma2_model(
@@ -139,6 +141,8 @@ class F2LLMT5Gemma2:
             cls_query_pooling=cls_query_pooling,
             attention_dim=attention_dim,
             attn_implementation=attn_implementation,
+            lora_cls=lora_cls,
+            lora_rank=lora_rank,
         )
         self._embedding_model.encoder.config.use_cache = False
 
@@ -210,6 +214,8 @@ class F2LLMT5Gemma2Decoder:
         attention_pooling = getattr(args, "attention_pooling", False)
         attention_dim = getattr(args, "attention_dim", None)
         attn_implementation = getattr(args, "attn_implementation", attn_implementation)
+        lora_cls = getattr(args, "lora_cls", False)
+        lora_rank = getattr(args, "lora_rank", 64)
 
         self._embedding_model, _, _ = get_model_t5gemma2_decoder(
             model_name_or_path=model_path,
@@ -217,6 +223,8 @@ class F2LLMT5Gemma2Decoder:
             attention_pooling=attention_pooling,
             attention_dim=attention_dim,
             attn_implementation=attn_implementation,
+            lora_cls=lora_cls,
+            lora_rank=lora_rank,
         )
         self._embedding_model.encoder.config.use_cache = False
 

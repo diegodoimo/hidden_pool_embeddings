@@ -6,7 +6,7 @@ from sklearn.metrics.pairwise import (
     paired_manhattan_distances,
 )
 
-from inference.helpers import abs_task_preprocessing
+from inference.helpers import abs_task_preprocessing, iter_deferred_layers
 from inference.evaluate.shared import (
     encode_dataset,
     make_collate_fn,
@@ -221,6 +221,7 @@ def evaluate_hidden_states_sts(
     eval_context: EvalContext,
     target_layers,
     use_last_token=False,
+    layer_subset=None,
 ):
     model.eval()
     dataset = task_data["dataset"]
@@ -233,7 +234,7 @@ def evaluate_hidden_states_sts(
         eval_context.eot_id,
         eval_context.add_special_tokens,
     )
-    embeddings1_dict = encode_dataset(
+    deferred1 = encode_dataset(
         model,
         dataset["texts1"],
         batch_size,
@@ -241,8 +242,9 @@ def evaluate_hidden_states_sts(
         extract_hidden_repr=True,
         target_layers=target_layers,
         use_last_token=use_last_token,
+        deferred_gather=True,
     )
-    embeddings2_dict = encode_dataset(
+    deferred2 = encode_dataset(
         model,
         dataset["texts2"],
         batch_size,
@@ -250,11 +252,14 @@ def evaluate_hidden_states_sts(
         extract_hidden_repr=True,
         target_layers=target_layers,
         use_last_token=use_last_token,
+        deferred_gather=True,
     )
 
     layer_performance = {}
-    for (layer, emb1), (_, emb2) in zip(
-        embeddings1_dict.items(), embeddings2_dict.items()
+    for layer, emb1, emb2 in iter_deferred_layers(
+        deferred1, deferred2,
+        target_layers=target_layers,
+        layer_subset=layer_subset,
     ):
         emb1_np = emb1.numpy()
         emb2_np = emb2.numpy()

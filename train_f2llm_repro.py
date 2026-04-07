@@ -355,6 +355,27 @@ def parse_args():
         "Defaults to hidden_size when None.",
     )
     parser.add_argument(
+        "--freeze_backbone",
+        action="store_true",
+        help="Freeze the LLM encoder backbone and train only the pooling "
+        "head (GatedAttention + Projection). Requires --attention_pooling.",
+    )
+    parser.add_argument(
+        "--lora_cls",
+        action="store_true",
+        help="Use per-layer low-rank cross-attention adapters to compute a "
+        "CLS representation from frozen backbone hidden states. The encoder "
+        "is automatically frozen; only the adapters, CLS queries, "
+        "GatedAttention, and Projection are trained.",
+    )
+    parser.add_argument(
+        "--lora_rank",
+        type=int,
+        default=64,
+        help="Rank of the low-rank cross-attention adapters used with "
+        "--lora_cls. Default: 64.",
+    )
+    parser.add_argument(
         "--attn_implementation",
         type=str,
         default="sdpa",
@@ -524,14 +545,22 @@ def main():
 
     if is_t5gemma2_decoder:
         model_name = "t5gemma2_decoder"
-        if args.attention_pooling:
+        if args.lora_cls:
+            model_name += f"_lora_cls_r{args.lora_rank}"
+        elif args.attention_pooling:
             model_name += "_attn_pooling"
+            if args.freeze_backbone:
+                model_name += "_frozen"
     elif is_t5gemma2:
         model_name = "t5gemma2"
-        if args.attention_pooling:
+        if args.lora_cls:
+            model_name += f"_lora_cls_r{args.lora_rank}"
+        elif args.attention_pooling:
             model_name += "_attn_pooling"
-        if args.cls_query_pooling:
-            model_name += "_cls_query"
+            if args.cls_query_pooling:
+                model_name += "_cls_query"
+            if args.freeze_backbone:
+                model_name += "_frozen"
     elif "qwen3" in args.model_path.lower():
         model_name = "qwen3"
     else:
@@ -556,18 +585,57 @@ def main():
     accelerator.print("loading model")
     if is_t5gemma2_decoder:
         model = F2LLMT5Gemma2Decoder(args.model_path, args.max_seq_length, args=args)
-        model.lm.encoder.gradient_checkpointing_enable()
+        if args.lora_cls:
+            for p in model.lm.encoder.parameters():
+                p.requires_grad = False
+            accelerator.print(
+                f"[lora_cls] decoder frozen — "
+                f"trainable params: {sum(p.numel() for p in model.lm.parameters() if p.requires_grad):,}"
+            )
+        elif args.freeze_backbone:
+            model.lm.encoder.gradient_checkpointing_enable()
+            for p in model.lm.encoder.parameters():
+                p.requires_grad = False
+            accelerator.print(
+                f"[freeze_backbone] decoder frozen — "
+                f"trainable params: {sum(p.numel() for p in model.lm.parameters() if p.requires_grad):,}"
+            )
+        else:
+            model.lm.encoder.gradient_checkpointing_enable()
     elif is_t5gemma2:
         model = F2LLMT5Gemma2(args.model_path, args.max_seq_length, args=args)
-        model.lm.encoder.gradient_checkpointing_enable()
+        if args.lora_cls:
+            # LoRA CLS: encoder is frozen inside the model (torch.no_grad),
+            # gradient checkpointing is not needed on the frozen encoder.
+            # Explicitly freeze encoder parameters so DeepSpeed doesn't
+            # allocate optimizer states for them.
+            for p in model.lm.encoder.parameters():
+                p.requires_grad = False
+            accelerator.print(
+                f"[lora_cls] encoder frozen — "
+                f"trainable params: {sum(p.numel() for p in model.lm.parameters() if p.requires_grad):,}"
+            )
+        elif args.freeze_backbone:
+            # Freeze encoder, train only pooling + projection head.
+            model.lm.encoder.gradient_checkpointing_enable()
+            for p in model.lm.encoder.parameters():
+                p.requires_grad = False
+            accelerator.print(
+                f"[freeze_backbone] encoder frozen — "
+                f"trainable params: {sum(p.numel() for p in model.lm.parameters() if p.requires_grad):,}"
+            )
+        else:
+            model.lm.encoder.gradient_checkpointing_enable()
     else:
         model = F2LLM(args.model_path, args.max_seq_length, args=args)
         model.lm.gradient_checkpointing_enable()
     # set seed again to make sure that different models share the same seed
     set_seed(0)
 
+    # Only pass trainable parameters to the optimizer.
+    trainable_params = [p for p in model.lm.parameters() if p.requires_grad]
     optimizer = AdamW(
-        model.lm.parameters(),
+        trainable_params,
         weight_decay=args.weight_decay,
         lr=args.learning_rate,
         betas=(0.9, 0.98),

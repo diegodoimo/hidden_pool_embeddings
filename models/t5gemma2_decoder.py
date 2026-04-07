@@ -49,12 +49,17 @@ from models.modules import (
     Projection,
     Normalize,
     GatedAttention,
+    CLSCrossAttentionAdapter,
     last_token_pool,
 )
 from models.t5gemma2model import _collect_safetensors
 
 
 DECODER_PREFIX = "model.decoder."
+# embed_tokens are tied with the encoder – they may only be saved under the
+# encoder path in the checkpoint, so we need to look there too.
+ENCODER_EMBED_PREFIX = "model.encoder."
+_TIED_EMBED_KEYS = ("embed_tokens.weight", "embed_tokens.eoi_embedding")
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +97,22 @@ def extract_decoder_state_dict(
         for key, tensor in full_sd.items():
             if key.startswith(DECODER_PREFIX):
                 decoder_sd[key[len(DECODER_PREFIX) :]] = tensor
+
+    # embed_tokens are weight-tied with the encoder in the full model, so the
+    # checkpoint may only store them under the encoder prefix.  Fall back to
+    # the encoder copy for any that are missing.
+    missing_embeds = [k for k in _TIED_EMBED_KEYS if k not in decoder_sd]
+    if missing_embeds:
+        for shard in shard_files:
+            full_sd = load_file(shard, device=device)
+            for key, tensor in full_sd.items():
+                if key.startswith(ENCODER_EMBED_PREFIX):
+                    short = key[len(ENCODER_EMBED_PREFIX) :]
+                    if short in missing_embeds:
+                        decoder_sd[short] = tensor
+                        missing_embeds.remove(short)
+            if not missing_embeds:
+                break
 
     return decoder_sd
 
@@ -133,6 +154,7 @@ def load_t5gemma2_decoder(
     missing_non_buffer = [
         k for k in missing if "rotary_emb" not in k and "embed_scale" not in k
     ]
+    
     if missing_non_buffer:
         raise RuntimeError(
             f"Missing keys that are NOT rotary/embed buffers: {missing_non_buffer}"
@@ -214,6 +236,7 @@ class T5Gemma2CausalDecoder(T5Gemma2PreTrainedModel):
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         output_hidden_states: Optional[bool] = None,
+        return_full_hidden_states: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutput:
         if (input_ids is None) ^ (inputs_embeds is not None):
@@ -239,10 +262,14 @@ class T5Gemma2CausalDecoder(T5Gemma2PreTrainedModel):
 
         # ---- Causal masks (key difference from the bidirectional encoder) ----
         if not isinstance(self_attn_mask_mapping := attention_mask, dict):
+            seq_len = inputs_embeds.shape[1]
+            cache_position = torch.arange(seq_len, device=inputs_embeds.device)
             mask_kwargs = {
                 "config": self.config,
                 "inputs_embeds": inputs_embeds,
                 "attention_mask": attention_mask,
+                "cache_position": cache_position,
+                "past_key_values": None,
             }
             self_attn_mask_mapping = {
                 "full_attention": create_causal_mask(**mask_kwargs),
@@ -274,9 +301,12 @@ class T5Gemma2CausalDecoder(T5Gemma2PreTrainedModel):
 
         for layer_module in self.layers[: self.text_config.num_hidden_layers]:
             if output_hidden_states:
-                all_hidden_states += (
-                    last_token_pool(hidden_states, raw_attention_mask),
-                )
+                if return_full_hidden_states:
+                    all_hidden_states += (hidden_states,)  # (B, L, H)
+                else:
+                    all_hidden_states += (
+                        last_token_pool(hidden_states, raw_attention_mask),
+                    )
 
             hidden_states = layer_module(
                 hidden_states,
@@ -287,9 +317,12 @@ class T5Gemma2CausalDecoder(T5Gemma2PreTrainedModel):
             )
 
         if output_hidden_states:
-            all_hidden_states += (
-                last_token_pool(hidden_states, raw_attention_mask),
-            )
+            if return_full_hidden_states:
+                all_hidden_states += (hidden_states,)  # (B, L, H)
+            else:
+                all_hidden_states += (
+                    last_token_pool(hidden_states, raw_attention_mask),
+                )
 
         hidden_states = self.norm(hidden_states)
         hidden_states = self.dropout(hidden_states)
@@ -402,6 +435,100 @@ class EmbeddingT5Gemma2DecoderHiddenPool(nn.Module):
         return hidden
 
 
+class EmbeddingT5Gemma2DecoderLoRACLS(nn.Module):
+    """T5Gemma2 decoder with per-layer low-rank cross-attention adapters
+    that compute a CLS token representation from frozen backbone hidden states.
+
+    Decoder counterpart of ``EmbeddingT5Gemma2LoRACLS`` (encoder variant).
+
+    Architecture:
+      1. Frozen decoder runs with ``return_full_hidden_states=True``,
+         producing full ``(B, L, H)`` hidden states at every layer.
+      2. At each layer a lightweight ``CLSCrossAttentionAdapter`` computes
+         ``CLS_i = CrossAttn(cls_query_i, hidden_states_i)``  — a low-rank
+         cross-attention where a learnable CLS query attends to the frozen
+         hidden states.
+      3. The per-layer CLS representations are stacked and pooled via
+         ``GatedAttention`` → ``Projection`` → ``Normalize``.
+
+    Only the adapters, CLS queries, GatedAttention, and Projection are
+    trainable; the decoder backbone stays frozen.
+    """
+
+    def __init__(
+        self,
+        decoder: T5Gemma2CausalDecoder,
+        attention_dim: int = None,
+        lora_rank: int = 64,
+    ):
+        super().__init__()
+        self.encoder = decoder  # named 'encoder' for activation-checkpointing compat
+        h = self.encoder.text_config.hidden_size
+        num_layers = self.encoder.text_config.num_hidden_layers + 1  # +1 for embedding layer
+
+        # Per-layer learnable CLS query embeddings
+        self.cls_queries = nn.ParameterList(
+            [nn.Parameter(torch.randn(1, 1, h) * 0.02) for _ in range(num_layers)]
+        )
+
+        # Per-layer low-rank cross-attention adapters
+        self.adapters = nn.ModuleList(
+            [CLSCrossAttentionAdapter(h, rank=lora_rank) for _ in range(num_layers)]
+        )
+
+        self.pooling = GatedAttention(
+            hidden_size=h,
+            num_attention_heads=1,
+            head_dim=attention_dim,
+        )
+        self.projection = Projection(input_dim=h, hidden_dim=4 * h)
+        self.normalize = Normalize()
+
+    @property
+    def device(self):
+        return next(self.encoder.parameters()).device
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        inputs_embeds=None,
+        **kwargs,
+    ):
+        # 1. Run frozen decoder — full (B, L, H) per-layer hidden states
+        with torch.no_grad():
+            outputs = self.encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                inputs_embeds=inputs_embeds,
+                output_hidden_states=True,
+                return_full_hidden_states=True,
+                **kwargs,
+            )
+
+        # 2. Per-layer CLS via cross-attention adapters
+        batch_size = outputs.hidden_states[0].shape[0]
+        cls_reps = []
+        for adapter, cls_q, layer_hidden in zip(
+            self.adapters, self.cls_queries, outputs.hidden_states
+        ):
+            layer_hidden = layer_hidden.detach()
+            cls_expanded = cls_q.expand(batch_size, -1, -1).to(
+                dtype=layer_hidden.dtype
+            )
+            cls_rep = adapter(cls_expanded, layer_hidden, attention_mask)  # (B, H)
+            cls_reps.append(cls_rep)
+
+        # 3. Pool over layers → project → normalise
+        hidden = torch.stack(cls_reps, dim=1)  # [B, num_layers+1, H]
+        hidden, _ = self.pooling(hidden)        # [B, H]
+        hidden = self.projection(hidden)
+        hidden = self.normalize(hidden)
+        return hidden
+
+
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
@@ -413,6 +540,8 @@ def get_model_t5gemma2_decoder(
     attention_pooling,
     attention_dim,
     attn_implementation: str = "sdpa",
+    lora_cls: bool = False,
+    lora_rank: int = 64,
 ):
     """Build a T5Gemma2 decoder-based embedding model.
 
@@ -427,7 +556,13 @@ def get_model_t5gemma2_decoder(
     if activation_checkpointing:
         decoder.config.use_cache = False
 
-    if attention_pooling:
+    if lora_cls:
+        model = EmbeddingT5Gemma2DecoderLoRACLS(
+            decoder,
+            attention_dim=attention_dim,
+            lora_rank=lora_rank,
+        )
+    elif attention_pooling:
         model = EmbeddingT5Gemma2DecoderHiddenPool(
             decoder,
             attention_dim=attention_dim,

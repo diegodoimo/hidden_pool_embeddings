@@ -1,3 +1,4 @@
+import warnings
 import torch
 import numpy as np
 from typing import cast
@@ -6,13 +7,16 @@ from collections import defaultdict
 from mteb.types import HFSubset
 from datasets import DatasetDict
 from sklearn.base import clone
+from sklearn.exceptions import ConvergenceWarning, UndefinedMetricWarning
 
+from inference.helpers import iter_deferred_layers
 from inference.evaluate.shared import (
     encode_dataset,
     make_collate_fn,
     prepare_text_dataset,
     EvalContext,
 )
+import time
 
 
 def _prepare_classification(
@@ -78,11 +82,21 @@ def _prepare_classification(
         }
 
 
-def _run_clf_experiments(task_obj, x_train_all, train_labels, x_test, test_labels):
+def _run_clf_experiments(task_obj, x_train_all, train_labels, x_test, test_labels, rank=0):
     """Run n_experiments classification trials and return averaged scores."""
     evaluator_model = task_obj.evaluator_model
-    if "random_state" in evaluator_model.get_params():
-        evaluator_model = evaluator_model.set_params(random_state=task_obj.seed)
+    params = evaluator_model.get_params()
+    new_params = {}
+    if "random_state" in params:
+        new_params["random_state"] = task_obj.seed
+    if "max_iter" in params:
+        new_params["max_iter"] = 200
+    if "tol" in params:
+        new_params["tol"] = 2e-4
+        
+    if new_params:
+        evaluator_model = evaluator_model.set_params(**new_params)
+        
 
     scores = []
     idxs = None
@@ -101,8 +115,14 @@ def _run_clf_experiments(task_obj, x_train_all, train_labels, x_test, test_label
                 label_counter[label] += 1
 
         clf = clone(evaluator_model)
-        clf.fit(x_train_all[sampled_idxs], [train_labels[i] for i in sampled_idxs])
-        scores.append(task_obj._calculate_scores(test_labels, clf.predict(x_test)))
+
+        with warnings.catch_warnings():
+            if rank != 0:
+                warnings.simplefilter("ignore", ConvergenceWarning)
+            clf.fit(x_train_all[sampled_idxs], [train_labels[i] for i in sampled_idxs])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UndefinedMetricWarning)
+            scores.append(task_obj._calculate_scores(test_labels, clf.predict(x_test)))
 
     return {
         k: (
@@ -141,7 +161,8 @@ def evaluate_one_classification(
     )
 
     avg_scores = _run_clf_experiments(
-        task_obj, X_train_all, dataset["train_labels"], X_test, dataset["test_labels"]
+        task_obj, X_train_all, dataset["train_labels"], X_test, dataset["test_labels"],
+        rank=eval_context.rank,
     )
     return {main_score: avg_scores[main_score]}
 
@@ -154,6 +175,7 @@ def evaluate_hidden_states_classification(
     eval_context: EvalContext,
     target_layers,
     use_last_token=False,
+    layer_subset=None,
 ):
     model.eval()
     dataset = task_data["dataset"]
@@ -166,7 +188,9 @@ def evaluate_hidden_states_classification(
         eval_context.eot_id,
         eval_context.add_special_tokens,
     )
-    train_embeddings_dict = encode_dataset(
+
+    #start = time.time()
+    deferred_train = encode_dataset(
         model,
         dataset["train_texts"],
         batch_size,
@@ -174,8 +198,9 @@ def evaluate_hidden_states_classification(
         extract_hidden_repr=True,
         target_layers=target_layers,
         use_last_token=use_last_token,
+        deferred_gather=True,
     )
-    test_embeddings_dict = encode_dataset(
+    deferred_test = encode_dataset(
         model,
         dataset["test_texts"],
         batch_size,
@@ -183,18 +208,37 @@ def evaluate_hidden_states_classification(
         extract_hidden_repr=True,
         target_layers=target_layers,
         use_last_token=use_last_token,
+        deferred_gather=True,
     )
 
     train_labels = dataset["train_labels"]
     test_labels = dataset["test_labels"]
 
+    n_layers = len(layer_subset) if layer_subset is not None else len(target_layers)
+    # end = time.time()
+
+    # if eval_context.rank ==0:
+    #     print(f"encoding lasted {(end-start)/60}")
+
+    # start = time.time()
     layer_performance = {}
-    for (layer, X_train_all), (_, X_test) in zip(
-        train_embeddings_dict.items(), test_embeddings_dict.items()
-    ):
+    for i, (layer, X_train_all, X_test) in enumerate(iter_deferred_layers(
+        deferred_train, deferred_test,
+        target_layers=target_layers,
+        layer_subset=layer_subset,
+    )):
+        if eval_context.rank == 0:
+            print(f"eval layer {i + 1}/{n_layers}")
+
         avg_scores = _run_clf_experiments(
-            task_obj, X_train_all.numpy(), train_labels, X_test.numpy(), test_labels
+            task_obj, X_train_all.numpy(), train_labels, X_test.numpy(), test_labels,
+            rank=eval_context.rank,
         )
         layer_performance[layer] = avg_scores[main_score]
+    #end = time.time()
+
+    # if eval_context.rank ==0:
+    #     print(f"performace measurment lasted {(end-start)/60}")
+
 
     return layer_performance

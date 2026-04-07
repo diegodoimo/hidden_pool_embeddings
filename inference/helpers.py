@@ -13,10 +13,129 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from utils.dataloader_helpers import LenghtSortedSampler
 import time
-import numpy as np
 from utils.helpers import print_memory_consumed, return_formatted
 
 # ***********************************************************************************************
+
+
+class DeferredHiddenStates:
+    """Local shards from encode_hidden_layers, gathered on demand per layer.
+
+    Instead of all_gather for every layer upfront, this uses dist.gather to
+    send each layer's data only to the rank that will compute its metrics.
+    Saves ~(world_size-1)/world_size of CPU memory and network bandwidth.
+    """
+
+    def __init__(self, local_shards, indices, num_samples, world_size):
+        self.local_shards = local_shards  # {layer_name: Tensor[local_N, D]} on CPU
+        self.indices = indices  # list[int], sampler indices for this rank
+        self.num_samples = num_samples
+        self.world_size = world_size
+        self.rank = dist.get_rank() if world_size > 1 else 0
+        self._idx_cache = {}  # dst_rank -> Tensor or None
+
+    def _gather_indices(self, dst_rank, device):
+        """Gather sampler indices to dst_rank (cached after first call per dst)."""
+        if dst_rank in self._idx_cache:
+            return self._idx_cache[dst_rank]
+
+        indices_gpu = torch.tensor(self.indices, device=device)
+
+        if self.world_size == 1:
+            self._idx_cache[dst_rank] = indices_gpu
+            return indices_gpu
+
+        if self.rank == dst_rank:
+            buf = [torch.empty_like(indices_gpu) for _ in range(self.world_size)]
+            dist.gather(indices_gpu, gather_list=buf, dst=dst_rank)
+            result = torch.cat(buf, dim=0)
+        else:
+            dist.gather(indices_gpu, dst=dst_rank)
+            result = None
+
+        self._idx_cache[dst_rank] = result
+        return result
+
+    def gather_layer(self, layer_name, dst_rank):
+        """Gather one layer to *dst_rank*.  **All ranks must call together.**
+
+        Returns Tensor[num_samples, D] (CPU) on dst_rank, None elsewhere.
+        """
+        local_emb = self.local_shards[layer_name]
+
+        if self.world_size == 1:
+            all_idx = self._gather_indices(dst_rank, local_emb.device)
+            return local_emb[torch.argsort(all_idx)]
+
+        device = torch.device(f"cuda:{self.rank}")
+        local_emb_gpu = local_emb.to(device)
+        all_idx = self._gather_indices(dst_rank, device)
+
+        if self.rank == dst_rank:
+            buf = [torch.empty_like(local_emb_gpu) for _ in range(self.world_size)]
+            dist.gather(local_emb_gpu, gather_list=buf, dst=dst_rank)
+            all_emb = torch.cat(buf, dim=0)
+            out = torch.zeros(
+                self.num_samples, all_emb.shape[1],
+                dtype=all_emb.dtype, device=device,
+            )
+            out[all_idx] = all_emb
+            return out.cpu()
+        else:
+            dist.gather(local_emb_gpu, dst=dst_rank)
+            return None
+
+
+def iter_deferred_layers(*deferred_objs, target_layers, layer_subset=None):
+    """Iterate over layers, gathering one block at a time, then computing in parallel.
+
+    **All ranks must call this together** (it contains collective ops).
+
+    Processing is organised into blocks of ``world_size`` layers:
+
+      Phase 1 – gather (sequential collectives, all ranks participate):
+        For each layer in the block, ``dist.gather`` sends that layer's local
+        shard to the assigned dst_rank (round-robin: layer i → rank i % world_size).
+        These must be sequential because each gather is a collective.
+
+      Phase 2 – compute (parallel, no collectives):
+        Each rank yields its assigned layer to the consumer, which computes
+        metrics independently.  Because there are no collectives in the consumer
+        code, all ranks run their metric computation simultaneously.
+
+      Phase 3 – barrier:
+        After all ranks have processed their layer, a barrier synchronises
+        everyone before the next block's gather phase begins.  Without this
+        barrier, a rank that finishes quickly would race into the next block's
+        gather while others are still computing, triggering NCCL timeouts on
+        large tasks such as MindSmallReranking.
+
+    Yields ``(layer_name, emb1, emb2, …)`` only for layers in *layer_subset*
+    (i.e. layers assigned to the current rank).
+    """
+    world_size = deferred_objs[0].world_size
+    block_size = world_size if world_size > 1 else 1
+    n = len(target_layers)
+
+    for block_start in range(0, n, block_size):
+        block = target_layers[block_start : block_start + block_size]
+
+        # Phase 1: sequential gathers — all ranks participate in each collective.
+        gathered_block = []
+        for i, layer_name in enumerate(block):
+            dst_rank = (block_start + i) % world_size if world_size > 1 else 0
+            gathered = [obj.gather_layer(layer_name, dst_rank) for obj in deferred_objs]
+            gathered_block.append((layer_name, gathered))
+
+        # Phase 2: yield to consumers — no collectives, so all ranks compute
+        # their assigned layer's metrics in parallel.
+        for layer_name, gathered in gathered_block:
+            if layer_subset is None or layer_name in layer_subset:
+                yield (layer_name, *gathered)
+
+        # Phase 3: wait for all ranks to finish computing before next block.
+        if world_size > 1:
+            dist.barrier()
 
 
 def estimate_chunk_sizes(query_embeddings, max_corpus_chunk=5 * 10**4):
@@ -190,11 +309,8 @@ def search(
                 f"Will extract query-positive scores for {return_formatted(len(qrels_query_ids))} qrels pairs"
             )
 
-    time_loading = 0
-    time_encoding = 0
-    time_sim = 0
-    start = time.time()
 
+    start = time.time()
     for i, chunk_idx in enumerate(range(0, N_corpus, chunk_size)):
 
         dist.barrier()
@@ -469,6 +585,11 @@ def encode(
     return embeddings
 
 
+# Sentinel key used to capture the final model output (post-pooling, post-projection,
+# L2-normalized) as an extra "layer" in hidden-state sweeps.
+FINAL_EMBEDDING_KEY = "final_embedding"
+
+
 @torch.inference_mode()
 def encode_hidden_layers(
     model,
@@ -476,12 +597,17 @@ def encode_hidden_layers(
     target_layers,
     world_size,
     use_last_token=False,
+    deferred_gather=False,
 ):
     """Extract and pool intermediate layer representations.
 
     Pooling mirrors the final embedding layer:
       - use_last_token=True  → last non-padding token
       - use_last_token=False → mean over non-padding tokens (average pooling)
+
+    If FINAL_EMBEDDING_KEY ("final_embedding") is present in *target_layers*,
+    the model's own output (already pooled, projected, and L2-normalized) is
+    captured directly — no further pooling is applied to it.
 
     all_gather logic mirrors ``encode``: each rank processes its local shard,
     then results are gathered once at the end and reordered via sampler indices.
@@ -496,6 +622,9 @@ def encode_hidden_layers(
         assert isinstance(indices, list)
 
     num_samples = len(loader.dataset)
+
+    has_final = FINAL_EMBEDDING_KEY in target_layers
+    hook_layers = [l for l in target_layers if l != FINAL_EMBEDDING_KEY]
 
     # Temporary storage for the current batch's hook outputs
     hidden_states_tmp = {}
@@ -512,7 +641,7 @@ def encode_hidden_layers(
     handles = [
         module.register_forward_hook(make_hook(name))
         for name, module in model.named_modules()
-        if name in target_layers
+        if name in hook_layers
     ]
 
     # Accumulate pooled embeddings per layer across all local batches
@@ -524,14 +653,18 @@ def encode_hidden_layers(
             attention_mask = batch["attention_mask"]  # [B, T]
 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                model(
+                final_out = model(
                     input_ids=batch["input_ids"],
                     attention_mask=attention_mask,
                 )
 
+            if has_final:
+                # final_out is already [B, D], pooled + projected + L2-normalized
+                layer_embeddings[FINAL_EMBEDDING_KEY].append(final_out.float().cpu())
+
             seq_len = attention_mask.sum(dim=1)  # [B]
 
-            for name in target_layers:
+            for name in hook_layers:
                 activations = hidden_states_tmp[name]  # [B, T, D]
 
                 if use_last_token:
@@ -550,6 +683,12 @@ def encode_hidden_layers(
     finally:
         for h in handles:
             h.remove()
+
+    if deferred_gather:
+        local_shards = {}
+        for name in target_layers:
+            local_shards[name] = torch.cat(layer_embeddings[name], dim=0)
+        return DeferredHiddenStates(local_shards, indices, num_samples, world_size)
 
     result = {}
     for name in target_layers:

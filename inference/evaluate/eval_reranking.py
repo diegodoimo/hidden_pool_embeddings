@@ -7,7 +7,7 @@ from mteb._evaluators.retrieval_metrics import (
     make_score_dict,
 )
 
-from inference.helpers import abs_task_preprocessing
+from inference.helpers import abs_task_preprocessing, iter_deferred_layers
 from utils.create_datasets import create_dataset
 from inference.evaluate.shared import make_collate_fn, EvalContext, encode_dataset
 
@@ -289,6 +289,7 @@ def evaluate_hidden_states_reranking(
     use_last_token=False,
     k_values=None,
     top_k=None,
+    layer_subset=None,
 ):
     if k_values is None:
         k_values = [1, 3, 5, 10, 20, 100, 1000]
@@ -314,7 +315,7 @@ def evaluate_hidden_states_reranking(
 
     query_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["queries"]["id"])}
 
-    query_embeddings_dict = encode_dataset(
+    deferred_queries = encode_dataset(
         model,
         dataset["queries"],
         batch_size,
@@ -322,8 +323,9 @@ def evaluate_hidden_states_reranking(
         extract_hidden_repr=True,
         target_layers=target_layers,
         use_last_token=use_last_token,
+        deferred_gather=True,
     )
-    corpus_embeddings_dict = encode_dataset(
+    deferred_corpus = encode_dataset(
         model,
         dataset["corpus"],
         batch_size,
@@ -331,13 +333,16 @@ def evaluate_hidden_states_reranking(
         extract_hidden_repr=True,
         target_layers=target_layers,
         use_last_token=use_last_token,
+        deferred_gather=True,
     )
 
     id_to_row = {did: i for i, did in enumerate(dataset["corpus"]["id"])}
 
     layer_performance = {}
-    for (layer, query_embs), (_, corpus_embs) in zip(
-        query_embeddings_dict.items(), corpus_embeddings_dict.items()
+    for layer, query_embs, corpus_embs in iter_deferred_layers(
+        deferred_queries, deferred_corpus,
+        target_layers=target_layers,
+        layer_subset=layer_subset,
     ):
         results = {}
         for q_idx, qid in query_idx_to_id.items():

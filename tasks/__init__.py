@@ -604,6 +604,13 @@ DATASET_SUBSET = [
 
 # MTEB 20-task subset (mteb_20task_subset_selection.md) - minimizes eval time while preserving category averages
 EVAL_TASK_DICT = {
+    "mteb_eng_v2_mini": [
+        "SCIDOCS",
+        "TwentyNewsgroupsClustering.v2",
+        "STS12",
+        "AmazonCounterfactualClassification",
+        "SummEvalSummarization.v2",
+    ],
     "mteb_eng_v2_reduced": [
         "SCIDOCS",
         "CQADupstackGamingRetrieval",

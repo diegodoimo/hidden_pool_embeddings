@@ -34,6 +34,7 @@ from models.modules import (
     Projection,
     Normalize,
     GatedAttention,
+    CLSCrossAttentionAdapter,
 )
 
 
@@ -204,6 +205,8 @@ def get_model_t5gemma2_model(
     cls_query_pooling,
     attention_dim,
     attn_implementation: str = "sdpa",
+    lora_cls: bool = False,
+    lora_rank: int = 64,
 ):
     """
     Build a T5Gemma2-based embedding model, mirroring the interface of
@@ -218,7 +221,13 @@ def get_model_t5gemma2_model(
     if activation_checkpointing:
         encoder.config.use_cache = False
 
-    if attention_pooling:
+    if lora_cls:
+        model = EmbeddingT5Gemma2LoRACLS(
+            encoder,
+            attention_dim=attention_dim,
+            lora_rank=lora_rank,
+        )
+    elif attention_pooling:
         if cls_query_pooling:
             model = EmbeddingT5Gemma2HiddenPoolCLS(
                 encoder,
@@ -413,6 +422,100 @@ class EmbeddingT5Gemma2HiddenPoolCLS(nn.Module):
         # 5. outputs.hidden_states is a tuple of (B, D) tensors (CLS repr per layer)
         hidden = torch.stack(outputs.hidden_states, dim=1)  # [B, num_layers+1, D]
         hidden, _ = self.pooling(hidden)  # [B, D]
+        hidden = self.projection(hidden)
+        hidden = self.normalize(hidden)
+        return hidden
+
+
+class EmbeddingT5Gemma2LoRACLS(nn.Module):
+    """T5Gemma2 encoder with per-layer low-rank cross-attention adapters
+    that compute a CLS token representation from frozen backbone hidden states.
+
+    Architecture:
+      1. Frozen encoder runs with ``return_full_hidden_states=True``,
+         producing full ``(B, L, H)`` hidden states at every layer.
+      2. At each layer a lightweight ``CLSCrossAttentionAdapter`` computes
+         ``CLS_i = CrossAttn(cls_query_i, hidden_states_i)``  — a low-rank
+         cross-attention where a learnable CLS query attends to the frozen
+         hidden states.
+      3. The per-layer CLS representations are stacked and pooled via
+         ``GatedAttention`` → ``Projection`` → ``Normalize``.
+
+    Only the adapters, CLS queries, GatedAttention, and Projection are
+    trainable; the encoder backbone stays frozen.
+    """
+
+    def __init__(
+        self,
+        encoder: T5Gemma2Encoder,
+        attention_dim: int = None,
+        lora_rank: int = 64,
+    ):
+        super().__init__()
+        self.encoder = encoder
+        h = self.encoder.text_config.hidden_size
+        num_layers = self.encoder.text_config.num_hidden_layers + 1  # +1 for embedding layer
+
+        # Per-layer learnable CLS query embeddings
+        self.cls_queries = nn.ParameterList(
+            [nn.Parameter(torch.randn(1, 1, h) * 0.02) for _ in range(num_layers)]
+        )
+
+        # Per-layer low-rank cross-attention adapters
+        self.adapters = nn.ModuleList(
+            [CLSCrossAttentionAdapter(h, rank=lora_rank) for _ in range(num_layers)]
+        )
+
+        self.pooling = GatedAttention(
+            hidden_size=h,
+            num_attention_heads=1,
+            head_dim=attention_dim,
+        )
+        self.projection = Projection(input_dim=h, hidden_dim=4 * h)
+        self.normalize = Normalize()
+
+    @property
+    def device(self):
+        return next(self.encoder.parameters()).device
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        inputs_embeds=None,
+        **kwargs,
+    ):
+        # 1. Run frozen encoder — full (B, L, H) per-layer hidden states
+        with torch.no_grad():
+            outputs = self.encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                inputs_embeds=inputs_embeds,
+                output_hidden_states=True,
+                return_full_hidden_states=True,
+                **kwargs,
+            )
+
+        # 2. Per-layer CLS via cross-attention adapters
+        # outputs.hidden_states: tuple of num_layers+1 tensors, each (B, L, H)
+        batch_size = outputs.hidden_states[0].shape[0]
+        cls_reps = []
+        for adapter, cls_q, layer_hidden in zip(
+            self.adapters, self.cls_queries, outputs.hidden_states
+        ):
+            # Detach to ensure no gradients flow into the frozen encoder
+            layer_hidden = layer_hidden.detach()
+            cls_expanded = cls_q.expand(batch_size, -1, -1).to(
+                dtype=layer_hidden.dtype
+            )
+            cls_rep = adapter(cls_expanded, layer_hidden, attention_mask)  # (B, H)
+            cls_reps.append(cls_rep)
+
+        # 3. Pool over layers → project → normalise
+        hidden = torch.stack(cls_reps, dim=1)  # [B, num_layers+1, H]
+        hidden, _ = self.pooling(hidden)        # [B, H]
         hidden = self.projection(hidden)
         hidden = self.normalize(hidden)
         return hidden

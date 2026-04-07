@@ -3,22 +3,24 @@
 ##SBATCH --nodelist=dgx004
 #SBATCH --account=lade
 #SBATCH --nodes=1
-#SBATCH --time=8:00:00            
+#SBATCH --time=48:00:00            
 #SBATCH --ntasks-per-node=1       
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=28
 #SBATCH --mem=200G       
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:H100:1
+#SBATCH --gres=gpu:H100:2
 ##SBATCH --gres=gpu:A100:1
 
 
 env_path=/orfeo/cephfs/scratch/area/ddoimo/open/hidden_pool_embeddings
 
+#source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_h100
+
+module load cuda/12.8
 source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_h100
-
-# module load cuda/12.8
-# source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_h100
-
+# unset SSL_CERT_FILE
+# unset SSL_CERT_DIR
+# export REQUESTS_CA_BUNDLE=/etc/pki/tls/certs/ca-bundle.crt
 
 nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 nodes_array=($nodes)
@@ -31,6 +33,7 @@ export PYTHONUNBUFFERED=1
 
 WORKERS_PER_RANK=$(( SLURM_CPUS_PER_TASK / GPU_NUMBER ))
 #
+#unset SSL_CERT_FILE
 export OMP_NUM_THREADS=$WORKERS_PER_RANK
 export NUMEXPR_MAX_THREADS=$WORKERS_PER_RANK
 export OPENBLAS_NUM_THREADS=$WORKERS_PER_RANK   
@@ -62,13 +65,26 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     eval_model_with_ddp.py  \
-    --model_name_or_path Qwen/Qwen3-Embedding-0.6B \
-    --benchmark mteb_eng_v2_reduced  \
-    --batch_size 8 \
-    --max_eval_queries 500000 \
+    --model_name_or_path google/t5gemma-2-270m-270m  \
+    --batch_size 32 \
+    --max_eval_queries 200000 \
+    --filename "2gpu" \
     --evaluate_hidden_states \
-    #--task_name ArguAna \
-
+    --benchmark mteb_eng_v2  \
+    --t5gemma2_decoder \
+    #--task_name ArguAna Banking77Classification \
+    #--model_name_or_path google/embeddinggemma-300m  \
+    
+    #--model_name_or_path google/t5gemma-2-270m-270m  \
+    #--model_name_or_path google/embeddinggemma-300m  \
+    #--task_name ArguAna Banking77Classification \
+    #--model_name_or_path Qwen/Qwen3-Embedding-0.6B  \
+    #--model_name_or_path google/t5gemma-2-270m-270m  \
+    #--model_name_or_path Qwen/Qwen3-0.6B-Base \
+    #--evaluate_hidden_states \
+    #--model_name_or_path Qwen/Qwen3-Embedding-0.6B  \
+    #--model_name_or_path Qwen/Qwen3-0.6B-Base \
+    #--model_name_or_path google/t5gemma-2-270m-270m  \
 
 
 
@@ -85,7 +101,7 @@ torchrun \
 #     --model_name_or_path Qwen/Qwen3-Embedding-8B \
 #     --benchmark mteb_eng_v2  \
 #     --batch_size 16 \
-    #--model_name_or_path google/embeddinggemma-300m  \
+    #
     #--filename 1gpu \
     #--model_name_or_path Qwen/Qwen3-Embedding-8B \
     #--benchmark mteb_multilingual_v2 \

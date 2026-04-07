@@ -2,7 +2,7 @@ from mteb.abstasks.clustering import _evaluate_clustering_bootstrapped
 import torch
 import numpy as np
 import itertools
-from inference.helpers import abs_task_preprocessing
+from inference.helpers import abs_task_preprocessing, iter_deferred_layers
 from inference.evaluate.shared import (
     encode_dataset,
     make_collate_fn,
@@ -141,6 +141,7 @@ def evaluate_hidden_states_clustering(
     eval_context: EvalContext,
     target_layers,
     use_last_token=False,
+    layer_subset=None,
 ):
     model.eval()
     dataset = task_data["dataset"]
@@ -153,7 +154,7 @@ def evaluate_hidden_states_clustering(
         eval_context.add_special_tokens,
         truncation_max_length=CLUSTERING_TRUNCATION_MAX_LENGTH,
     )
-    embeddings_dict = encode_dataset(
+    deferred = encode_dataset(
         model,
         dataset["texts"],
         batch_size,
@@ -161,13 +162,18 @@ def evaluate_hidden_states_clustering(
         extract_hidden_repr=True,
         target_layers=target_layers,
         use_last_token=use_last_token,
+        deferred_gather=True,
     )
 
     labels = dataset["labels"]
     labels = [l if isinstance(l, list) else [l] for l in labels]
 
     layer_performance = {}
-    for layer, embeddings in embeddings_dict.items():
+    for layer, embeddings in iter_deferred_layers(
+        deferred,
+        target_layers=target_layers,
+        layer_subset=layer_subset,
+    ):
         embeddings_np = embeddings.cpu().numpy()
         v_measures, _ = _evaluate_clustering_bootstrapped(
             embeddings_np,

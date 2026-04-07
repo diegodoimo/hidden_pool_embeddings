@@ -454,6 +454,12 @@ class evaluate_retrieval:
         *use_last_token* is auto-detected from the model's pooling function
         (True for last-token poolers, False for mean poolers such as
         embeddinggemma).  Pass an explicit bool to override detection.
+
+        Layer-level parallelism: after encoding (all_gather gives every rank
+        the full embeddings), each rank computes metrics only for its assigned
+        subset of layers (target_layers[rank::world_size]).  Results are then
+        gathered across ranks so every rank has the complete layer_performance
+        dict before storing.
         """
         model.eval()
 
@@ -462,6 +468,9 @@ class evaluate_retrieval:
             use_last_token = getattr(m, "pool_fn", None) is last_token_pool
         if self.rank == 0:
             print(f"hidden-states pooling: {'last_token' if use_last_token else 'mean'}")
+
+        # Assign layers to ranks (round-robin) so metric computation is parallelised
+        layer_subset = set(target_layers[self.rank :: self.world_size]) if self.world_size > 1 else None
 
         results = defaultdict(list)
         eval_context = EvalContext(
@@ -490,6 +499,7 @@ class evaluate_retrieval:
                     eval_context,
                     target_layers,
                     use_last_token,
+                    layer_subset=layer_subset,
                 )
             elif task_type == "PairClassification":
                 output_res = evaluate_hidden_states_pair_classification(
@@ -499,6 +509,7 @@ class evaluate_retrieval:
                     eval_context,
                     target_layers,
                     use_last_token,
+                    layer_subset=layer_subset,
                 )
             elif task_type == "MultilabelClassification":
                 output_res = evaluate_hidden_states_multilabel_classification(
@@ -508,6 +519,7 @@ class evaluate_retrieval:
                     eval_context,
                     target_layers,
                     use_last_token,
+                    layer_subset=layer_subset,
                 )
             elif task_type == "Clustering":
                 output_res = evaluate_hidden_states_clustering(
@@ -517,6 +529,7 @@ class evaluate_retrieval:
                     eval_context,
                     target_layers,
                     use_last_token,
+                    layer_subset=layer_subset,
                 )
             elif task_type == "Classification":
                 output_res = evaluate_hidden_states_classification(
@@ -526,6 +539,7 @@ class evaluate_retrieval:
                     eval_context,
                     target_layers,
                     use_last_token,
+                    layer_subset=layer_subset,
                 )
             elif task_type == "STS":
                 output_res = evaluate_hidden_states_sts(
@@ -535,6 +549,7 @@ class evaluate_retrieval:
                     eval_context,
                     target_layers,
                     use_last_token,
+                    layer_subset=layer_subset,
                 )
             elif task_type == "Summarization":
                 output_res = evaluate_hidden_states_summarization(
@@ -544,6 +559,7 @@ class evaluate_retrieval:
                     eval_context,
                     target_layers,
                     use_last_token,
+                    layer_subset=layer_subset,
                 )
             elif task_type == "BitextMining":
                 output_res = evaluate_hidden_states_bitext_mining(
@@ -553,6 +569,7 @@ class evaluate_retrieval:
                     eval_context,
                     target_layers,
                     use_last_token,
+                    layer_subset=layer_subset,
                 )
             elif task_type == "Reranking":
                 output_res = evaluate_hidden_states_reranking(
@@ -562,11 +579,29 @@ class evaluate_retrieval:
                     eval_context,
                     target_layers,
                     use_last_token,
+                    layer_subset=layer_subset,
                 )
             else:
                 if self.rank == 0:
                     print(f"  skipping unsupported task type: {task_type}")
                 continue
+
+            # Gather partial layer_performance dicts from all ranks and merge
+            if self.world_size > 1:
+                gathered = [None] * self.world_size
+                dist.all_gather_object(gathered, output_res)
+                merged = {}
+                for d in gathered:
+                    merged.update(d)
+                # Sort layers so output order matches layer index order;
+                # "final_embedding" always goes last.
+                def _layer_sort_key(kv):
+                    k = kv[0]
+                    if k == "final_embedding":
+                        return (1, [])
+                    return (0, [int(x) if x.isdigit() else x for x in k.split(".")])
+
+                output_res = dict(sorted(merged.items(), key=_layer_sort_key))
 
             dist.barrier()
             duration = time.time() - start

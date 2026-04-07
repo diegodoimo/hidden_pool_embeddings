@@ -16,12 +16,13 @@ from inference.helpers import (
     search,
     encode,
     estimate_chunk_sizes,
+    iter_deferred_layers,
 )
 from utils.create_datasets import create_dataset
 from utils.dataloader_helpers import LenghtSortedSampler
 
 from inference.evaluate.shared import make_collate_fn, encode_dataset, EvalContext
-
+import time
 
 def _prepare_retrieval(
     task,
@@ -124,6 +125,7 @@ def evaluate_hidden_states_retrieval(
     use_last_token=False,
     k_values=None,
     top_k=None,
+    layer_subset=None,
 ):
     if k_values is None:
         k_values = [1, 3, 5, 10, 20, 100, 1000]
@@ -148,8 +150,9 @@ def evaluate_hidden_states_retrieval(
 
     query_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["queries"]["id"])}
     doc_idx_to_id = {idx: id_ for idx, id_ in enumerate(dataset["corpus"]["id"])}
-
-    query_embeddings_dict = encode_dataset(
+    
+    #start = time.time()
+    deferred_queries = encode_dataset(
         model,
         dataset["queries"],
         batch_size,
@@ -157,8 +160,10 @@ def evaluate_hidden_states_retrieval(
         extract_hidden_repr=True,
         target_layers=target_layers,
         use_last_token=use_last_token,
+        deferred_gather=True,
     )
-    corpus_embeddings_dict = encode_dataset(
+    
+    deferred_corpus = encode_dataset(
         model,
         dataset["corpus"],
         batch_size,
@@ -166,11 +171,21 @@ def evaluate_hidden_states_retrieval(
         extract_hidden_repr=True,
         target_layers=target_layers,
         use_last_token=use_last_token,
+        deferred_gather=True,
     )
+    # end = time.time()
+    # if eval_context.rank ==0:
+    #     print(f"encoding lasted {(end-start)/60}")
+    # start = time.time()
+
+
+
 
     layer_performance = {}
-    for (layer, query_embs), (_, corpus_embs) in zip(
-        query_embeddings_dict.items(), corpus_embeddings_dict.items()
+    for layer, query_embs, corpus_embs in iter_deferred_layers(
+        deferred_queries, deferred_corpus,
+        target_layers=target_layers,
+        layer_subset=layer_subset,
     ):
         query_norm = F.normalize(query_embs.float(), p=2, dim=-1)
         corpus_norm = F.normalize(corpus_embs.float(), p=2, dim=-1)
@@ -248,6 +263,10 @@ def evaluate_hidden_states_retrieval(
             None,
         )
         layer_performance[layer] = scores_dict[main_score]
+    
+    # end = time.time()
+    # if eval_context.rank ==0:
+    #     print(f"performace measurment lasted {(end-start)/60}")
 
     return layer_performance
 
