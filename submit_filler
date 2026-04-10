@@ -1,23 +1,23 @@
 #!/bin/bash
-#SBATCH --partition=DGX
-#SBATCH --nodelist=dgx002
+#SBATCH --partition=H100
+##SBATCH --nodelist=dgx002
 #SBATCH --account=lade
 #SBATCH --nodes=1
 #SBATCH --time=60:00:00            
 #SBATCH --ntasks-per-node=1       
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=10G       
+#SBATCH --cpus-per-task=56
+#SBATCH --mem=50G       
 #SBATCH --job-name=test
-#SBATCH --gres=gpu:A100:1
+#SBATCH --gres=gpu:H100:4
 ##SBATCH --gres=gpu:A100:2
 
 
 env_path=/orfeo/cephfs/scratch/area/ddoimo/open/hidden_pool_embeddings
 
-source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_a100
+#source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_a100
 
-# module load cuda/12.8
-# source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_h100
+module load cuda/12.8
+source /u/area/ddoimo/anaconda3/bin/activate  $env_path/env_h100
 
 
 nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )

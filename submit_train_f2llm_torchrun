@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --time=48:00:00
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=56
+#SBATCH --cpus-per-task=52
 #SBATCH --mem=380G
 #SBATCH --job-name=test
 #SBATCH --gres=gpu:H100:4
@@ -57,7 +57,7 @@ torchrun \
     train_f2llm_repro.py \
     --attention_pooling \
     --cls_query_pooling \
-    --gated_attention \
+    --num_pooling_heads 4 \
     --model_path google/t5gemma-2-270m-270m  \
     --experiment_id trial \
     --train_data_path ./results/f2llm_tokenized \

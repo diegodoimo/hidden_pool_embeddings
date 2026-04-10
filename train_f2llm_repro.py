@@ -453,6 +453,8 @@ def parse_args():
         from transformers import AutoConfig
         cfg = AutoConfig.from_pretrained(args.model_path)
         text_cfg = getattr(cfg, "text_config", None) or getattr(cfg, "encoder", cfg)
+        # For T5Gemma2EncoderConfig, num_attention_heads lives on .text_config
+        text_cfg = getattr(text_cfg, "text_config", text_cfg)
         args.num_pooling_heads = text_cfg.num_attention_heads
 
     args.output_dir = f"{args.output_dir}/{args.experiment_id}"
