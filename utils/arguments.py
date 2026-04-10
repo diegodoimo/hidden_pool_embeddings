@@ -84,7 +84,8 @@ def parse_args():
         help="Temperature for the F2LLM loss (default: 0.05).",
     )
     parser.add_argument("--attention_pooling", action="store_true")
-    parser.add_argument("--attention_dim", type=int, default=None)
+    parser.add_argument("--num_pooling_heads", type=int, default=None)
+    parser.add_argument("--gated_attention", action="store_true")
     parser.add_argument("--cls_query_pooling", action="store_true")
     parser.add_argument(
         "--attn_implementation",

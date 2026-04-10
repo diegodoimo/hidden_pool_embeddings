@@ -8,6 +8,7 @@ from mteb.types import HFSubset
 from datasets import DatasetDict
 from sklearn.base import clone
 from sklearn.exceptions import ConvergenceWarning, UndefinedMetricWarning
+from sklearn.linear_model import LogisticRegression
 
 from inference.helpers import iter_deferred_layers
 from inference.evaluate.shared import (
@@ -93,7 +94,10 @@ def _run_clf_experiments(task_obj, x_train_all, train_labels, x_test, test_label
         new_params["max_iter"] = 200
     if "tol" in params:
         new_params["tol"] = 2e-4
-        
+    # sklearn>=1.8: LogisticRegression ignores n_jobs; non-None triggers FutureWarning
+    if isinstance(evaluator_model, LogisticRegression) and params.get("n_jobs") is not None:
+        new_params["n_jobs"] = None
+
     if new_params:
         evaluator_model = evaluator_model.set_params(**new_params)
         

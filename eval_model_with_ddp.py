@@ -241,7 +241,6 @@ def main():
             model_name_or_path=args.model_name_or_path,
             activation_checkpointing=False,
             attention_pooling=False,
-            attention_dim=None,
         )
         model = model.to("cuda")
     elif is_t5gemma2:
@@ -250,7 +249,6 @@ def main():
             activation_checkpointing=False,
             attention_pooling=False,
             cls_query_pooling=False,
-            attention_dim=None,
         )
         model = model.to("cuda")
     else:

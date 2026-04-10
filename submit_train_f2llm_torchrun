@@ -2,12 +2,12 @@
 #SBATCH --partition=H100
 ##SBATCH --partition=DGX
 #SBATCH --account=lade
-#SBATCH --nodelist=dgx004
+##SBATCH --nodelist=dgx003
 #SBATCH --nodes=1
 #SBATCH --time=48:00:00
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=56
-#SBATCH --mem=450G
+#SBATCH --mem=380G
 #SBATCH --job-name=test
 #SBATCH --gres=gpu:H100:4
 
@@ -21,7 +21,8 @@ export PYTHONUNBUFFERED=1
 export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
 
 GPU_NUMBER=$(echo $CUDA_VISIBLE_DEVICES | tr ',' ' ' | wc -w)
-WORKERS_PER_RANK=$(( SLURM_CPUS_PER_TASK / GPU_NUMBER ))
+#just because of memory issues
+WORKERS_PER_RANK=$(( SLURM_CPUS_PER_TASK / GPU_NUMBER / 2 ))
 
 export OMP_NUM_THREADS=$WORKERS_PER_RANK
 export NUMEXPR_MAX_THREADS=$WORKERS_PER_RANK
@@ -54,8 +55,9 @@ torchrun \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train_f2llm_repro.py \
-    --cls_query_pooling \
     --attention_pooling \
+    --cls_query_pooling \
+    --gated_attention \
     --model_path google/t5gemma-2-270m-270m  \
     --experiment_id trial \
     --train_data_path ./results/f2llm_tokenized \
@@ -73,6 +75,15 @@ torchrun \
     --validation_interval 2000 \
     --num_hard_neg 7 \
     --eval_set mteb_eng_v2_reduced \
+    # --gated_attention \
+
+    #--cross_attention \
+    #--lora_cls_attn \
+    #--lora_cls_attn \
+    #--freeze_backbone \
+    #--attention_pooling \
+    #--cross_attention \
+
     #--out_filename "f2llm_eval_prompts" \
     #--measure_baselines \
     #--only_retrieval \
@@ -81,5 +92,3 @@ torchrun \
     #--model_path google/t5gemma-2-270m-270m  \
     #--train_data_path ./f2llm_repro/results/datasets_tokenized/f2llm/f2llm-prompt_t5gemma-2-tok \
     #--model_path Qwen/Qwen3-0.6B  \
-    #--cls_query_pooling \
-    #--attention_pooling \

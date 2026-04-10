@@ -579,8 +579,9 @@ def main():
             activation_checkpointing=args.activation_checkpointing,
             attention_pooling=args.attention_pooling,
             cls_query_pooling=args.cls_query_pooling,
-            attention_dim=args.attention_dim,
             attn_implementation=args.attn_implementation,
+            num_pooling_heads=getattr(args, "num_pooling_heads", None),
+            gated_attention=getattr(args, "gated_attention", False),
         )
 
         model_name = "t5gemma2"

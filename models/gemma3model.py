@@ -5,7 +5,7 @@ from peft import TaskType
 
 # modified version with mean pool
 from models.gemma3textmodel import Gemma3TextModel
-from models.modules import MeanPooling, Projection, Normalize, GatedAttention
+from models.modules import MeanPooling, Projection, Normalize, AttentionPooling, GatedAttention
 
 
 def get_gemma3_model(args, model_config):
@@ -29,15 +29,19 @@ def get_gemma3_model(args, model_config):
     )
 
     if args.attention_pooling:
+        pooling_kwargs = dict(
+            num_attention_heads=getattr(args, "num_pooling_heads", None),
+            gated_attention=getattr(args, "gated_attention", False),
+        )
         if args.cls_query_pooling:
             model = EmbeddingGemmaHiddenPoolCLS(
                 encoder,
-                attention_dim=args.attention_dim,
+                **pooling_kwargs,
             )
         else:
             model = EmbeddingGemmaHiddenPool(
                 encoder,
-                attention_dim=args.attention_dim,
+                **pooling_kwargs,
             )
     else:
         model = EmbeddingGemma(encoder)
@@ -186,14 +190,18 @@ class EmbeddingGemmaHiddenPool(nn.Module):
     def __init__(
         self,
         encoder,
-        attention_dim: int = None,
+        num_attention_heads: int | None = None,
+        gated_attention: bool = False,
     ):
         super().__init__()
 
         self.encoder = encoder
         h = self.encoder.config.hidden_size
-        self.pooling = GatedAttention(
-            hidden_size=h, num_attention_heads=1, head_dim=attention_dim
+        if num_attention_heads is None:
+            num_attention_heads = self.encoder.config.num_attention_heads
+        PoolingClass = GatedAttention if gated_attention else AttentionPooling
+        self.pooling = PoolingClass(
+            hidden_size=h, num_attention_heads=num_attention_heads
         )
         self.projection = Projection(input_dim=h, hidden_dim=4 * h)
         self.normalize = Normalize()
@@ -236,22 +244,26 @@ class EmbeddingGemmaHiddenPoolCLS(nn.Module):
     """
     Gemma-3 encoder with a learnable CLS query token prepended to the input.
     The CLS token's residual-stream representation at each layer is extracted
-    and pooled via gated attention over layers.
+    and pooled via attention over layers.
     """
 
     def __init__(
         self,
         encoder,
-        attention_dim: int = None,
+        num_attention_heads: int | None = None,
+        gated_attention: bool = False,
     ):
         super().__init__()
 
         self.encoder = encoder
         h = self.encoder.config.hidden_size
+        if num_attention_heads is None:
+            num_attention_heads = self.encoder.config.num_attention_heads
+        PoolingClass = GatedAttention if gated_attention else AttentionPooling
         # Learnable CLS query embedding (1, 1, H)
         self.cls_query = nn.Parameter(torch.randn(1, 1, h) * 0.02)
-        self.pooling = GatedAttention(
-            hidden_size=h, num_attention_heads=1, head_dim=attention_dim
+        self.pooling = PoolingClass(
+            hidden_size=h, num_attention_heads=num_attention_heads
         )
         self.projection = Projection(input_dim=h, hidden_dim=4 * h)
         self.normalize = Normalize()

@@ -28,11 +28,18 @@ from huggingface_hub import snapshot_download
 from safetensors.torch import load_file
 from peft import TaskType
 
-from models.t5gemma2 import T5Gemma2Encoder
+from models.t5gemma2 import (
+    T5Gemma2Encoder,
+    T5Gemma2EncoderOutput,
+    T5Gemma2LoRACLSEncoderLayer,
+    sliding_window_mask_function,
+)
+from transformers.masking_utils import create_bidirectional_mask
 from models.modules import (
     MeanPooling,
     Projection,
     Normalize,
+    AttentionPooling,
     GatedAttention,
     CLSCrossAttentionAdapter,
 )
@@ -120,6 +127,7 @@ def load_t5gemma2_encoder(
     torch_dtype: torch.dtype | None = None,
     device: str = "cpu",
     attn_implementation: str = "sdpa",
+    cross_attention_layers: list[int] | None = None,
 ) -> T5Gemma2Encoder:
     """
     Build a ``T5Gemma2Encoder`` and load pretrained text-encoder weights from
@@ -155,7 +163,11 @@ def load_t5gemma2_encoder(
     encoder_config._attn_implementation = attn_implementation
 
     # 2. Instantiate the encoder (random weights).
-    encoder = T5Gemma2Encoder(encoder_config, eoi_token_index=eoi_token_index)
+    encoder = T5Gemma2Encoder(
+        encoder_config,
+        eoi_token_index=eoi_token_index,
+        cross_attention_layers=cross_attention_layers,
+    )
 
     # 3. Extract the text-encoder weights from the full checkpoint.
     encoder_sd = extract_encoder_state_dict(
@@ -171,8 +183,15 @@ def load_t5gemma2_encoder(
 
     # Rotary-embedding buffers are recomputed at init and are non-persistent,
     # so they are expected in `missing` but never in the checkpoint.
+    # Cross-attention layers (cls_query, cross_attn_layers) are randomly
+    # initialised and have no pretrained weights.
     missing_non_buffer = [
-        k for k in missing if "rotary_emb" not in k and "embed_scale" not in k
+        k
+        for k in missing
+        if "rotary_emb" not in k
+        and "embed_scale" not in k
+        and "cross_attn" not in k
+        and "cls_query" not in k
     ]
     if missing_non_buffer:
         raise RuntimeError(
@@ -203,10 +222,14 @@ def get_model_t5gemma2_model(
     activation_checkpointing,
     attention_pooling,
     cls_query_pooling,
-    attention_dim,
     attn_implementation: str = "sdpa",
     lora_cls: bool = False,
     lora_rank: int = 64,
+    cross_attention: bool = False,
+    cross_attention_layers: list[int] | None = None,
+    lora_cls_attn: bool = False,
+    num_pooling_heads: int | None = None,
+    gated_attention: bool = False,
 ):
     """
     Build a T5Gemma2-based embedding model, mirroring the interface of
@@ -216,27 +239,36 @@ def get_model_t5gemma2_model(
         model_name_or_path=model_name_or_path,
         torch_dtype=torch.bfloat16,
         attn_implementation=attn_implementation,
+        cross_attention_layers=cross_attention_layers if cross_attention else None,
     )
 
     if activation_checkpointing:
         encoder.config.use_cache = False
 
-    if lora_cls:
-        model = EmbeddingT5Gemma2LoRACLS(
+    pooling_kwargs = dict(num_attention_heads=num_pooling_heads, gated_attention=gated_attention)
+
+    if lora_cls_attn:
+        model = EmbeddingT5Gemma2LoRACLSAttn(
+            encoder, rank=lora_rank, **pooling_kwargs,
+        )
+    elif cross_attention:
+        model = EmbeddingT5Gemma2CrossAttention(encoder, **pooling_kwargs)
+    elif lora_cls:
+        model = EmbeddingT5Gemma2HiddenPoolCLSLoRA(
             encoder,
-            attention_dim=attention_dim,
             lora_rank=lora_rank,
+            **pooling_kwargs,
         )
     elif attention_pooling:
         if cls_query_pooling:
             model = EmbeddingT5Gemma2HiddenPoolCLS(
                 encoder,
-                attention_dim=attention_dim,
+                **pooling_kwargs,
             )
         else:
             model = EmbeddingT5Gemma2HiddenPool(
                 encoder,
-                attention_dim=attention_dim,
+                **pooling_kwargs,
             )
     else:
         model = EmbeddingT5Gemma2(encoder)
@@ -307,15 +339,18 @@ class EmbeddingT5Gemma2HiddenPool(nn.Module):
     def __init__(
         self,
         encoder: T5Gemma2Encoder,
-        attention_dim: int = None,
+        num_attention_heads: int | None = None,
+        gated_attention: bool = False,
     ):
         super().__init__()
         self.encoder = encoder
         h = self.encoder.text_config.hidden_size
-        self.pooling = GatedAttention(
+        if num_attention_heads is None:
+            num_attention_heads = self.encoder.text_config.num_attention_heads
+        PoolingClass = GatedAttention if gated_attention else AttentionPooling
+        self.pooling = PoolingClass(
             hidden_size=h,
-            num_attention_heads=1,
-            head_dim=attention_dim,
+            num_attention_heads=num_attention_heads,
         )
         self.projection = Projection(input_dim=h, hidden_dim=4 * h)
         self.normalize = Normalize()
@@ -355,24 +390,27 @@ class EmbeddingT5Gemma2HiddenPoolCLS(nn.Module):
     """
     T5Gemma2 encoder with a learnable CLS query token prepended to the input.
     The CLS token's residual-stream representation at each layer is extracted
-    and pooled via gated attention over layers.
+    and pooled via attention over layers.
     """
 
     def __init__(
         self,
         encoder: T5Gemma2Encoder,
-        attention_dim: int = None,
+        num_attention_heads: int | None = None,
+        gated_attention: bool = False,
     ):
         super().__init__()
         self.encoder = encoder
         h = self.encoder.text_config.hidden_size
+        if num_attention_heads is None:
+            num_attention_heads = self.encoder.text_config.num_attention_heads
+        PoolingClass = GatedAttention if gated_attention else AttentionPooling
+        self.pooling = PoolingClass(
+            hidden_size=h,
+            num_attention_heads=num_attention_heads,
+        )
         # Learnable CLS query embedding (1, 1, H)
         self.cls_query = nn.Parameter(torch.randn(1, 1, h) * 0.02)
-        self.pooling = GatedAttention(
-            hidden_size=h,
-            num_attention_heads=1,
-            head_dim=attention_dim,
-        )
         self.projection = Projection(input_dim=h, hidden_dim=4 * h)
         self.normalize = Normalize()
 
@@ -427,49 +465,56 @@ class EmbeddingT5Gemma2HiddenPoolCLS(nn.Module):
         return hidden
 
 
-class EmbeddingT5Gemma2LoRACLS(nn.Module):
-    """T5Gemma2 encoder with per-layer low-rank cross-attention adapters
-    that compute a CLS token representation from frozen backbone hidden states.
+class EmbeddingT5Gemma2HiddenPoolCLSLoRA(nn.Module):
+    """T5Gemma2 encoder with per-layer cross-attention adapters that project
+    information from the frozen backbone into a learnable CLS token.
 
-    Architecture:
-      1. Frozen encoder runs with ``return_full_hidden_states=True``,
-         producing full ``(B, L, H)`` hidden states at every layer.
-      2. At each layer a lightweight ``CLSCrossAttentionAdapter`` computes
-         ``CLS_i = CrossAttn(cls_query_i, hidden_states_i)``  — a low-rank
-         cross-attention where a learnable CLS query attends to the frozen
-         hidden states.
+    Architecture (frozen backbone + trainable adapters):
+      1. The frozen encoder runs on the original input tokens with
+         ``return_full_hidden_states=True``, producing full ``(B, L, H)``
+         hidden states at every layer — the backbone is never modified.
+      2. At each layer a ``CLSCrossAttentionAdapter`` computes a CLS
+         representation by cross-attending from a learnable query to the
+         frozen hidden states of that layer:
+             CLS_i = CrossAttn(cls_query_i, frozen_hidden_i, mask)
+         The CLS query learns *where* to look in the sequence; the backbone
+         provides what to look at.
       3. The per-layer CLS representations are stacked and pooled via
          ``GatedAttention`` → ``Projection`` → ``Normalize``.
 
-    Only the adapters, CLS queries, GatedAttention, and Projection are
-    trainable; the encoder backbone stays frozen.
+    Trainable parameters: per-layer CLS queries, ``CLSCrossAttentionAdapter``
+    weights (q/k/v/o projections), ``GatedAttention``, ``Projection``.
+    The encoder backbone is frozen externally before training.
     """
 
     def __init__(
         self,
         encoder: T5Gemma2Encoder,
-        attention_dim: int = None,
         lora_rank: int = 64,
+        num_attention_heads: int | None = None,
+        gated_attention: bool = False,
     ):
         super().__init__()
         self.encoder = encoder
         h = self.encoder.text_config.hidden_size
-        num_layers = self.encoder.text_config.num_hidden_layers + 1  # +1 for embedding layer
+        num_layers = self.encoder.text_config.num_hidden_layers + 1  # +1 for embed layer
 
         # Per-layer learnable CLS query embeddings
         self.cls_queries = nn.ParameterList(
             [nn.Parameter(torch.randn(1, 1, h) * 0.02) for _ in range(num_layers)]
         )
 
-        # Per-layer low-rank cross-attention adapters
+        # Per-layer cross-attention adapters (properly initialized — not zeroed)
         self.adapters = nn.ModuleList(
             [CLSCrossAttentionAdapter(h, rank=lora_rank) for _ in range(num_layers)]
         )
 
-        self.pooling = GatedAttention(
+        if num_attention_heads is None:
+            num_attention_heads = self.encoder.text_config.num_attention_heads
+        PoolingClass = GatedAttention if gated_attention else AttentionPooling
+        self.pooling = PoolingClass(
             hidden_size=h,
-            num_attention_heads=1,
-            head_dim=attention_dim,
+            num_attention_heads=num_attention_heads,
         )
         self.projection = Projection(input_dim=h, hidden_dim=4 * h)
         self.normalize = Normalize()
@@ -486,7 +531,9 @@ class EmbeddingT5Gemma2LoRACLS(nn.Module):
         inputs_embeds=None,
         **kwargs,
     ):
-        # 1. Run frozen encoder — full (B, L, H) per-layer hidden states
+        # 1. Frozen encoder — full (B, L, H) per-layer hidden states.
+        # No CLS token is prepended: backbone sees only the original tokens,
+        # keeping its representations completely unaffected by the adapters.
         with torch.no_grad():
             outputs = self.encoder(
                 input_ids=input_ids,
@@ -494,19 +541,17 @@ class EmbeddingT5Gemma2LoRACLS(nn.Module):
                 position_ids=position_ids,
                 inputs_embeds=inputs_embeds,
                 output_hidden_states=True,
-                return_full_hidden_states=True,
+                return_full_hidden_states=True,  # (B, L, H) per layer
                 **kwargs,
             )
 
-        # 2. Per-layer CLS via cross-attention adapters
-        # outputs.hidden_states: tuple of num_layers+1 tensors, each (B, L, H)
+        # 2. Per-layer CLS via cross-attention adapters.
+        # outputs.hidden_states: tuple of (B, L, H), one per layer.
         batch_size = outputs.hidden_states[0].shape[0]
         cls_reps = []
         for adapter, cls_q, layer_hidden in zip(
             self.adapters, self.cls_queries, outputs.hidden_states
         ):
-            # Detach to ensure no gradients flow into the frozen encoder
-            layer_hidden = layer_hidden.detach()
             cls_expanded = cls_q.expand(batch_size, -1, -1).to(
                 dtype=layer_hidden.dtype
             )
@@ -516,6 +561,247 @@ class EmbeddingT5Gemma2LoRACLS(nn.Module):
         # 3. Pool over layers → project → normalise
         hidden = torch.stack(cls_reps, dim=1)  # [B, num_layers+1, H]
         hidden, _ = self.pooling(hidden)        # [B, H]
+        hidden = self.projection(hidden)
+        hidden = self.normalize(hidden)
+        return hidden
+
+
+class EmbeddingT5Gemma2CrossAttention(nn.Module):
+    """T5Gemma2 encoder with MLLama-style cross-attention layers that let a
+    learnable CLS token progressively extract information from the frozen
+    backbone's residual stream at selected layers.
+
+    Architecture (frozen backbone + trainable cross-attention):
+      1. The encoder runs on the original input tokens.  At selected layers
+         (``cross_attention_layers``), cross-attention blocks update a CLS
+         token that queries the encoder hidden states.
+      2. Each cross-attention block contains:
+         - LayerNorm + Cross-Attention + tanh-gated residual
+         - LayerNorm + MLP + tanh-gated residual
+         Gates are initialised to zero (no-op at init).
+      3. Intermediate CLS representations (one per cross-attention block
+         + one from the final encoder output) are pooled via
+         ``GatedAttention`` → ``Projection`` → L2-normalise.
+
+    With the default 5 cross-attention layers this produces a sequence of
+    6 CLS representations that GatedAttention attends over:
+      [cls_after_L3, cls_after_L8, cls_after_L13, cls_after_L18, cls_after_L23, cls_after_final]
+
+    Trainable parameters: CLS query, cross-attention layers, GatedAttention,
+    Projection.
+    The encoder backbone self-attention layers are frozen externally.
+    """
+
+    def __init__(
+        self,
+        encoder: T5Gemma2Encoder,
+        num_attention_heads: int | None = None,
+        gated_attention: bool = False,
+    ):
+        super().__init__()
+        self.encoder = encoder
+        h = self.encoder.text_config.hidden_size
+        if num_attention_heads is None:
+            num_attention_heads = self.encoder.text_config.num_attention_heads
+        PoolingClass = GatedAttention if gated_attention else AttentionPooling
+        self.pooling = PoolingClass(
+            hidden_size=h,
+            num_attention_heads=num_attention_heads,
+        )
+        self.projection = Projection(input_dim=h, hidden_dim=4 * h)
+        self.normalize = Normalize()
+
+    @property
+    def device(self):
+        return next(self.encoder.parameters()).device
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        inputs_embeds=None,
+        **kwargs,
+    ):
+        outputs = self.encoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            inputs_embeds=inputs_embeds,
+            output_hidden_states=False,
+            **kwargs,
+        )
+
+        # cls_state: (B, num_cross_attn+1, H) — initial + one per block
+        hidden = outputs.cls_state
+        hidden, _ = self.pooling(hidden)  # (B, H)
+        hidden = self.projection(hidden)
+        hidden = self.normalize(hidden)
+        return hidden
+
+
+class EmbeddingT5Gemma2LoRACLSAttn(nn.Module):
+    """T5Gemma2 encoder with CLS-position LoRA on self-attention.
+
+    A learnable CLS token is prepended to the input.  At every encoder layer
+    the self-attention Q and O projections carry a low-rank adapter whose
+    delta is applied **only at the CLS position**.  An asymmetric attention
+    mask prevents non-CLS tokens from attending to CLS, so their hidden
+    states are mathematically identical to the frozen backbone.
+
+    The CLS hidden state from each layer is collected and pooled via
+    attention → ``Projection`` → L2-normalise.
+
+    Trainable: CLS query, LoRA adapters (Q/O per layer), pooling head,
+    Projection.  The backbone encoder is frozen externally.
+    """
+
+    def __init__(
+        self,
+        encoder: T5Gemma2Encoder,
+        rank: int = 64,
+        num_attention_heads: int | None = None,
+        gated_attention: bool = False,
+    ):
+        super().__init__()
+        self.encoder = encoder
+        h = encoder.text_config.hidden_size
+
+        # Learnable CLS embedding
+        self.cls_query = nn.Parameter(torch.randn(1, 1, h) * 0.02)
+
+        # LoRA layer wrappers — one per encoder layer
+        self.lora_layers = nn.ModuleList(
+            [
+                T5Gemma2LoRACLSEncoderLayer(layer, rank=rank)
+                for layer in encoder.layers
+            ]
+        )
+
+        if num_attention_heads is None:
+            num_attention_heads = self.encoder.text_config.num_attention_heads
+        PoolingClass = GatedAttention if gated_attention else AttentionPooling
+        self.pooling = PoolingClass(
+            hidden_size=h,
+            num_attention_heads=num_attention_heads,
+        )
+        self.projection = Projection(input_dim=h, hidden_dim=4 * h)
+        self.normalize = Normalize()
+
+    @property
+    def device(self):
+        return next(self.encoder.parameters()).device
+
+    # ------------------------------------------------------------------
+    # Helpers for mask creation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _mask_cls_column(mask: torch.Tensor) -> torch.Tensor:
+        """Set column 0 to -inf for rows 1: (non-CLS can't attend to CLS)."""
+        mask = mask.clone()
+        if mask.dtype.is_floating_point:
+            mask[:, :, 1:, 0] = torch.finfo(mask.dtype).min
+        else:
+            mask[:, :, 1:, 0] = False
+        return mask
+
+    def _build_masks(self, inputs_embeds, attention_mask):
+        """Create bidirectional attention masks with asymmetric CLS masking.
+
+        For sliding-attention layers the CLS row keeps full attention
+        (overriding the sliding window) so it can see the entire sequence.
+        """
+        enc = self.encoder
+        mask_kwargs = {
+            "config": enc.config,
+            "inputs_embeds": inputs_embeds,
+            "attention_mask": attention_mask,
+        }
+        full_mask = create_bidirectional_mask(**mask_kwargs)
+        sliding_mask = create_bidirectional_mask(
+            **mask_kwargs,
+            and_mask_function=sliding_window_mask_function(
+                enc.text_config.sliding_window, is_causal=False
+            ),
+        )
+
+        # Block non-CLS → CLS column
+        full_mask = self._mask_cls_column(full_mask)
+        sliding_mask = self._mask_cls_column(sliding_mask)
+        # CLS row in sliding layers should have full attention (not windowed)
+        sliding_mask[:, :, 0, :] = full_mask[:, :, 0, :]
+
+        return {
+            "full_attention": full_mask,
+            "sliding_attention": sliding_mask,
+        }
+
+    # ------------------------------------------------------------------
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        inputs_embeds=None,
+        **kwargs,
+    ):
+        enc = self.encoder
+        text_config = enc.text_config
+
+        # 1. Token embeddings
+        if inputs_embeds is None:
+            inputs_embeds = enc.embed_tokens(input_ids)
+        batch_size = inputs_embeds.shape[0]
+
+        # 2. Prepend learnable CLS token
+        cls_expanded = self.cls_query.expand(batch_size, -1, -1).to(
+            dtype=inputs_embeds.dtype
+        )
+        inputs_embeds = torch.cat([cls_expanded, inputs_embeds], dim=1)  # (B, 1+L, H)
+
+        # 3. Extend 2-D attention mask with a 1 for CLS
+        if attention_mask is not None:
+            cls_mask = torch.ones(
+                batch_size, 1, device=attention_mask.device, dtype=attention_mask.dtype
+            )
+            attention_mask = torch.cat([cls_mask, attention_mask], dim=1)
+
+        # 4. Position IDs: CLS=0, text tokens 1…L (preserves relative positions)
+        position_ids = torch.arange(
+            inputs_embeds.shape[1], device=inputs_embeds.device
+        ).unsqueeze(0)
+
+        # 5. 4-D attention masks with asymmetric CLS masking
+        self_attn_mask_mapping = self._build_masks(inputs_embeds, attention_mask)
+
+        # 6. RoPE
+        hidden_states = inputs_embeds
+        position_embeddings = {}
+        for layer_type in set(text_config.layer_types):
+            position_embeddings[layer_type] = enc.rotary_emb(
+                hidden_states, position_ids, layer_type
+            )
+
+        hidden_states = enc.dropout(hidden_states)
+
+        # 7. Forward through LoRA-wrapped layers, collect CLS at each
+        cls_intermediates = []
+        for layer_module, lora_layer in zip(
+            enc.layers[: text_config.num_hidden_layers], self.lora_layers
+        ):
+            hidden_states = lora_layer(
+                hidden_states,
+                position_embeddings[layer_module.attention_type],
+                self_attn_mask_mapping[layer_module.attention_type],
+                position_ids,
+                **kwargs,
+            )
+            cls_intermediates.append(hidden_states[:, 0, :])  # (B, H)
+
+        # 8. Pool CLS intermediates → Projection → Normalise
+        hidden = torch.stack(cls_intermediates, dim=1)  # (B, num_layers, H)
+        hidden, _ = self.pooling(hidden)  # (B, H)
         hidden = self.projection(hidden)
         hidden = self.normalize(hidden)
         return hidden

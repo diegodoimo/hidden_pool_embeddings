@@ -9,7 +9,7 @@ import os
 import json
 from utils.helpers import get_cpt_steps
 from utils.create_datasets import get_eval_tasks
-
+import time
 
 class F2LLMEvalWrapper(torch.nn.Module):
     """Thin nn.Module that wraps F2LLM.lm and applies last-token pooling,
@@ -456,6 +456,7 @@ def accelerate_train(
                 json.dump(stats, f, indent=4)
 
     model.lm.train()
+    start = time.time()
     for epoch in range(start_epoch, args.train_epochs):
         accelerator.print(f"*************** Starting epoch {epoch+1} ***************")
         train_dataloader.reset_epoch(epoch)
@@ -571,6 +572,7 @@ def accelerate_train(
                 train_log_dict["Avg/global/training_loss_hard"] = torch.tensor(
                     [v for k, v in _per_ds.items() if k.endswith("training_loss_hard")]
                 ).mean()
+                train_log_dict["duration"] = (time.time()- start)/3600
 
                 accelerator.print(f"[Train] Step = {completed_steps}")
                 if accelerator.is_main_process:

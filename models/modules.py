@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -23,153 +24,168 @@ def mean_pool(last_hidden_states, attention_mask):
     return masked_sum / mask_sum
 
 
-def gated_attention_forward(
-    query_weight: torch.Tensor,
-    U_states: torch.Tensor,
-    V_states: torch.Tensor,
-    hidden_states: torch.Tensor,
-    scaling: float,
-    dropout: float = 0.0,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Gated attention pooling over a sequence of hidden states.
+class AttentionPooling(nn.Module):
+    """Multi-head self-attention pooling over a sequence of hidden-layer
+    representations into a single vector.
+
+    Applies standard multi-head self-attention (Q, K, V all projected from the
+    input), then mean-pools over the sequence dimension.
 
     Args:
-        query_weight: (1, head_dim) learned query vector per head
-        U_states: (B, num_heads, seq_len, head_dim) - sigmoid gate
-        V_states: (B, num_heads, seq_len, head_dim) - tanh gate
-        hidden_states: (B, num_heads, seq_len, head_dim) - values
-        scaling: attention scaling factor
-        dropout: dropout probability
-
-    Returns:
-        attn_output: (B, seq_len, num_heads * head_dim)
-        attn_weights: (B, num_heads, 1, seq_len)
+        hidden_size: Dimension of each hidden representation.
+        num_attention_heads: Number of attention heads.
+            ``head_dim`` is computed as ``hidden_size // num_attention_heads``.
     """
-    gating_mechanism = (
-        torch.tanh(V_states.float()) * torch.sigmoid(U_states.float())
-    ).to(hidden_states.dtype)
 
-    # query_weight: (1, head_dim), gating: (B, heads, seq, head_dim)
-    # matmul: (B, heads, 1, head_dim) @ (B, heads, head_dim, seq) -> (B, heads, 1, seq)
-    attn_weights = (
-        torch.matmul(
-            query_weight.unsqueeze(0).unsqueeze(0), gating_mechanism.transpose(2, 3)
-        )
-        * scaling
-    )
-
-    # upcast attention to fp32
-    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(
-        hidden_states.dtype
-    )
-    attn_weights = nn.functional.dropout(attn_weights, p=dropout)
-    # (B, heads, 1, seq) @ (B, heads, seq, head_dim) -> (B, heads, 1, head_dim)
-    attn_output = torch.matmul(attn_weights, hidden_states)
-    # (B, heads, 1, head_dim) -> (B, 1, heads * head_dim)
-    attn_output = attn_output.squeeze(2).transpose(1, 2).contiguous()
-    batch_size = attn_output.shape[0]
-    attn_output = attn_output.reshape(batch_size, -1)  # (B, heads * head_dim)
-    return attn_output, attn_weights
-
-
-class GatedAttention(nn.Module):
-    def __init__(
-        self,
-        hidden_size: int,
-        num_attention_heads: int = 1,
-        head_dim: int = None,
-    ):
-        """
-        Gated Attention mechanism for pooling a sequence of hidden-layer
-        representations into a single vector.
-
-        Args:
-            hidden_size (int): The dimension of each hidden representation.
-            num_attention_heads (int): Number of attention heads (default 1).
-            head_dim (int): Per-head dimension.  Defaults to hidden_size // num_attention_heads.
-        """
+    def __init__(self, hidden_size: int, num_attention_heads: int):
         super().__init__()
-
+        assert hidden_size % num_attention_heads == 0, (
+            f"hidden_size ({hidden_size}) must be divisible by "
+            f"num_attention_heads ({num_attention_heads})"
+        )
         self.num_attention_heads = num_attention_heads
-        if head_dim is None:
-            head_dim = hidden_size // num_attention_heads
-        self.head_dim = head_dim
+        self.head_dim = hidden_size // num_attention_heads
+        self.hidden_size = hidden_size
 
-        # Gating projections
-        self.U = nn.Linear(hidden_size, num_attention_heads * head_dim, bias=False)
-        self.V = nn.Linear(hidden_size, num_attention_heads * head_dim, bias=False)
-
-        # Value projection
-        self.W = nn.Linear(hidden_size, num_attention_heads * head_dim, bias=False)
-
-        # Learned query vector per head: (1, head_dim)
-        self.w = nn.Parameter(torch.randn(1, head_dim))
-
-        # Output projection back to hidden_size
-        self.o_proj = nn.Linear(num_attention_heads * head_dim, hidden_size, bias=False)
+        self.q_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.k_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.v_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.o_proj = nn.Linear(hidden_size, hidden_size, bias=False)
 
     def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Pool a sequence of representations into a single vector via gated attention.
-
         Args:
             hidden_states: (B, K, D) where K is the number of layer representations.
 
         Returns:
-            pooled: (B, D) - the aggregated representation.
-            attn_weights: (B, num_heads, 1, K) - attention weights over layers.
+            pooled: (B, D) — the mean-pooled output.
+            attn_weights: (B, num_heads, K, K) — attention weights.
         """
-        hidden_states = hidden_states.to(self.U.weight.dtype)
-        input_shape = hidden_states.shape[:-1]
-        hidden_shape = (*input_shape, self.num_attention_heads, self.head_dim)
+        hidden_states = hidden_states.to(self.q_proj.weight.dtype)
+        B, K, D = hidden_states.shape
 
-        # Project and reshape to (B, num_heads, K, head_dim)
-        U_states = self.U(hidden_states).view(hidden_shape).transpose(1, 2)
-        V_states = self.V(hidden_states).view(hidden_shape).transpose(1, 2)
-        value_states = self.W(hidden_states).view(hidden_shape).transpose(1, 2)
+        q = self.q_proj(hidden_states).view(B, K, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(hidden_states).view(B, K, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(hidden_states).view(B, K, self.num_attention_heads, self.head_dim).transpose(1, 2)
 
-        attn_output, attn_weights = gated_attention_forward(
-            query_weight=self.w,
-            U_states=U_states,
-            V_states=V_states,
-            hidden_states=value_states,
-            scaling=self.head_dim**-0.5,
-            dropout=0.0,
+        attn_weights = torch.matmul(q, k.transpose(-1, -2)) * (self.head_dim ** -0.5)
+        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(hidden_states.dtype)
+
+        attn_output = torch.matmul(attn_weights, v)                    # (B, H, K, hd)
+        attn_output = attn_output.transpose(1, 2).reshape(B, K, D)    # (B, K, D)
+        attn_output = self.o_proj(attn_output)                         # (B, K, D)
+
+        pooled = attn_output.mean(dim=1)                               # (B, D)
+        return pooled, attn_weights
+
+
+class GatedAttention(nn.Module):
+    """Multi-head self-attention with Qwen3-style headwise gating for pooling.
+
+    Like :class:`AttentionPooling`, but the Q projection outputs additional
+    per-head gate scalars.  After computing attention, the output of each head
+    is multiplied by ``sigmoid(gate_score)``, following the Qwen3 headwise
+    attention output gating approach.
+
+    Reference:
+        https://huggingface.co/QwQZh/gated_attention/blob/main/1B_gate_headwise/modeling_qwen3.py
+
+    Args:
+        hidden_size: Dimension of each hidden representation.
+        num_attention_heads: Number of attention heads.
+            ``head_dim`` is computed as ``hidden_size // num_attention_heads``.
+    """
+
+    def __init__(self, hidden_size: int, num_attention_heads: int):
+        super().__init__()
+        assert hidden_size % num_attention_heads == 0, (
+            f"hidden_size ({hidden_size}) must be divisible by "
+            f"num_attention_heads ({num_attention_heads})"
         )
+        self.num_attention_heads = num_attention_heads
+        self.head_dim = hidden_size // num_attention_heads
+        self.hidden_size = hidden_size
 
-        # Project back to hidden_size
-        attn_output = self.o_proj(attn_output)  # (B, D)
-        return attn_output, attn_weights
+        # Q proj outputs extra num_heads gate scalars (Qwen3 headwise gating)
+        self.q_proj = nn.Linear(hidden_size, hidden_size + num_attention_heads, bias=False)
+        self.k_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.v_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.o_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+
+    def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            hidden_states: (B, K, D) where K is the number of layer representations.
+
+        Returns:
+            pooled: (B, D) — the mean-pooled, gated output.
+            attn_weights: (B, num_heads, K, K) — attention weights.
+        """
+        hidden_states = hidden_states.to(self.q_proj.weight.dtype)
+        B, K, D = hidden_states.shape
+
+        q = self.q_proj(hidden_states)                                  # (B, K, D + H)
+        q, gate_score = q.split([self.hidden_size, self.num_attention_heads], dim=-1)
+        gate_score = gate_score.view(B, K, self.num_attention_heads, 1) # (B, K, H, 1)
+
+        q = q.view(B, K, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(hidden_states).view(B, K, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(hidden_states).view(B, K, self.num_attention_heads, self.head_dim).transpose(1, 2)
+
+        attn_weights = torch.matmul(q, k.transpose(-1, -2)) * (self.head_dim ** -0.5)
+        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(hidden_states.dtype)
+
+        attn_output = torch.matmul(attn_weights, v)                    # (B, H, K, hd)
+        attn_output = attn_output.transpose(1, 2)                      # (B, K, H, hd)
+
+        # Qwen3-style headwise gating
+        attn_output = attn_output * torch.sigmoid(gate_score)          # (B, K, H, hd)
+
+        attn_output = attn_output.reshape(B, K, D)                    # (B, K, D)
+        attn_output = self.o_proj(attn_output)                         # (B, K, D)
+
+        pooled = attn_output.mean(dim=1)                               # (B, D)
+        return pooled, attn_weights
 
 
 class CLSCrossAttentionAdapter(nn.Module):
-    """Low-rank cross-attention adapter that computes a CLS representation
-    by attending to frozen encoder hidden states.
+    """Per-layer low-rank cross-attention adapter.
 
-    At each encoder layer this module takes:
-      - ``cls_query``     : (B, 1, H) — a learnable CLS embedding.
-      - ``hidden_states`` : (B, L, H) — frozen hidden states from that layer.
-      - ``attention_mask``: (B, L)    — 1 for real tokens, 0 for padding.
+    At each encoder/decoder layer a learnable CLS query attends to the full
+    frozen hidden states ``(B, L, H)`` of that layer via a low-rank attention
+    mechanism (rank ``r`` << H):
 
-    It produces a (B, H) CLS representation for that layer via low-rank
-    query/key/value projections (rank ``r`` << H), making it parameter-
-    efficient while still allowing the CLS token to selectively gather
-    information from the frozen backbone.
+        q   = q_proj(cls_query)          (B, 1, r)
+        k   = k_proj(hidden_states)      (B, L, r)
+        v   = v_proj(hidden_states)      (B, L, r)
+        attn = softmax(q @ kᵀ / √r)     (B, 1, L)
+        out  = o_proj(attn @ v)          (B, H)
+
+    This lets the CLS token selectively aggregate information from the frozen
+    backbone representations at each layer, learning which tokens and features
+    matter for the embedding task.
+
+    **Initialization:** all four projections use PyTorch default (Kaiming
+    uniform).  Crucially, ``o_proj`` is *not* zeroed — the original failure
+    (see commented block below) zeroed ``o_proj``, making every output a zero
+    vector, killing gradient flow entirely.  Standard init gives non-zero
+    outputs from step 0 and stable gradient signal throughout training.
+
+    Args:
+        hidden_size: Transformer hidden dimension H.
+        rank: Low-rank bottleneck dimension r (default 64).
     """
 
     def __init__(self, hidden_size: int, rank: int = 64):
         super().__init__()
         self.rank = rank
+        self.scale = rank ** -0.5
         self.q_proj = nn.Linear(hidden_size, rank, bias=False)
         self.k_proj = nn.Linear(hidden_size, rank, bias=False)
         self.v_proj = nn.Linear(hidden_size, rank, bias=False)
         self.o_proj = nn.Linear(rank, hidden_size, bias=False)
-        self.scale = rank ** -0.5
-
-        # Initialise output projection near zero so that the adapter starts
-        # close to a no-op (residual-friendly).
-        nn.init.zeros_(self.o_proj.weight)
+        # All projections use PyTorch default Kaiming-uniform init.
+        # o_proj is intentionally NOT zeroed — see docstring above.
 
     def forward(
         self,
@@ -179,29 +195,82 @@ class CLSCrossAttentionAdapter(nn.Module):
     ) -> torch.Tensor:
         """
         Args:
-            cls_query:      (B, 1, H)
-            hidden_states:  (B, L, H)
-            attention_mask:  (B, L)  — 1/True = attend, 0/False = ignore.
+            cls_query:      (B, 1, H) — learnable CLS token embedding.
+            hidden_states:  (B, L, H) — frozen per-layer backbone hidden states.
+            attention_mask: (B, L)    — 1/True = real token, 0/False = padding.
 
         Returns:
-            (B, H) — adapted CLS representation for this layer.
+            (B, H) — CLS representation for this layer.
         """
-        q = self.q_proj(cls_query)                       # (B, 1, r)
-        k = self.k_proj(hidden_states)                   # (B, L, r)
-        v = self.v_proj(hidden_states)                   # (B, L, r)
+        q = self.q_proj(cls_query)                                    # (B, 1, r)
+        k = self.k_proj(hidden_states)                                # (B, L, r)
+        v = self.v_proj(hidden_states)                                # (B, L, r)
 
-        attn = torch.matmul(q, k.transpose(-1, -2)) * self.scale  # (B, 1, L)
-
+        attn = torch.matmul(q, k.transpose(-1, -2)) * self.scale     # (B, 1, L)
         if attention_mask is not None:
             attn = attn.masked_fill(
                 ~attention_mask.unsqueeze(1).bool(), float("-inf")
             )
-
         attn = F.softmax(attn, dim=-1, dtype=torch.float32).to(q.dtype)
 
-        out = torch.matmul(attn, v)    # (B, 1, r)
-        out = self.o_proj(out)         # (B, 1, H)
-        return out.squeeze(1)          # (B, H)
+        out = torch.matmul(attn, v)   # (B, 1, r)
+        out = self.o_proj(out)        # (B, 1, H)
+        return out.squeeze(1)         # (B, H)
+
+
+# ---------------------------------------------------------------------------
+# NOTE: first attempt at CLSCrossAttentionAdapter — correct architecture,
+# broken initialisation.  Kept for reference.
+#
+# The sole bug was ``nn.init.zeros_(self.o_proj.weight)``: zeroing o_proj
+# made every output a zero vector regardless of input.  F.normalize(0) = 0
+# for every sample → all embeddings identical → contrastive loss stuck at
+# log(batch_size) = 5.78 with zero gradient magnitude throughout training.
+# Evidence:
+#   f2llm_repro/results/train/trial/
+#     train_logs_deepspeed_t5gemma2_lora_cls_r64_gpus4_bs320_lr1e-05_wd0.01.json
+#
+# The fix (above) simply removes that line, letting o_proj use standard
+# Kaiming-uniform init like the other three projections.
+#
+# class CLSCrossAttentionAdapter(nn.Module):  # BUGGED VERSION
+#     def __init__(self, hidden_size: int, rank: int = 64):
+#         super().__init__()
+#         self.q_proj = nn.Linear(hidden_size, rank, bias=False)
+#         self.k_proj = nn.Linear(hidden_size, rank, bias=False)
+#         self.v_proj = nn.Linear(hidden_size, rank, bias=False)
+#         self.o_proj = nn.Linear(rank, hidden_size, bias=False)
+#         self.scale = rank ** -0.5
+#         nn.init.zeros_(self.o_proj.weight)  # ← BUG: kills all gradient flow
+#
+#     def forward(self, cls_query, hidden_states, attention_mask=None):
+#         q    = self.q_proj(cls_query)
+#         k    = self.k_proj(hidden_states)
+#         v    = self.v_proj(hidden_states)
+#         attn = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+#         if attention_mask is not None:
+#             attn = attn.masked_fill(~attention_mask.unsqueeze(1).bool(), float("-inf"))
+#         attn = F.softmax(attn, dim=-1, dtype=torch.float32).to(q.dtype)
+#         out  = self.o_proj(torch.matmul(attn, v))  # always 0 → dead gradients
+#         return out.squeeze(1)
+# ---------------------------------------------------------------------------
+
+
+# CLSLoRAAdapter — alternative to CLSCrossAttentionAdapter.
+# Applies a pointwise residual MLP to an already-pooled (B, H) CLS vector:
+#     output = x + up(down(x))
+# Does NOT look at other tokens — useful as a lightweight post-pooling
+# correction but cannot aggregate new information from the sequence.
+class CLSLoRAAdapter(nn.Module):
+    def __init__(self, hidden_size: int, rank: int = 64):
+        super().__init__()
+        self.down = nn.Linear(hidden_size, rank, bias=False)
+        self.up = nn.Linear(rank, hidden_size, bias=False)
+        nn.init.kaiming_uniform_(self.down.weight, a=math.sqrt(5))
+        nn.init.zeros_(self.up.weight)  # no-op at init (LoRA-style)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.up(self.down(x))
 
 
 class EncoderWithPooling(nn.Module):

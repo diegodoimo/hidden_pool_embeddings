@@ -348,11 +348,18 @@ def parse_args():
         "(EmbeddingT5Gemma2HiddenPoolCLS). Implies --attention_pooling.",
     )
     parser.add_argument(
-        "--attention_dim",
+        "--num_pooling_heads",
         type=int,
         default=None,
-        help="Per-head dimension for gated-attention pooling. "
-        "Defaults to hidden_size when None.",
+        help="Number of attention heads for the layer-pooling mechanism. "
+        "Defaults to num_hidden_layers + 1 (one head per layer representation). "
+        "hidden_size must be divisible by this value.",
+    )
+    parser.add_argument(
+        "--gated_attention",
+        action="store_true",
+        help="Use Qwen3-style headwise-gated attention pooling instead of "
+        "standard multi-head self-attention pooling over layer representations.",
     )
     parser.add_argument(
         "--freeze_backbone",
@@ -385,6 +392,32 @@ def parse_args():
         "Default: 'sdpa'.",
     )
     parser.add_argument(
+        "--cross_attention",
+        action="store_true",
+        help="Embed MLLama-style cross-attention layers within the T5Gemma2 "
+        "encoder.  A learnable CLS token queries the frozen backbone's "
+        "residual stream at selected layers via tanh-gated cross-attention "
+        "blocks.  The backbone is automatically frozen; only the "
+        "cross-attention layers, CLS query, and Projection are trained.",
+    )
+    parser.add_argument(
+        "--lora_cls_attn",
+        action="store_true",
+        help="Embed a learnable CLS token in the self-attention of each "
+        "encoder layer with LoRA adapters on Q/O (masked to CLS position). "
+        "An asymmetric attention mask keeps the backbone frozen for non-CLS "
+        "tokens.  CLS states from all layers are pooled via GatedAttention.",
+    )
+    parser.add_argument(
+        "--cross_attention_layers",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Layer indices (0-based) at which to place cross-attention "
+        "blocks.  Default (when --cross_attention is set): [3, 8, 13, 18, 23] "
+        "(every ~5 layers, following the MLLama spacing for 26 encoder layers).",
+    )
+    parser.add_argument(
         "--use_decoder",
         action="store_true",
         help="Use the T5Gemma2 *decoder* (causal, EOS-pooling) instead of the "
@@ -410,6 +443,17 @@ def parse_args():
 
     if args.cls_query_pooling:
         args.attention_pooling = True
+
+    # Default cross-attention layer positions (MLLama-style spacing for 26 layers)
+    if args.cross_attention and args.cross_attention_layers is None:
+        args.cross_attention_layers = [3, 8, 13, 18, 23]
+
+    # Resolve default num_pooling_heads from the model config
+    if args.num_pooling_heads is None and args.attention_pooling:
+        from transformers import AutoConfig
+        cfg = AutoConfig.from_pretrained(args.model_path)
+        text_cfg = getattr(cfg, "text_config", None) or getattr(cfg, "encoder", cfg)
+        args.num_pooling_heads = text_cfg.num_attention_heads
 
     args.output_dir = f"{args.output_dir}/{args.experiment_id}"
     args.tb_dir = f"{args.tb_dir}/{args.experiment_id}"
@@ -437,6 +481,70 @@ def main():
     # Detect model family once; drives model class + evaluator settings.
     is_t5gemma2 = "t5gemma-2" in args.model_path.lower()
     is_t5gemma2_decoder = is_t5gemma2 and getattr(args, "use_decoder", False)
+
+    # ---- Validate training-mode flag combinations ----
+    if args.lora_cls_attn and args.cross_attention:
+        raise ValueError(
+            "--lora_cls_attn and --cross_attention are mutually exclusive."
+        )
+    if args.lora_cls_attn and args.lora_cls:
+        raise ValueError(
+            "--lora_cls_attn and --lora_cls are mutually exclusive."
+        )
+    if args.lora_cls_attn and args.attention_pooling:
+        raise ValueError(
+            "--lora_cls_attn already includes GatedAttention pooling; "
+            "do not combine with --attention_pooling."
+        )
+    if args.lora_cls_attn and args.freeze_backbone:
+        raise ValueError(
+            "--lora_cls_attn already freezes the backbone; "
+            "do not combine with --freeze_backbone."
+        )
+    if args.cross_attention and args.lora_cls:
+        raise ValueError(
+            "--cross_attention and --lora_cls are mutually exclusive."
+        )
+    if args.cross_attention and args.attention_pooling:
+        raise ValueError(
+            "--cross_attention already includes GatedAttention pooling over "
+            "cross-attention CLS states; do not combine with --attention_pooling."
+        )
+    if args.cross_attention and args.freeze_backbone:
+        raise ValueError(
+            "--cross_attention and --freeze_backbone are mutually exclusive. "
+            "--cross_attention already freezes the backbone."
+        )
+    if args.lora_cls and args.freeze_backbone:
+        raise ValueError(
+            "--lora_cls and --freeze_backbone are mutually exclusive. "
+            "--lora_cls already freezes the backbone and trains its own "
+            "cross-attention adapters."
+        )
+    if args.lora_cls and args.attention_pooling:
+        raise ValueError(
+            "--lora_cls is incompatible with --attention_pooling. "
+            "--lora_cls builds its own pooling head; do not combine them."
+        )
+    if args.lora_cls and args.cls_query_pooling:
+        raise ValueError(
+            "--lora_cls is incompatible with --cls_query_pooling. "
+            "--lora_cls builds its own CLS mechanism; do not combine them."
+        )
+    if args.freeze_backbone and not args.attention_pooling:
+        raise ValueError(
+            "--freeze_backbone requires --attention_pooling. "
+            "Without a pooling head there are no trainable parameters."
+        )
+    if args.cls_query_pooling and not args.attention_pooling:
+        raise ValueError(
+            "--cls_query_pooling requires --attention_pooling."
+        )
+    if not is_t5gemma2 and (args.lora_cls or args.freeze_backbone):
+        raise ValueError(
+            "--lora_cls and --freeze_backbone are only supported for "
+            "T5Gemma2 models (encoder or decoder)."
+        )
 
     # Hard-coded cache directories per model family (overridable via --cache_dir).
     if args.cache_dir is None:
@@ -543,20 +651,31 @@ def main():
         )
         override_train_step = True
 
+    # Pooling label: gated or standard attention, with number of heads
+    def _pooling_suffix():
+        prefix = "_gated_attn" if args.gated_attention else "_attn_pooling"
+        heads = args.num_pooling_heads
+        return f"{prefix}_h{heads}" if heads is not None else prefix
+
     if is_t5gemma2_decoder:
         model_name = "t5gemma2_decoder"
         if args.lora_cls:
             model_name += f"_lora_cls_r{args.lora_rank}"
         elif args.attention_pooling:
-            model_name += "_attn_pooling"
+            model_name += _pooling_suffix()
             if args.freeze_backbone:
                 model_name += "_frozen"
     elif is_t5gemma2:
         model_name = "t5gemma2"
-        if args.lora_cls:
+        if args.lora_cls_attn:
+            model_name += f"_lora_cls_attn_r{args.lora_rank}"
+        elif args.cross_attention:
+            layers_str = "_".join(str(i) for i in args.cross_attention_layers)
+            model_name += f"_cross_attn_L{layers_str}"
+        elif args.lora_cls:
             model_name += f"_lora_cls_r{args.lora_rank}"
         elif args.attention_pooling:
-            model_name += "_attn_pooling"
+            model_name += _pooling_suffix()
             if args.cls_query_pooling:
                 model_name += "_cls_query"
             if args.freeze_backbone:
@@ -604,7 +723,40 @@ def main():
             model.lm.encoder.gradient_checkpointing_enable()
     elif is_t5gemma2:
         model = F2LLMT5Gemma2(args.model_path, args.max_seq_length, args=args)
-        if args.lora_cls:
+        if args.lora_cls_attn:
+            # LoRA CLS in-attention: freeze entire encoder backbone.
+            # LoRA adapters, CLS query, pooling, projection are in the wrapper
+            # (outside encoder) and stay trainable.  The lora_layers hold
+            # references to frozen encoder layers but own their own LoRA params.
+            model.lm.encoder.gradient_checkpointing_enable()
+            # Enable gradient checkpointing on LoRA wrapper layers too —
+            # they live outside the encoder so encoder.gradient_checkpointing_enable()
+            # doesn't reach them.
+            gc_func = model.lm.encoder.layers[0]._gradient_checkpointing_func
+            for lora_layer in model.lm.lora_layers:
+                lora_layer._gradient_checkpointing_func = gc_func
+                lora_layer.gradient_checkpointing = True
+            for p in model.lm.encoder.parameters():
+                p.requires_grad = False
+            accelerator.print(
+                f"[lora_cls_attn] backbone frozen, LoRA + pooling trainable — "
+                f"trainable params: {sum(p.numel() for p in model.lm.parameters() if p.requires_grad):,}"
+            )
+        elif args.cross_attention:
+            # Cross-attention: freeze backbone, keep cross-attn layers trainable.
+            # Pooling, Projection (in wrapper, outside encoder) are already unfrozen.
+            model.lm.encoder.gradient_checkpointing_enable()
+            for p in model.lm.encoder.parameters():
+                p.requires_grad = False
+            # Unfreeze cross-attention layers and CLS query inside the encoder
+            model.lm.encoder.cls_query.requires_grad = True
+            for p in model.lm.encoder.cross_attn_layers.parameters():
+                p.requires_grad = True
+            accelerator.print(
+                f"[cross_attention] backbone frozen, cross-attn + pooling trainable — "
+                f"trainable params: {sum(p.numel() for p in model.lm.parameters() if p.requires_grad):,}"
+            )
+        elif args.lora_cls:
             # LoRA CLS: encoder is frozen inside the model (torch.no_grad),
             # gradient checkpointing is not needed on the frozen encoder.
             # Explicitly freeze encoder parameters so DeepSpeed doesn't

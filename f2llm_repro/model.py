@@ -128,10 +128,14 @@ class F2LLMT5Gemma2:
 
         attention_pooling = getattr(args, "attention_pooling", False)
         cls_query_pooling = getattr(args, "cls_query_pooling", False)
-        attention_dim = getattr(args, "attention_dim", None)
         attn_implementation = getattr(args, "attn_implementation", attn_implementation)
         lora_cls = getattr(args, "lora_cls", False)
         lora_rank = getattr(args, "lora_rank", 64)
+        cross_attention = getattr(args, "cross_attention", False)
+        cross_attention_layers = getattr(args, "cross_attention_layers", None)
+        lora_cls_attn = getattr(args, "lora_cls_attn", False)
+        num_pooling_heads = getattr(args, "num_pooling_heads", None)
+        gated_attention = getattr(args, "gated_attention", False)
 
         # Build EmbeddingT5Gemma2 (encoder + MeanPooling + Projection + Normalize)
         self._embedding_model, _, _ = get_model_t5gemma2_model(
@@ -139,10 +143,14 @@ class F2LLMT5Gemma2:
             activation_checkpointing=False,  # enabled separately after accelerator.prepare
             attention_pooling=attention_pooling,
             cls_query_pooling=cls_query_pooling,
-            attention_dim=attention_dim,
             attn_implementation=attn_implementation,
             lora_cls=lora_cls,
             lora_rank=lora_rank,
+            cross_attention=cross_attention,
+            cross_attention_layers=cross_attention_layers,
+            lora_cls_attn=lora_cls_attn,
+            num_pooling_heads=num_pooling_heads,
+            gated_attention=gated_attention,
         )
         self._embedding_model.encoder.config.use_cache = False
 
@@ -212,19 +220,21 @@ class F2LLMT5Gemma2Decoder:
         self.device = None
 
         attention_pooling = getattr(args, "attention_pooling", False)
-        attention_dim = getattr(args, "attention_dim", None)
         attn_implementation = getattr(args, "attn_implementation", attn_implementation)
         lora_cls = getattr(args, "lora_cls", False)
         lora_rank = getattr(args, "lora_rank", 64)
+        num_pooling_heads = getattr(args, "num_pooling_heads", None)
+        gated_attention = getattr(args, "gated_attention", False)
 
         self._embedding_model, _, _ = get_model_t5gemma2_decoder(
             model_name_or_path=model_path,
             activation_checkpointing=False,
             attention_pooling=attention_pooling,
-            attention_dim=attention_dim,
             attn_implementation=attn_implementation,
             lora_cls=lora_cls,
             lora_rank=lora_rank,
+            num_pooling_heads=num_pooling_heads,
+            gated_attention=gated_attention,
         )
         self._embedding_model.encoder.config.use_cache = False
 
