@@ -275,6 +275,78 @@ class Projection(nn.Module):
         return hidden_states
 
 
+class ProcrustesAlignment(nn.Module):
+    """Per-view learnable orthogonal alignment of hidden representations.
+
+    Implements the generalized Procrustes scheme from arXiv:2602.06205
+    (Schoenemann 1966, Gower 1975): each of K representations H_k of shape
+    (B, D) is rotated by its own orthogonal matrix Omega_k, applied as
+    H_k @ Omega_k. Constraint Omega_k in O(D) is enforced exactly by
+    ``torch.nn.utils.parametrizations.orthogonal`` (matrix-exponential of a
+    learned skew-symmetric parameter).
+
+    The companion :meth:`gpa_loss` returns the GPA objective
+    ``sum_k || H_k Omega_k - U ||^2`` with U = mean_k(H_k Omega_k), suitable
+    for pre-training the matrices on a frozen encoder.
+
+    Args:
+        num_views: number of representations to align (typically num_layers+1).
+        hidden_size: dimension of each representation.
+        init: ``"identity"`` (no-op warm start) or ``"random"`` (random
+            orthogonal). Identity is recommended when the alignment will be
+            trained jointly with the rest of the model.
+    """
+
+    def __init__(
+        self,
+        num_views: int,
+        hidden_size: int,
+        init: str = "identity",
+    ):
+        super().__init__()
+        assert init in ("identity", "random"), (
+            f"init must be 'identity' or 'random', got '{init}'"
+        )
+        self.num_views = num_views
+        self.hidden_size = hidden_size
+
+        projections = nn.ModuleList()
+        for _ in range(num_views):
+            proj = nn.Linear(hidden_size, hidden_size, bias=False)
+            with torch.no_grad():
+                if init == "identity":
+                    proj.weight.copy_(torch.eye(hidden_size, dtype=proj.weight.dtype))
+                else:
+                    nn.init.orthogonal_(proj.weight)
+            nn.utils.parametrizations.orthogonal(proj, name="weight")
+            projections.append(proj)
+        self.projections = projections
+
+    def forward(self, hidden_states: Tensor) -> Tensor:
+        """Rotate each view by its orthogonal matrix.
+
+        Args:
+            hidden_states: (B, K, D) per-view representations.
+
+        Returns:
+            (B, K, D) rotated representations.
+        """
+        # nn.Linear computes x @ W^T; W is orthogonal, so W^T is too.
+        outs = [proj(hidden_states[:, k]) for k, proj in enumerate(self.projections)]
+        return torch.stack(outs, dim=1)
+
+    def gpa_loss(self, hidden_states: Tensor) -> Tensor:
+        """GPA alignment loss: ``sum_k || H_k Omega_k - U ||^2``.
+
+        Returns the per-element mean of the squared deviations from the
+        consensus U = mean_k(H_k Omega_k). Gradients flow only through
+        Omega_k; pass detached hidden states when the encoder is frozen.
+        """
+        rotated = self.forward(hidden_states)               # (B, K, D)
+        consensus = rotated.mean(dim=1, keepdim=True)       # (B, 1, D)
+        return ((rotated - consensus) ** 2).mean()
+
+
 class MeanPooling(nn.Module):
     def __init__(self, eps=1e-9):
         super().__init__()

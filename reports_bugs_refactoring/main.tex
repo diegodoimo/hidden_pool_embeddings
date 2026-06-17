@@ -1,0 +1,676 @@
+\documentclass{article}
+
+% if you need to pass options to natbib, use, e.g.:
+%     \PassOptionsToPackage{numbers, compress}{natbib}
+% before loading neurips_2025
+
+% The authors should use one of these tracks.
+% Before accepting by the NeurIPS conference, select one of the options below.
+% 0. "default" for submission
+ \usepackage{neurips_2025}
+% the "default" option is equal to the "main" option, which is used for the Main Track with double-blind reviewing.
+% 1. "main" option is used for the Main Track
+%  \usepackage[main]{neurips_2025}
+% 2. "position" option is used for the Position Paper Track
+%  \usepackage[position]{neurips_2025}
+% 3. "dandb" option is used for the Datasets & Benchmarks Track
+ % \usepackage[dandb]{neurips_2025}
+% 4. "creativeai" option is used for the Creative AI Track
+%  \usepackage[creativeai]{neurips_2025}
+% 5. "sglblindworkshop" option is used for the Workshop with single-blind reviewing
+ % \usepackage[sglblindworkshop]{neurips_2025}
+% 6. "dblblindworkshop" option is used for the Workshop with double-blind reviewing
+%  \usepackage[dblblindworkshop]{neurips_2025}
+
+% After being accepted, the authors should add "final" behind the track to compile a camera-ready version.
+% 1. Main Track
+ % \usepackage[main, final]{neurips_2025}
+% 2. Position Paper Track
+%  \usepackage[position, final]{neurips_2025}
+% 3. Datasets & Benchmarks Track
+ % \usepackage[dandb, final]{neurips_2025}
+% 4. Creative AI Track
+%  \usepackage[creativeai, final]{neurips_2025}
+% 5. Workshop with single-blind reviewing
+%  \usepackage[sglblindworkshop, final]{neurips_2025}
+% 6. Workshop with double-blind reviewing
+%  \usepackage[dblblindworkshop, final]{neurips_2025}
+% Note. For the workshop paper template, both \title{} and \workshoptitle{} are required, with the former indicating the paper title shown in the title and the latter indicating the workshop title displayed in the footnote.
+% For workshops (5., 6.), the authors should add the name of the workshop, "\workshoptitle" command is used to set the workshop title.
+% \workshoptitle{WORKSHOP TITLE}
+
+% "preprint" option is used for arXiv or other preprint submissions
+ % \usepackage[preprint]{neurips_2025}
+
+% to avoid loading the natbib package, add option nonatbib:
+%    \usepackage[nonatbib]{neurips_2025}
+
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+%\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+
+
+%---------------------------------------------------------------------------%
+\usepackage{graphicx}%,subfigure}
+\usepackage{wrapfig}
+\usepackage{booktabs}
+\usepackage{natbib}
+\usepackage[colorlinks = true, citecolor = black, urlcolor  = blue]{hyperref}
+%our imports
+
+\usepackage{amsmath}
+\usepackage{cleveref}
+\usepackage{multirow}
+\usepackage{subcaption}
+\captionsetup[table]{skip=6pt}
+
+
+%--------------------------------- new commands ---------------------------%
+
+%norm symbol
+\newcommand{\norm}[1]{\left \lVert #1 \right \rVert}
+
+%nested itemization
+\renewcommand{\labelitemii}{$\star$}
+% comments of the authors (create your own)
+
+\newcommand{\diego}[1]{\textcolor{orange!90!red}{//DD: #1//}}
+
+%-----------------------------------------------------------%
+
+
+
+
+\title{Title}
+
+\newcommand{\samethanks}[1][\value{footnote}]{\footnotemark[#1]}
+
+% 
+%%%%%%%%% AUTHORS - PLEASE UPDATE
+\author{
+}
+
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\end{abstract}
+
+\section{MTEB (Eng. v2)}
+\subsection{References}
+
+\begin{table}[ht]
+\centering
+\resizebox{\columnwidth}{!}{
+\begin{tabular}{lccc@{\hskip\tabcolsep\vrule width 0.1pt\hskip\tabcolsep}ccccccc}
+\toprule
+Model & Size & Avg (Task) & Avg (Type) & Retrieval & Rerank. & STS & Summ. & PairClass. & Class. & Clust. \\
+\midrule        
+EmbeddGemma measured (me) & 0.3B & 68.1 & 62.2  & 51.94  & 36.70 & 83.15 & 37.58 & 84.92 & 87.74 &  53.40 \\
+EmbeddGemma measured (mteb) & 0.3B & 68.1 & 62.2  & 51.94  & 36.70 & 83.15 & 37.58 & 84.92 & 87.74 &  53.40 \\
+EmbeddGemma reported & 0.3B & 69.7 & 65.1  & 55.7 & 47.4 & 83.6 & 37.6 & 87.3 & 87.6  & 56.6 \\
+
+
+\midrule
+Qwen3-emebd measured (me)  & 0.6B   &  &  &  &  &  &  &  &  &  \\
+Qwen3-emebd measured (mteb)  & 0.6B   &  &  &  &  &  &  &  &  &  \\
+Qwen3-emebd (reported)  & 0.6B   &  &  &  &  &  &  &  &  &  \\
+
+Qwen3-emebd measured (me)  & 8B   & 73.60 & 66.37  & 67.74  & 44.87 & 82.94 & 33.94 & 87.94 & 90.34 & 56.83 \\
+Qwen3-emebd measured (mteb)  & 8B   &  &  &  &  &  &  &  &  &  \\
+Qwen3-emebd (reported)  & 8B   & 75.23 & 68.71 & 69.44 & 51.56 & 88.58 & 34.83 & 87.52 & 90.43  & 58.57 \\
+
+\midrule
+\multirow{2}{*}{F2LLMv1}       
+    & 1 &  &  &  &  &  &  &  &  &  \\
+    & 2 &  &  &  &  &  &  &  &  &  \\
+
+\bottomrule 
+\end{tabular}
+}
+\caption{\textbf{F2LLM v1 training data}.}
+\end{table}
+
+
+
+
+
+\label{intro}
+
+\begin{table}[ht]
+\centering
+\resizebox{\columnwidth}{!}{
+\begin{tabular}{lccc@{\hskip\tabcolsep\vrule width 0.1pt\hskip\tabcolsep}ccccccc}
+\toprule
+Model & Train run & Mean(Task) & Mean(Type) & Retrieval & Reranking & STS & Summariz. & PairClass. & Classification & Clustering \\
+\midrule        
+\multirow{2}{*}{t5gemma-2 encoder} 
+    & 1 &  &  &  &  &  &  &  &  &  \\
+    & 2 &  &  &  &  &  &  &  &  &  \\                                
+\midrule
+\multirow{2}{*}{t5gemma-2-decoder}  
+    & 1 &  &  &  &  &  &  &  &  &  \\
+    & 2 &  &  &  &  &  &  &  &  &  \\
+\midrule
+\multirow{2}{*}{gemma3}       
+    & 1 &  &  &  &  &  &  &  &  &  \\
+    & 2 &  &  &  &  &  &  &  &  &  \\
+\midrule
+\multirow{2}{*}{qwen3}    
+    & 1 &  &  &  &  &  &  &  &  &  \\
+    & 2 &  &  &  &  &  &  &  &  &  \\
+\bottomrule 
+\end{tabular}
+}
+\caption{\textbf{F2LLM v1 training data}.}
+\end{table}
+
+
+\begin{table}[ht]
+\centering
+\resizebox{\columnwidth}{!}{
+\begin{tabular}{lccc@{\hskip\tabcolsep\vrule width 0.1pt\hskip\tabcolsep}ccccccc}
+\toprule
+Model & Train run & Date/Hr & Loss & Lr & wd & ep & deepspeed & f2llm code & data curriculum &  \\
+\midrule        
+\multirow{2}{*}{t5gemma-2 encoder}   
+    & 1 &  &  &  &  &  &  &  &  &  \\
+    & 2 &  &  &  &  &  &  &  &  &  \\                                
+\midrule
+\multirow{2}{*}{t5gemma-2-decoder}  
+    & 1 &  &  &  &  &  &  &  &  &  \\
+    & 2 &  &  &  &  &  &  &  &  &  \\
+\midrule
+\multirow{2}{*}{gemma3}       
+    & 1 &  &  &  &  &  &  &  &  &  \\
+    & 2 &  &  &  &  &  &  &  &  &  \\
+\midrule
+\multirow{2}{*}{qwen3}    
+    & 1 &  &  &  &  &  &  &  &  &  \\
+    & 2 &  &  &  &  &  &  &  &  &  \\
+\bottomrule 
+\end{tabular}
+}
+\caption{\textbf{F2LLM v1 dataset: Hyperparameters}.}
+\end{table}
+
+
+
+
+
+\begin{table}[h!]
+\centering
+\begin{tabular}{llrr}
+\hline
+\textbf{Task Type} & \textbf{Stage} & \textbf{\# Tasks} & \textbf{\# Samples} \\
+\hline
+Retrieval & 1 (33\%) & 29 & 1,459,811 \\
+Retrieval & 2 (67\%) & 29 & 2,963,903 \\
+Reranking & 1 (33\%) & 1 & 6,549 \\
+Reranking & 2 (67\%) & 1 & 13,298 \\
+STS & 1 (33\%) & 3 & 1,829 \\
+STS & 2 (67\%) & 3 & 3,715 \\
+Summarization & 1 (33\%) & 2 & 93,846 \\
+Summarization & 2 (67\%) & 2 & 190,537 \\
+PairClassification & 1 (33\%) & 3 & 61,201 \\
+PairClassification & 2 (67\%) & 3 & 124,260 \\
+Classification & 1 (33\%) & 6 & 66,998 \\
+Classification & 2 (67\%) & 6 & 136,033 \\
+Clustering & 1 (33\%) & 18 & 267,955 \\
+Clustering & 2 (67\%) & 18 & 544,053 \\
+\hline
+\end{tabular}
+\caption{Task distribution across stages}
+\label{tab:task_distribution}
+\end{table}
+
+\clearpage 
+
+% =============================================================
+% End-to-end full-data runs (submit_train_f2llm_torchrun, full data)
+% =============================================================
+
+\begin{table}[ht]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\caption{End-to-end full-data runs: hyperparameter setup. All runs share backbone \texttt{t5gemma-2-270m-270m}, $4{\times}$H100 GPUs, global batch $320$, max seq.\ length $1024$, $7$ hard negatives, $1$ epoch, lr $10^{-5}$, weight decay $0.01$.}
+\label{tab:e2e-hparams}
+\begin{tabular}{lll}
+\toprule
+ID & Configuration & Train loss (final) \\
+\midrule
+E1 & plain backbone, EOS pool (baseline) & in-batch 0.159 / hard 0.503 @ step 18500 \\
+E2 & gated attn pool, $h{=}4$, CLS query & in-batch 0.183 / hard 0.554 @ step 18500 \\
+E3 & attn pool, $h{=}4$, CLS query & in-batch 2.553 / hard 1.806 @ step 17000 \\
+E4 & attn pool $h{=}1$, frozen backbone & in-batch 0.879 / hard 1.284 @ step 18500 \\
+E5 & cross-attn pool, layers 3/8/13/18/23 & in-batch 0.541 / hard 1.211 @ step 5000 \\
+E6 & LoRA CLS attn, $r{=}64$ & in-batch 0.447 / hard 1.030 @ step 8000 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\caption{End-to-end full-data runs: MTEB-eng-v2 task accuracies (\%) at end of epoch 1.}
+\label{tab:e2e-perf}
+\begin{tabular}{lrrrrrrrrr}
+\toprule
+ID & Retrieval & Reranking & STS & Summarization & PairClassification & Classification & Clustering & micro & macro \\
+\midrule
+E1 & 53.55 & 45.25 & 81.31 & 30.69 & 81.69 & 87.38 & 55.21 & 67.67 & 62.16 \\
+E2 & 51.62 & 45.13 & 81.19 & 25.36 & 82.46 & 86.10 & 54.63 & 66.73 & 60.93 \\
+E3 & 8.88 & 45.48 & 58.09 & 14.71 & 48.36 & 49.05 & 38.18 & 36.23 & 37.54 \\
+E4 & 28.65 & 39.08 & 69.34 & 29.96 & 73.73 & 69.94 & 43.74 & 52.42 & 50.64 \\
+E5 & 42.20 & 57.14 & 75.89 & 24.59 & 73.35 & 68.04 & 39.55 & 54.87 & 54.39 \\
+E6 & 44.83 & 57.65 & 76.45 & 24.68 & 75.58 & 69.68 & 42.02 & 56.69 & 55.84 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% =============================================================
+% Two-stage full-data runs (submit_train_2stage_f2llm_torchrun)
+% =============================================================
+
+\begin{table}[ht]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\caption{Two-stage full-data runs: hyperparameter setup and stage-1 final loss. Stage 1 trains the pooling head with backbone frozen; stage 2 finetunes end-to-end from the stage-1 head. All runs: $4{\times}$H100, batch $320$, max seq.\ $1024$, $7$ hard negatives, $1$ epoch, S1 fraction $1.0$.}
+\label{tab:s2-hparams}
+\begin{tabular}{ll l l}
+\toprule
+ID & Configuration & S1 loss (final) & S2 loss (final) \\
+\midrule
+T1 & gated attn $h{=}4$: S1 mean (lr$10^{-4}$/wd$0$) $\to$ S2 CLS (lr$10^{-5}$/wd$0.01$) & in-batch 0.798 / hard 1.235 & in-batch 0.187 / hard 0.527 \\
+T2 & gated attn $h{=}4$: S1 mean (lr$10^{-4}$/wd$0$) $\to$ S2 CLS (lr$2{\cdot}10^{-5}$/wd$0.01$) & in-batch 0.798 / hard 1.235 & in-batch 0.197 / hard 0.543 \\
+T3 & gated attn $h{=}4$: S1 mean $\to$ S2 mean (lr$2{\cdot}10^{-5}$/wd$0.01$) & in-batch 0.798 / hard 1.235 & in-batch 4.908 / hard 1.972 \\
+T4 & ungated attn $h{=}4$: S1 mean $\to$ S2 CLS (lr$2{\cdot}10^{-5}$/wd$0.01$) & in-batch 1.188 / hard 1.436 & in-batch 0.292 / hard 0.708 \\
+T5 & gated attn $h{=}8$: S1 mean $\to$ S2 CLS (lr$2{\cdot}10^{-5}$/wd$0.01$) & in-batch 0.947 / hard 1.321 & in-batch 0.549 / hard 0.998 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\caption{Two-stage full-data runs: MTEB-eng-v2 task accuracies (\%) at end of stage 2 epoch 1.}
+\label{tab:s2-perf}
+\begin{tabular}{lrrrrrrrrr}
+\toprule
+ID & Retrieval & Reranking & STS & Summarization & PairClassification & Classification & Clustering & micro & macro \\
+\midrule
+T1 & 48.85 & 44.75 & 80.81 & 29.95 & 82.43 & 86.26 & 55.31 & 66.22 & 61.19 \\
+T2 & 48.93 & 44.87 & 80.51 & 30.40 & 82.45 & 85.87 & 55.10 & 66.07 & 61.16 \\
+T3 & 0.23 & 40.32 & 38.78 & 7.87 & 18.09 & 31.61 & 29.49 & 22.31 & 23.77 \\
+T4 & 47.33 & 43.45 & 79.12 & 26.32 & 81.48 & 80.90 & 51.69 & 63.51 & 58.61 \\
+T5 & 40.15 & 41.42 & 75.38 & 20.65 & 77.09 & 65.49 & 46.31 & 56.32 & 52.36 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% =============================================================
+% Task-specific runs (submit_train_f2llm_torchrun with TASK_TYPES,
+% and submit_train_2stage_single_task_torchrun)
+% =============================================================
+
+\begin{table}[ht]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\caption{Task-specific runs: variants. All runs share batch $320$, max seq.\ $1024$, $1$ epoch, lr $2{\cdot}10^{-5}$, wd $0.01$. Stage-1 (for 2-stage) uses lr $10^{-4}$, wd $0$.}
+\label{tab:ts-hparams}
+\begin{tabular}{ll}
+\toprule
+ID & Configuration \\
+\midrule
+S1 & plain backbone (EOS), single-stage \\
+S2 & gated attn pool $h{=}4$, mean, single-stage \\
+S3 & gated attn pool $h{=}4$, CLS, single-stage \\
+S4 & gated attn $h{=}4$, 2-stage: S1 mean $\to$ S2 CLS \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\caption{Task-specific runs: per-task MTEB accuracy (\%) at end of epoch 1. Each cell is the score for a model finetuned only on that task's data.}
+\label{tab:ts-perf}
+\begin{tabular}{lrrrrrrr}
+\toprule
+ID & Retrieval & Reranking & STS & Summarization & PairClassification & Classification & Clustering \\
+\midrule
+S1 & 53.71 & 43.08 & 62.92 & 29.04 & 82.51 & 60.85 & 57.12 \\
+S2 & -- & 36.96 & 34.61 & 10.66 & 77.56 & 32.32 & 36.61 \\
+S3 & 50.86 & 38.25 & 25.84 & 5.89 & 56.89 & 33.29 & 54.24 \\
+S4 & -- & 34.74 & 22.56 & 15.62 & 80.39 & 31.54 & 38.47 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\caption{Task-specific runs: final reported training loss (Avg/global, in-batch / hard) at the last logged step.}
+\label{tab:ts-train-loss}
+\begin{tabular}{llllllll}
+\toprule
+ID & Retrieval & Reranking & STS & Summarization & PairClassification & Classification & Clustering \\
+\midrule
+S1 & 0.135/0.391 & -- & -- & 0.163/0.180 & 0.408/0.666 & --/0.583 & --/0.698 \\
+S2 & -- & -- & -- & 4.608/2.041 & 1.220/1.170 & --/0.811 & --/1.932 \\
+S3 & 0.163/0.466 & -- & -- & 4.822/2.067 & 5.697/2.109 & --/0.802 & --/0.801 \\
+S4 & -- & -- & -- & 3.132/1.543 & 0.988/1.011 & --/0.926 & --/1.878 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+
+
+
+
+\clearpage
+
+% =============================================================
+% Procrustes alignment of layer representations
+% =============================================================
+
+\section{Generalized Procrustes alignment before attention pooling}
+\label{sec:procrustes}
+
+We add a per-layer learnable orthogonal alignment between the encoder
+and the attention-pooling head, following the Generalized Procrustes
+Analysis (GPA) scheme of Sch\"onemann (1966) / Gower (1975) as adapted
+by \citet{arxiv:2602.06205}. Each of the $K$ per-view representations
+$H_k \in \mathbb{R}^{B\times D}$ that the pooling head normally
+consumes is first rotated by its own orthogonal matrix
+$\Omega_k \in O(D)$, applied right-multiplicatively as $H_k\Omega_k$.
+The pooling head then attends over the rotated stack
+$(H_1\Omega_1,\dots,H_K\Omega_K)$.
+
+\paragraph{Parameterisation.}
+The orthogonal constraint is enforced exactly via
+\texttt{torch.nn.utils.parametrizations.orthogonal} (matrix-exponential
+of a learned skew-symmetric matrix). The new
+\texttt{ProcrustesAlignment} module in \texttt{models/modules.py}
+holds $K$ independent linear layers with the parametrisation applied
+on top. Initialisation is selectable: \texttt{identity} (the
+parameter is initialised to $I$, so the alignment is a no-op at step
+zero and finetuning starts from the un-aligned baseline) or
+\texttt{random} (random orthogonal).
+
+\paragraph{GPA self-supervised loss.}
+The same module exposes
+\[
+  \mathcal{L}_{\text{GPA}}(H)
+  = \frac{1}{B K D}\sum_{k=1}^{K}\norm{H_k\Omega_k - U}_F^2,
+  \qquad
+  U = \tfrac{1}{K}\sum_{k=1}^{K} H_k\Omega_k,
+\]
+i.e.\ the squared deviation of each rotated view from the per-sample
+consensus $U$ implicit in standard GPA. Backpropagation through this
+loss only touches the orthogonal matrices --- the encoder runs under
+\texttt{torch.no\_grad()} inside \texttt{compute\_gpa\_loss}.
+
+\paragraph{Integration into the three pooling heads.}
+The alignment plugs in front of the pooling stage of all three T5Gemma2
+attention-pooling variants. The per-head value of $K$ is
+\[
+  K =
+  \begin{cases}
+    L+1 & \text{(\texttt{HiddenPool}, \texttt{pooling\_mode} $\in$ \{mean, cls\})}\\
+    2(L+1) & \text{(\texttt{HiddenPool}, \texttt{pooling\_mode} = both)}\\
+    \lvert\text{cross\_attention\_layers}\rvert + 1 & \text{(\texttt{CrossAttention})}\\
+    L & \text{(\texttt{LoRACLSAttn})}
+  \end{cases}
+\]
+where $L$ is \texttt{num\_hidden\_layers}. Each forward was refactored
+to expose an \texttt{\_encode\_views(\dots)} helper that returns the
+$(B,K,D)$ stack consumed by the pool, with the optional
+\texttt{procrustes} layer inserted immediately before pooling. A
+\texttt{gpa\_loss} kwarg on the \texttt{forward} method routes calls
+through the GPA loss path while keeping the DeepSpeed engine wrapper
+in the loop (so backward sees the right parameter set).
+
+\paragraph{Two-stage workflow.}
+The motivation for the orthogonal alignment is to pre-train the
+$\Omega_k$ on a frozen encoder before contrastive finetuning, so the
+finetuning starts from already-aligned layer representations. The
+training driver \texttt{train\_f2llm\_repro.py} exposes:
+
+\begin{itemize}
+  \item \texttt{--procrustes\_alignment} enable the alignment layer.
+  \item \texttt{--procrustes\_init \{identity, random\}} controls
+        $\Omega_k$ initialisation.
+  \item \texttt{--procrustes\_pretrain} (implies
+        \texttt{--procrustes\_alignment}) freezes every parameter
+        except \texttt{model.lm.procrustes}, switches the loss to
+        $\mathcal{L}_{\text{GPA}}$, runs a dedicated loop
+        \texttt{pretrain\_procrustes(\dots)} that calls
+        \texttt{model.lm(\dots, gpa\_loss=True)} per batch, and saves
+        the pre-trained state to \texttt{output\_dir/model.pt}.
+  \item \texttt{--procrustes\_lr} optional separate learning rate
+        for the pre-training stage.
+  \item \texttt{--procrustes\_checkpoint <path>} for the
+        contrastive finetuning run: loads only the
+        \texttt{procrustes.*} tensors from a prior pre-training
+        \texttt{model.pt}, leaving every other weight at its default
+        initialisation. The matrices then continue to be updated
+        end-to-end together with the rest of the model.
+\end{itemize}
+
+\noindent The flag \texttt{--procrustes\_alignment} is also surfaced
+in \texttt{utils/arguments.py} and threaded through \texttt{train.py}
+so both training drivers can opt in. A validation check rejects
+\texttt{--procrustes\_alignment} when none of \texttt{--attention\_pooling},
+\texttt{--lora\_cls\_attn}, or \texttt{--cross\_attention} is set
+(those are the heads that consume a per-view stack).
+
+\paragraph{Files touched.}
+\texttt{models/modules.py} (new \texttt{ProcrustesAlignment}),
+\texttt{models/t5gemma2model.py} (three pooling heads refactored:
+constructor flag, \texttt{\_encode\_views} helper, \texttt{gpa\_loss}
+forward kwarg, \texttt{compute\_gpa\_loss} method; factory
+\texttt{get\_model\_t5gemma2\_model} propagates the new kwargs),
+\texttt{f2llm\_repro/model.py} (\texttt{F2LLMT5Gemma2} reads
+\texttt{args.procrustes\_alignment} / \texttt{args.procrustes\_init}),
+\texttt{train\_f2llm\_repro.py} (CLI flags, validation, freeze/load
+branches, \texttt{pretrain\_procrustes} loop, save logic),
+\texttt{utils/arguments.py} and \texttt{train.py} (flag pass-through).
+
+
+% =============================================================
+% Catalogue of report files still tracking the codebase
+% =============================================================
+
+\section{Report directory --- current contents}
+\label{sec:reports-catalog}
+
+The \texttt{reports\_bugs\_refactoring/} directory accumulates short
+markdown / text reports documenting past bug fixes and refactors.
+Two files (\texttt{tokenizers\_parallelism.md} and
+\texttt{compile\_error\_solved.md}) were removed: the first
+contradicts the current \texttt{train.py} setting
+(\texttt{TOKENIZERS\_PARALLELISM="true"}), and the second largely
+duplicated \texttt{inplace\_op\_breaks\_backward.md} with an
+additional ``fused query+doc forward'' note that no longer matches
+\texttt{train.py}. What remains is summarised below; each entry is
+the gist of the report plus a pointer to the code path that still
+matches it.
+
+\paragraph{\texttt{bug\_arguana.md} --- corpus all-gather inside
+\texttt{search()}.}
+DDP retrieval scores were halving with $\text{world\_size}>1$ because
+the corpus chunk encoded with \texttt{divided\_by\_chunks=True}
+returned local-only embeddings; each rank scored against $1/W$ of the
+corpus. The fix all-gathers \texttt{local\_corpus\_chunk} and
+\texttt{local\_indices} inside the search loop (with
+\texttt{[:chunk\_n]} trim to remove the padding the length-sorted
+sampler introduces). Still present in
+\texttt{inference/helpers.py:search()} around the
+\texttt{dist.all\_gather} block.
+
+\paragraph{\texttt{inplace\_op\_breaks\_backward.md} --- inplace
+mutations on autograd tensors broke \texttt{torch.compile} backward.}
+\texttt{pairwise\_dot\_squared} in both
+\texttt{EmbeddingGemmaLossDistributed} and
+\texttt{EmbeddingGemmaLossHardNegatives} mutated \texttt{dots\_sq} via
+\texttt{fill\_diagonal\_} / \texttt{masked\_fill\_}; the fix replaces
+these with \texttt{torch.eye(B, dtype=bool)} +
+\texttt{masked\_fill(\dots, 0)} out-of-place. Still applied in
+\texttt{utils/losses.py}. The \texttt{fill\_diagonal\_(False)} calls
+on non-autograd boolean tensors are intentionally left in place
+because they cannot trigger the compile failure.
+
+\paragraph{\texttt{memory\_optimization\_changes.txt} --- two-phase
+memory rework for BioASQ (14\,M rows).} The first phase introduced
+\texttt{LazyCorpusDict} (\texttt{tasks/data\_helpers.py}) backing the
+old \texttt{dict[str, dict[str, str]]} pattern with an \texttt{id}
+$\to$ index lookup over the existing text/title arrays, plus
+\texttt{del} + \texttt{gc.collect()} at seven hot spots in
+\texttt{tasks/retrieval\_loaders.py}. The second phase replaced
+\texttt{Dataset(pa.table(\dots))} with a write-IPC-then-mmap
+pipeline in \texttt{tasks/load\_datasets.py} to avoid the
+\texttt{combine\_chunks()} double-copy that pushed each process past
+its 125\,GB budget. Estimated peak savings: 15--25\,GB.
+
+\paragraph{\texttt{models\_report.txt} --- bug history of the Gemma3
+pooling models and the seed of the T5Gemma2 pooling variants.}
+Documents eight fixes in \texttt{models/gemma3textmodel.py} +
+\texttt{models/gemma3model.py} (\texttt{mean\_pool} keepdim,
+\texttt{GatedAttention} kwargs, missing value/output projections,
+\texttt{output\_hidden\_states} not forced True,
+\texttt{torch.cat} $\to$ \texttt{torch.stack}, function-name
+collision\dots), plus the initial port to T5Gemma2
+(\texttt{EmbeddingT5Gemma2}, \texttt{EmbeddingT5Gemma2HiddenPool},
+\texttt{--cls\_query\_pooling} option). All of the bug fixes are
+still in place; the CLS-query and HiddenPool architectures described
+here are the same ones that now host the Procrustes alignment
+introduced in Sec.~\ref{sec:procrustes}.
+
+\paragraph{\texttt{mteb\_20task\_subset\_selection.md} --- the
+``reduced'' MTEB-eng-v2 task list.} A hand-picked subset of 20 of the
+40 MTEB-eng-v2 tasks (5 retrieval, 4 clustering, 1 reranking, 3 STS,
+4 classification, 2 pair-classification, 1 summarisation) chosen to
+cut combined embeddinggemma + qwen3 evaluation time by $\sim$75\,\%
+($2181\text{s} \to 554\text{s}$) while keeping per-category averages
+within $\pm 3\%$ of the full set. The selection is exposed as the
+\texttt{mteb\_eng\_v2\_reduced} option in \texttt{tasks/} +
+\texttt{get\_eval\_tasks(\dots)}.
+
+\paragraph{\texttt{overhead\_materialization\_python.md} --- the
+20-minute string materialisation bottleneck in qrels filtering and
+hard-negative mining.} Calls like
+\texttt{pd.Series(qrels\_dataset["query\_id"])} and
+\texttt{set(corpus\_dataset["id"])} forced HuggingFace
+\texttt{Dataset} to decode 14\,M-row Arrow columns into Python
+strings, each materialisation costing $\sim$3--4 minutes (six call
+sites $\to$ 20\,min total). The fix uses PyArrow compute
+(\texttt{pc.is\_in}, \texttt{pc.all}, \texttt{pc.count\_distinct})
+directly on \texttt{dataset.data.table}, plus
+\texttt{column(\dots).to\_pylist()} caching in \texttt{mine\_one()}
+to avoid the eight redundant materialisations across
+\texttt{search()} + \texttt{get\_hard\_negatives()}. Expected total
+runtime: 23\,min $\to$ 1--2\,min. Still applied in
+\texttt{utils/create\_datasets.py} and
+\texttt{hard\_negative\_mining.py}.
+
+\paragraph{\texttt{report\_train.md} --- the hard-negatives training
+pipeline.} Documents the parquet layout under
+\texttt{datasets\_negatives/<model>/} (query/positive/up-to-24
+negatives per row, organised by retrieval / NLI / STS subfolders),
+the new CLI surface (\texttt{--negatives\_dir},
+\texttt{--num\_hard\_negatives}, \texttt{--instruction\_template},
+\texttt{--max\_query\_len}, \texttt{--max\_passage\_len}), the
+\texttt{TrainTaskMetadata} / \texttt{FOLDER\_TO\_TASK} mapping that
+picks the right instruction template per subfolder, and the
+\texttt{collate\_fn\_with\_hard\_negatives} / training-loop changes
+that forward $B + B + B\!\cdot\! N$ sequences per step into
+\texttt{EmbeddingGemmaLossHardNegatives}. The pipeline is still the
+backbone of \texttt{train.py}.
+
+\paragraph{\texttt{sampler\_shuffling\_considerations.md} ---
+\texttt{DatasetAwareSampler}.} A DDP-aware sampler in
+\texttt{utils/dataloader\_helpers.py} that guarantees every batch
+contains rows from a single dataset, with two strategies behind the
+\texttt{--batch\_strategy} flag: \texttt{sequential} (one dataset
+fully consumed before the next; only the dataset order is shuffled
+per epoch) and \texttt{grouped} (round-robin batches across
+datasets). Both pad each dataset to a multiple of
+\texttt{batch\_size $\times$ num\_replicas} and interleave indices
+across ranks so per-rank length distributions stay balanced. The
+report also justifies why length-sorted order is kept inside each
+dataset (padding-efficiency dominates over the shuffle regularisation
+benefit in single-epoch contrastive training). The
+\texttt{--batch\_strategy} options enumerated here
+(\texttt{mixed}, \texttt{sequential}, \texttt{grouped}, plus the
+later \texttt{f2llm\_multi}) are the ones currently accepted in
+\texttt{utils/arguments.py}.
+
+\paragraph{\texttt{split\_changes\_summary.txt} --- adding
+\texttt{validation}/\texttt{dev} splits to training data.} Documents
+16 dataset loaders that were widened from \texttt{train} to
+\texttt{train+validation} (or \texttt{train+dev}), covering the NLI
+loaders (snli, mnli, anli, xnli), STS (stsbenchmark), 10 retrieval
+loaders (squad, cnndm, xsum, miracl, mrtydi, hotpotqa, fiqa2018,
+fever, msmarco, nfcorpus), and \texttt{kalm\_tasks/all\_nli}. The
+report also lists the datasets explicitly left untouched (no
+\texttt{validation}/\texttt{dev} available, or an mteb-style split
+without an evaluation \texttt{test} part). The widened splits are
+still active in \texttt{tasks/}.
+
+\paragraph{\texttt{train\_bugs.txt} --- training-script review
+(2026-02-28).} Reports four bugs and several improvement
+suggestions. The applied fixes are: Bug 1 ---
+\texttt{batch = \{k: v.to(\dots) if isinstance(v, Tensor) else v\}}
+to stop \texttt{collate\_fn\_with\_hard\_negatives}'s plain-int
+\texttt{num\_hard\_negatives} from crashing in
+\texttt{Trainer.train(\dots)}; Bug 4 ---
+\texttt{np.arange(step, max\_train\_steps+1, step)} so the first
+log/eval slot is reachable (\texttt{utils/helpers.py:get\_cpt\_steps}).
+Bugs 2 (3-D doc-id mask that only masks the positive column) and
+3 (skip the hard-negative forward when the distributed loss ignores
+them) and the six suggestions (spherical-loss weighting, symmetric
+loss, configurable similarity-margin, restricting the spherical
+loss to positives, distributed loss + hard negatives, gradient
+accumulation, shuffling) are tracked but not yet applied to the
+current code; treat this file as a partial backlog.
+
+\paragraph{\texttt{training\_improvements.md} --- GPU-utilisation
+optimisations (270M, short sequences).} Removed the 30\,\% idle
+fraction caused by per-op kernel-launch overhead via: (1) fused
+\texttt{AdamW} (\texttt{utils/optimizer.py}, \texttt{fused=True}),
+(2) merging the query and document forward passes into a single
+\texttt{self.model(\dots)} call in \texttt{train.py}, (3)
+\texttt{non\_blocking=True} on the H2D copies (combined with the
+DataLoader's \texttt{pin\_memory=True}), (4) DDP
+\texttt{static\_graph=True} +
+\texttt{gradient\_as\_bucket\_view=True} so the bucket schedule is
+not recomputed each step. Optimisations 1, 2, 3, 5 still hold;
+optimisation 4 (\texttt{mode="max-autotune"} on
+\texttt{torch.compile}) is documented but the current
+\texttt{train.py} uses the default compile mode --- adopt
+\texttt{max-autotune} or \texttt{reduce-overhead} explicitly to get
+the CUDA-graph capture benefit described here.
+
+
+\end{document}
+
+

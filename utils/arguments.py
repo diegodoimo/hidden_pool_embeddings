@@ -88,6 +88,22 @@ def parse_args():
     parser.add_argument("--gated_attention", action="store_true")
     parser.add_argument("--cls_query_pooling", action="store_true")
     parser.add_argument(
+        "--procrustes_alignment",
+        action="store_true",
+        help="Insert a per-layer orthogonal alignment (Generalized Procrustes, "
+        "arXiv:2602.06205) before the attention-pooling head. Applies "
+        "H_k @ Omega_k to each layer representation with Omega_k constrained "
+        "to the orthogonal group.",
+    )
+    parser.add_argument(
+        "--procrustes_init",
+        type=str,
+        default="identity",
+        choices=["identity", "random"],
+        help="Initialisation for the orthogonal matrices: 'identity' (no-op "
+        "warm start) or 'random' orthogonal.",
+    )
+    parser.add_argument(
         "--attn_implementation",
         type=str,
         default="sdpa",

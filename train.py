@@ -582,6 +582,8 @@ def main():
             attn_implementation=args.attn_implementation,
             num_pooling_heads=getattr(args, "num_pooling_heads", None),
             gated_attention=getattr(args, "gated_attention", False),
+            procrustes_alignment=getattr(args, "procrustes_alignment", False),
+            procrustes_init=getattr(args, "procrustes_init", "identity"),
         )
 
         model_name = "t5gemma2"

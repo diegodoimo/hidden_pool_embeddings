@@ -135,6 +135,8 @@ class F2LLMT5Gemma2:
         num_pooling_heads = getattr(args, "num_pooling_heads", None)
         gated_attention = getattr(args, "gated_attention", False)
         pooling_mode = getattr(args, "pooling_mode", "mean")
+        procrustes_alignment = getattr(args, "procrustes_alignment", False)
+        procrustes_init = getattr(args, "procrustes_init", "identity")
 
         # Build EmbeddingT5Gemma2 (encoder + MeanPooling + Projection + Normalize)
         self._embedding_model, _, _ = get_model_t5gemma2_model(
@@ -149,6 +151,8 @@ class F2LLMT5Gemma2:
             num_pooling_heads=num_pooling_heads,
             gated_attention=gated_attention,
             pooling_mode=pooling_mode,
+            procrustes_alignment=procrustes_alignment,
+            procrustes_init=procrustes_init,
         )
         self._embedding_model.encoder.config.use_cache = False
 

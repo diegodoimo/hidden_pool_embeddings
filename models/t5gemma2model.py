@@ -44,6 +44,7 @@ from models.modules import (
     Normalize,
     AttentionPooling,
     GatedAttention,
+    ProcrustesAlignment,
 )
 
 
@@ -237,6 +238,8 @@ def get_model_t5gemma2_model(
     num_pooling_heads: int | None = None,
     gated_attention: bool = False,
     pooling_mode: str = "mean",
+    procrustes_alignment: bool = False,
+    procrustes_init: str = "identity",
 ):
     """
     Build a T5Gemma2-based embedding model, mirroring the interface of
@@ -253,18 +256,24 @@ def get_model_t5gemma2_model(
         encoder.config.use_cache = False
 
     pooling_kwargs = dict(num_attention_heads=num_pooling_heads, gated_attention=gated_attention)
+    procrustes_kwargs = dict(
+        procrustes_alignment=procrustes_alignment, procrustes_init=procrustes_init,
+    )
 
     if lora_cls_attn:
         model = EmbeddingT5Gemma2LoRACLSAttn(
-            encoder, rank=lora_rank, **pooling_kwargs,
+            encoder, rank=lora_rank, **pooling_kwargs, **procrustes_kwargs,
         )
     elif cross_attention:
-        model = EmbeddingT5Gemma2CrossAttention(encoder, **pooling_kwargs)
+        model = EmbeddingT5Gemma2CrossAttention(
+            encoder, **pooling_kwargs, **procrustes_kwargs,
+        )
     elif attention_pooling:
         model = EmbeddingT5Gemma2HiddenPool(
             encoder,
             pooling_mode=pooling_mode,
             **pooling_kwargs,
+            **procrustes_kwargs,
         )
     else:
         model = EmbeddingT5Gemma2(encoder)
@@ -350,6 +359,8 @@ class EmbeddingT5Gemma2HiddenPool(nn.Module):
         num_attention_heads: int | None = None,
         gated_attention: bool = False,
         pooling_mode: str = "mean",
+        procrustes_alignment: bool = False,
+        procrustes_init: str = "identity",
     ):
         super().__init__()
         assert pooling_mode in ("both", "cls", "mean"), (
@@ -368,6 +379,15 @@ class EmbeddingT5Gemma2HiddenPool(nn.Module):
         # Learnable CLS query embedding — only used for "cls" and "both" modes
         if pooling_mode in ("cls", "both"):
             self.cls_query = nn.Parameter(torch.randn(1, 1, h) * 0.02)
+        # Optional per-layer orthogonal alignment applied before pooling.
+        if procrustes_alignment:
+            num_layers = self.encoder.text_config.num_hidden_layers
+            num_views = (num_layers + 1) * (2 if pooling_mode == "both" else 1)
+            self.procrustes = ProcrustesAlignment(
+                num_views=num_views, hidden_size=h, init=procrustes_init,
+            )
+        else:
+            self.procrustes = None
         # When True and pooling_mode=="mean", run the encoder under
         # torch.no_grad() — safe because no trainable parameter (e.g.
         # cls_query) flows through the encoder in mean mode.  Set by the
@@ -397,7 +417,7 @@ class EmbeddingT5Gemma2HiddenPool(nn.Module):
             attention_mask = torch.cat([cls_mask, attention_mask], dim=1)  # (B, 1+L)
         return inputs_embeds, attention_mask
 
-    def forward(
+    def _encode_views(
         self,
         input_ids=None,
         attention_mask=None,
@@ -405,6 +425,8 @@ class EmbeddingT5Gemma2HiddenPool(nn.Module):
         inputs_embeds=None,
         **kwargs,
     ):
+        """Run the encoder and return the (B, K, D) per-view stack
+        consumed by the pooling head — before any Procrustes rotation."""
         if self.pooling_mode == "mean":
             # No CLS token — mean-pool per layer directly.
             # When encoder is frozen (stage 1), skip autograd graph
@@ -419,40 +441,75 @@ class EmbeddingT5Gemma2HiddenPool(nn.Module):
                     output_hidden_states=True,
                     **kwargs,
                 )
-                hidden = torch.stack(outputs.hidden_states, dim=1)  # [B, L+1, D]
-        else:
-            # Prepend CLS token
-            inputs_embeds, attention_mask = self._prepend_cls(
-                input_ids, inputs_embeds, attention_mask
-            )
-            if self.pooling_mode == "both":
-                outputs = self.encoder(
-                    input_ids=None,
-                    attention_mask=attention_mask,
-                    position_ids=None,
-                    inputs_embeds=inputs_embeds,
-                    output_hidden_states=True,
-                    cls_position=0,
-                    cls_and_mean_pool=True,
-                    **kwargs,
-                )
-                hidden = torch.stack(outputs.hidden_states, dim=1)  # (B, 2*(L+1), H)
-            else:  # "cls"
-                outputs = self.encoder(
-                    input_ids=None,
-                    attention_mask=attention_mask,
-                    position_ids=None,
-                    inputs_embeds=inputs_embeds,
-                    output_hidden_states=True,
-                    cls_position=0,
-                    **kwargs,
-                )
-                hidden = torch.stack(outputs.hidden_states, dim=1)  # (B, L+1, H)
+                return torch.stack(outputs.hidden_states, dim=1)  # [B, L+1, D]
 
+        # Prepend CLS token
+        inputs_embeds, attention_mask = self._prepend_cls(
+            input_ids, inputs_embeds, attention_mask
+        )
+        if self.pooling_mode == "both":
+            outputs = self.encoder(
+                input_ids=None,
+                attention_mask=attention_mask,
+                position_ids=None,
+                inputs_embeds=inputs_embeds,
+                output_hidden_states=True,
+                cls_position=0,
+                cls_and_mean_pool=True,
+                **kwargs,
+            )
+            return torch.stack(outputs.hidden_states, dim=1)  # (B, 2*(L+1), H)
+        # "cls"
+        outputs = self.encoder(
+            input_ids=None,
+            attention_mask=attention_mask,
+            position_ids=None,
+            inputs_embeds=inputs_embeds,
+            output_hidden_states=True,
+            cls_position=0,
+            **kwargs,
+        )
+        return torch.stack(outputs.hidden_states, dim=1)  # (B, L+1, H)
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        inputs_embeds=None,
+        gpa_loss: bool = False,
+        **kwargs,
+    ):
+        if gpa_loss:
+            return self.compute_gpa_loss(
+                input_ids=input_ids, attention_mask=attention_mask, **kwargs,
+            )
+        hidden = self._encode_views(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            inputs_embeds=inputs_embeds,
+            **kwargs,
+        )
+        if self.procrustes is not None:
+            hidden = self.procrustes(hidden)
         hidden, _ = self.pooling(hidden)  # [B, D]
         hidden = self.projection(hidden)
         hidden = self.normalize(hidden)
         return hidden
+
+    def compute_gpa_loss(self, input_ids=None, attention_mask=None, **kwargs):
+        """GPA loss over the per-view stack. Encoder runs under no_grad —
+        only the Procrustes matrices receive gradients."""
+        if self.procrustes is None:
+            raise RuntimeError(
+                "compute_gpa_loss requires procrustes_alignment=True at construction"
+            )
+        with torch.no_grad():
+            hidden = self._encode_views(
+                input_ids=input_ids, attention_mask=attention_mask, **kwargs,
+            )
+        return self.procrustes.gpa_loss(hidden)
 
 
 class EmbeddingT5Gemma2CrossAttention(nn.Module):
@@ -486,6 +543,8 @@ class EmbeddingT5Gemma2CrossAttention(nn.Module):
         encoder: T5Gemma2CrossAttentionEncoder,
         num_attention_heads: int | None = None,
         gated_attention: bool = False,
+        procrustes_alignment: bool = False,
+        procrustes_init: str = "identity",
     ):
         super().__init__()
         self.encoder = encoder
@@ -497,6 +556,14 @@ class EmbeddingT5Gemma2CrossAttention(nn.Module):
             hidden_size=h,
             num_attention_heads=num_attention_heads,
         )
+        # Optional orthogonal alignment over the (num_cross_attn+1) CLS states.
+        if procrustes_alignment:
+            num_views = len(self.encoder.cross_attention_layer_ids) + 1
+            self.procrustes = ProcrustesAlignment(
+                num_views=num_views, hidden_size=h, init=procrustes_init,
+            )
+        else:
+            self.procrustes = None
         self.projection = Projection(input_dim=h, hidden_dim=4 * h)
         self.normalize = Normalize()
 
@@ -504,7 +571,7 @@ class EmbeddingT5Gemma2CrossAttention(nn.Module):
     def device(self):
         return next(self.encoder.parameters()).device
 
-    def forward(
+    def _encode_views(
         self,
         input_ids=None,
         attention_mask=None,
@@ -512,6 +579,8 @@ class EmbeddingT5Gemma2CrossAttention(nn.Module):
         inputs_embeds=None,
         **kwargs,
     ):
+        """Run the cross-attention encoder and return the (B, K, D) stack of
+        per-block CLS states (pre-Procrustes)."""
         outputs = self.encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -520,13 +589,47 @@ class EmbeddingT5Gemma2CrossAttention(nn.Module):
             output_hidden_states=False,
             **kwargs,
         )
-
         # cls_state: (B, num_cross_attn+1, H) — initial + one per block
-        hidden = outputs.cls_state
+        return outputs.cls_state
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        inputs_embeds=None,
+        gpa_loss: bool = False,
+        **kwargs,
+    ):
+        if gpa_loss:
+            return self.compute_gpa_loss(
+                input_ids=input_ids, attention_mask=attention_mask, **kwargs,
+            )
+        hidden = self._encode_views(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            inputs_embeds=inputs_embeds,
+            **kwargs,
+        )
+        if self.procrustes is not None:
+            hidden = self.procrustes(hidden)
         hidden, _ = self.pooling(hidden)  # (B, H)
         hidden = self.projection(hidden)
         hidden = self.normalize(hidden)
         return hidden
+
+    def compute_gpa_loss(self, input_ids=None, attention_mask=None, **kwargs):
+        """GPA loss over the per-block CLS states (encoder under no_grad)."""
+        if self.procrustes is None:
+            raise RuntimeError(
+                "compute_gpa_loss requires procrustes_alignment=True at construction"
+            )
+        with torch.no_grad():
+            hidden = self._encode_views(
+                input_ids=input_ids, attention_mask=attention_mask, **kwargs,
+            )
+        return self.procrustes.gpa_loss(hidden)
 
 
 class EmbeddingT5Gemma2LoRACLSAttn(nn.Module):
@@ -551,6 +654,8 @@ class EmbeddingT5Gemma2LoRACLSAttn(nn.Module):
         rank: int = 64,
         num_attention_heads: int | None = None,
         gated_attention: bool = False,
+        procrustes_alignment: bool = False,
+        procrustes_init: str = "identity",
     ):
         super().__init__()
         self.encoder = encoder
@@ -574,6 +679,14 @@ class EmbeddingT5Gemma2LoRACLSAttn(nn.Module):
             hidden_size=h,
             num_attention_heads=num_attention_heads,
         )
+        # Optional orthogonal alignment over the per-layer CLS intermediates.
+        if procrustes_alignment:
+            num_views = encoder.text_config.num_hidden_layers
+            self.procrustes = ProcrustesAlignment(
+                num_views=num_views, hidden_size=h, init=procrustes_init,
+            )
+        else:
+            self.procrustes = None
         self.projection = Projection(input_dim=h, hidden_dim=4 * h)
         self.normalize = Normalize()
 
@@ -627,7 +740,7 @@ class EmbeddingT5Gemma2LoRACLSAttn(nn.Module):
         }
 
     # ------------------------------------------------------------------
-    def forward(
+    def _encode_views(
         self,
         input_ids=None,
         attention_mask=None,
@@ -635,6 +748,8 @@ class EmbeddingT5Gemma2LoRACLSAttn(nn.Module):
         inputs_embeds=None,
         **kwargs,
     ):
+        """Forward through the LoRA-wrapped encoder and stack the CLS
+        intermediates into a (B, num_layers, H) per-view tensor."""
         enc = self.encoder
         text_config = enc.text_config
 
@@ -688,12 +803,46 @@ class EmbeddingT5Gemma2LoRACLSAttn(nn.Module):
             )
             cls_intermediates.append(hidden_states[:, 0, :])  # (B, H)
 
-        # 8. Pool CLS intermediates → Projection → Normalise
-        hidden = torch.stack(cls_intermediates, dim=1)  # (B, num_layers, H)
+        return torch.stack(cls_intermediates, dim=1)  # (B, num_layers, H)
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        inputs_embeds=None,
+        gpa_loss: bool = False,
+        **kwargs,
+    ):
+        if gpa_loss:
+            return self.compute_gpa_loss(
+                input_ids=input_ids, attention_mask=attention_mask, **kwargs,
+            )
+        hidden = self._encode_views(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            inputs_embeds=inputs_embeds,
+            **kwargs,
+        )
+        if self.procrustes is not None:
+            hidden = self.procrustes(hidden)
         hidden, _ = self.pooling(hidden)  # (B, H)
         hidden = self.projection(hidden)
         hidden = self.normalize(hidden)
         return hidden
+
+    def compute_gpa_loss(self, input_ids=None, attention_mask=None, **kwargs):
+        """GPA loss over the per-layer CLS intermediates (encoder no_grad)."""
+        if self.procrustes is None:
+            raise RuntimeError(
+                "compute_gpa_loss requires procrustes_alignment=True at construction"
+            )
+        with torch.no_grad():
+            hidden = self._encode_views(
+                input_ids=input_ids, attention_mask=attention_mask, **kwargs,
+            )
+        return self.procrustes.gpa_loss(hidden)
 
 
 # ---------------------------------------------------------------------------
