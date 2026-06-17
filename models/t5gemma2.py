@@ -884,6 +884,8 @@ def sliding_window_mask_function(sliding_window: int, is_causal=True) -> Callabl
 
 
 class T5Gemma2Encoder(T5Gemma2PreTrainedModel):
+    """T5Gemma2 text encoder (encoder-only, no cross-attention)."""
+
     config: T5Gemma2EncoderConfig
     _can_record_outputs = {
         "attentions": T5Gemma2SelfAttention,
@@ -894,7 +896,6 @@ class T5Gemma2Encoder(T5Gemma2PreTrainedModel):
         self,
         config: T5Gemma2EncoderConfig,
         eoi_token_index: int = 256_000,
-        cross_attention_layers: list[int] | None = None,
     ):
         super().__init__(config)
         text_config = config.text_config
@@ -924,26 +925,6 @@ class T5Gemma2Encoder(T5Gemma2PreTrainedModel):
 
         self.text_config = text_config
 
-        # ---- Cross-attention layers for CLS token extraction (MLLama-style) ----
-        self.cross_attention_layer_ids = (
-            cross_attention_layers if cross_attention_layers else None
-        )
-        if self.cross_attention_layer_ids is not None:
-            self._cross_attention_layer_set = set(self.cross_attention_layer_ids)
-            self.cls_query = nn.Parameter(
-                torch.randn(1, 1, text_config.hidden_size) * 0.02
-            )
-            # One block per selected layer + one for the final encoder output
-            self.cross_attn_layers = nn.ModuleList(
-                [
-                    T5Gemma2CrossAttentionEncoderLayer(text_config, layer_idx=idx)
-                    for idx in self.cross_attention_layer_ids
-                ]
-            )
-            self.cross_attn_final = T5Gemma2CrossAttentionEncoderLayer(
-                text_config, layer_idx=text_config.num_hidden_layers
-            )
-
         # Propagate attn implementation from the outer config to text_config,
         # so that T5Gemma2SelfAttention (which receives text_config) can find it.
         if not getattr(text_config, "_attn_implementation", None):
@@ -954,38 +935,13 @@ class T5Gemma2Encoder(T5Gemma2PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @auto_docstring(
-        custom_args="""
-        cls_position (`int`, *optional*, defaults to `None`):
-            If set and `output_hidden_states=True`, extract hidden states at this position index instead of mean pooling.
-            Useful when a CLS token is prepended (e.g. position 0).
-        return_full_hidden_states (`bool`, *optional*, defaults to `False`):
-            If `True` and `output_hidden_states=True`, return the full hidden state tensors `(B, L, H)` for each layer
-            instead of pooling them to a single vector."""
-    )
-    def forward(
-        self,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        output_hidden_states: Optional[bool] = None,
-        cls_position: Optional[int] = None,
-        return_full_hidden_states: bool = False,
-        **kwargs: Unpack[TransformersKwargs],
-    ) -> BaseModelOutput:
+    def _prepare_forward(self, input_ids, attention_mask, position_ids, inputs_embeds, kwargs):
+        """Shared input preparation for forward passes."""
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError(
                 "You must specify exactly one of input_ids or inputs_embeds"
             )
 
-        output_hidden_states = (
-            output_hidden_states
-            if output_hidden_states is not None
-            else getattr(self.config, "output_hidden_states", False)
-        )
-
-        # As we want to pass `past_key_values=None` explicitly everywhere, we need to pop them from kwargs if present
         kwargs.pop("past_key_values", None)
 
         if inputs_embeds is None:
@@ -1012,49 +968,82 @@ class T5Gemma2Encoder(T5Gemma2PreTrainedModel):
                 ),
             }
 
-        # input layer
         hidden_states = inputs_embeds
 
-        # global and local position embeddings
         position_embeddings = {}
         for layer_type in self.text_config.layer_types:
             position_embeddings[layer_type] = self.rotary_emb(
                 hidden_states, position_ids, layer_type
             )
 
-        # dropout
         hidden_states = self.dropout(hidden_states)
 
         # Resolve the raw attention_mask for mean pooling
-        # (attention_mask may have been replaced by the dict above)
         raw_attention_mask = (
             attention_mask if not isinstance(attention_mask, dict) else None
         )
         if raw_attention_mask is None:
-            # Fallback: all ones
             raw_attention_mask = torch.ones(
                 hidden_states.shape[:2],
                 device=hidden_states.device,
                 dtype=hidden_states.dtype,
             )
 
-        # Initialise CLS state for cross-attention (MLLama-style)
-        cls_state = None
-        cls_intermediates = None
-        cross_attn_idx = 0
-        if self.cross_attention_layer_ids is not None:
-            cls_state = self.cls_query.expand(
-                hidden_states.shape[0], -1, -1
-            ).to(dtype=hidden_states.dtype)
-            cls_intermediates = []
+        return hidden_states, position_ids, position_embeddings, self_attn_mask_mapping, raw_attention_mask
+
+    @auto_docstring(
+        custom_args="""
+        cls_position (`int`, *optional*, defaults to `None`):
+            If set and `output_hidden_states=True`, extract hidden states at this position index instead of mean pooling.
+            Useful when a CLS token is prepended (e.g. position 0).
+        return_full_hidden_states (`bool`, *optional*, defaults to `False`):
+            If `True` and `output_hidden_states=True`, return the full hidden state tensors `(B, L, H)` for each layer
+            instead of pooling them to a single vector.
+        cls_and_mean_pool (`bool`, *optional*, defaults to `False`):
+            If `True`, `cls_position` must also be set. For each layer, extracts both the CLS
+            position vector `(B, H)` and the mean-pooled non-CLS tokens `(B, H)`, appending them
+            as interleaved pairs to ``hidden_states``. This avoids storing full `(B, L, H)` tensors.
+            The ``attention_mask`` used for mean-pooling excludes the CLS position."""
+    )
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        output_hidden_states: Optional[bool] = None,
+        cls_position: Optional[int] = None,
+        return_full_hidden_states: bool = False,
+        cls_and_mean_pool: bool = False,
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> BaseModelOutput:
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else getattr(self.config, "output_hidden_states", False)
+        )
+
+        hidden_states, position_ids, position_embeddings, self_attn_mask_mapping, raw_attention_mask = (
+            self._prepare_forward(input_ids, attention_mask, position_ids, inputs_embeds, kwargs)
+        )
 
         all_hidden_states = () if output_hidden_states else None
+
+        # Pre-compute the non-CLS mask once for cls_and_mean_pool mode
+        if cls_and_mean_pool and cls_position is not None:
+            non_cls_mask = raw_attention_mask.clone()
+            non_cls_mask[:, cls_position] = 0
 
         for layer_idx, layer_module in enumerate(
             self.layers[: self.text_config.num_hidden_layers]
         ):
             if output_hidden_states:
-                if return_full_hidden_states:
+                if cls_and_mean_pool and cls_position is not None:
+                    all_hidden_states += (
+                        mean_pool(hidden_states, non_cls_mask),
+                        hidden_states[:, cls_position, :],
+                    )
+                elif return_full_hidden_states:
                     all_hidden_states += (hidden_states,)  # (B, L, H)
                 elif cls_position is not None:
                     all_hidden_states += (hidden_states[:, cls_position, :],)
@@ -1069,20 +1058,13 @@ class T5Gemma2Encoder(T5Gemma2PreTrainedModel):
                 **kwargs,
             )
 
-            # Cross-attention: CLS queries encoder hidden states at this layer
-            if (
-                cls_state is not None
-                and layer_idx in self._cross_attention_layer_set
-            ):
-                cls_state = self.cross_attn_layers[cross_attn_idx](
-                    cls_state, hidden_states, raw_attention_mask
-                )
-                cross_attn_idx += 1
-                # Save intermediate CLS representation after each cross-attn block
-                cls_intermediates.append(cls_state.squeeze(1))  # (B, H)
-
         if output_hidden_states:
-            if return_full_hidden_states:
+            if cls_and_mean_pool and cls_position is not None:
+                all_hidden_states += (
+                    mean_pool(hidden_states, non_cls_mask),
+                    hidden_states[:, cls_position, :],
+                )
+            elif return_full_hidden_states:
                 all_hidden_states += (hidden_states,)  # (B, L, H)
             elif cls_position is not None:
                 all_hidden_states += (hidden_states[:, cls_position, :],)
@@ -1092,15 +1074,112 @@ class T5Gemma2Encoder(T5Gemma2PreTrainedModel):
         hidden_states = self.norm(hidden_states)
         hidden_states = self.dropout(hidden_states)
 
-        # Stack intermediate CLS representations: (B, num_cross_attn+1, H)
-        # 5 from mid-network cross-attention blocks + 1 from final output
-        if cls_intermediates is not None:
-            # Cross-attend to the final (normed) encoder output
-            cls_state = self.cross_attn_final(
-                cls_state, hidden_states, raw_attention_mask
+        return T5Gemma2EncoderOutput(
+            last_hidden_state=hidden_states,
+            hidden_states=all_hidden_states,
+        )
+
+
+class T5Gemma2CrossAttentionEncoder(T5Gemma2Encoder):
+    """T5Gemma2 encoder with MLLama-style cross-attention layers.
+
+    At selected encoder layers a learnable CLS token queries the encoder
+    hidden states via cross-attention blocks.  The intermediate CLS
+    representations are collected and returned in ``cls_state``.
+    """
+
+    def __init__(
+        self,
+        config: T5Gemma2EncoderConfig,
+        eoi_token_index: int = 256_000,
+        cross_attention_layers: list[int] | None = None,
+    ):
+        super().__init__(config, eoi_token_index=eoi_token_index)
+        text_config = config.text_config
+
+        if cross_attention_layers is None:
+            raise ValueError(
+                "T5Gemma2CrossAttentionEncoder requires cross_attention_layers"
             )
-            cls_intermediates.append(cls_state.squeeze(1))  # (B, H)
-            cls_state = torch.stack(cls_intermediates, dim=1)  # (B, 6, H)
+        self.cross_attention_layer_ids = cross_attention_layers
+        self._cross_attention_layer_set = set(cross_attention_layers)
+        self.cls_query = nn.Parameter(
+            torch.randn(1, 1, text_config.hidden_size) * 0.02
+        )
+        self.cross_attn_layers = nn.ModuleList(
+            [
+                T5Gemma2CrossAttentionEncoderLayer(text_config, layer_idx=idx)
+                for idx in cross_attention_layers
+            ]
+        )
+        self.cross_attn_final = T5Gemma2CrossAttentionEncoderLayer(
+            text_config, layer_idx=text_config.num_hidden_layers
+        )
+
+        # Re-run post_init to initialise cross-attention weights
+        self.post_init()
+
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        output_hidden_states: Optional[bool] = None,
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> T5Gemma2EncoderOutput:
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else getattr(self.config, "output_hidden_states", False)
+        )
+
+        hidden_states, position_ids, position_embeddings, self_attn_mask_mapping, raw_attention_mask = (
+            self._prepare_forward(input_ids, attention_mask, position_ids, inputs_embeds, kwargs)
+        )
+
+        # Initialise CLS state for cross-attention
+        cls_state = self.cls_query.expand(
+            hidden_states.shape[0], -1, -1
+        ).to(dtype=hidden_states.dtype)
+        cls_intermediates = []
+        cross_attn_idx = 0
+
+        all_hidden_states = () if output_hidden_states else None
+
+        for layer_idx, layer_module in enumerate(
+            self.layers[: self.text_config.num_hidden_layers]
+        ):
+            if output_hidden_states:
+                all_hidden_states += (mean_pool(hidden_states, raw_attention_mask),)
+
+            hidden_states = layer_module(
+                hidden_states,
+                position_embeddings[layer_module.attention_type],
+                self_attn_mask_mapping[layer_module.attention_type],
+                position_ids,
+                **kwargs,
+            )
+
+            if layer_idx in self._cross_attention_layer_set:
+                cls_state = self.cross_attn_layers[cross_attn_idx](
+                    cls_state, hidden_states, raw_attention_mask
+                )
+                cross_attn_idx += 1
+                cls_intermediates.append(cls_state.squeeze(1))  # (B, H)
+
+        if output_hidden_states:
+            all_hidden_states += (mean_pool(hidden_states, raw_attention_mask),)
+
+        hidden_states = self.norm(hidden_states)
+        hidden_states = self.dropout(hidden_states)
+
+        # Cross-attend to the final (normed) encoder output
+        cls_state = self.cross_attn_final(
+            cls_state, hidden_states, raw_attention_mask
+        )
+        cls_intermediates.append(cls_state.squeeze(1))  # (B, H)
+        cls_state = torch.stack(cls_intermediates, dim=1)  # (B, num_cross_attn+1, H)
 
         return T5Gemma2EncoderOutput(
             last_hidden_state=hidden_states,
@@ -1112,6 +1191,7 @@ class T5Gemma2Encoder(T5Gemma2PreTrainedModel):
 __all__ = [
     "T5Gemma2PreTrainedModel",
     "T5Gemma2Encoder",
+    "T5Gemma2CrossAttentionEncoder",
     "T5Gemma2EncoderOutput",
     "T5Gemma2CrossAttention",
     "T5Gemma2CrossAttentionEncoderLayer",

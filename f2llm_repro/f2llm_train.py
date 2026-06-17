@@ -66,13 +66,13 @@ class EmbeddingModelEvalWrapper(torch.nn.Module):
 CLASSIFICATION_DATASETS = [
     "amazon_counterfactual",
     "amazon_polarity",
+    "banking77",
     "imdb",
     "toxic_conversations",
     "cola",
 ]
 CLUSTERING_DATASETS = [
     "amazon_reviews",
-    "banking77",
     "emotion",
     "mtop_intent",
     "mtop_domain",
@@ -530,48 +530,63 @@ def accelerate_train(
                             accelerator.gather(loss_hard_dict[k]).sum() / count
                         )
                 train_log_dict = {"lr": optimizer.param_groups[0]["lr"]}
-                train_log_dict["Avg/retrieval/training_loss_in_batch"] = torch.tensor(
-                    [
-                        v
-                        for k, v in _per_ds.items()
-                        if k.split("/")[0] in RETRIEVAL_DATASETS
-                        and k.endswith("training_loss_in_batch")
-                    ]
-                ).mean()
-                train_log_dict["Avg/retrieval/training_loss_hard"] = torch.tensor(
-                    [
-                        v
-                        for k, v in _per_ds.items()
-                        if k.split("/")[0] in RETRIEVAL_DATASETS
-                        and k.endswith("training_loss_hard")
-                    ]
-                ).mean()
-                if not args.only_retrieval:
-                    train_log_dict["Avg/classification/training_loss_hard"] = (
-                        torch.tensor(
-                            [
-                                v
-                                for k, v in _per_ds.items()
-                                if k.split("/")[0] in CLASSIFICATION_DATASETS
-                                and k.endswith("training_loss_hard")
-                            ]
-                        ).mean()
-                    )
-                    train_log_dict["Avg/clustering/training_loss_hard"] = torch.tensor(
-                        [
-                            v
-                            for k, v in _per_ds.items()
-                            if k.split("/")[0] in CLUSTERING_DATASETS
-                            and k.endswith("training_loss_hard")
-                        ]
-                    ).mean()
-
-                train_log_dict["Avg/global/training_loss_in_batch"] = train_log_dict[
-                    "Avg/retrieval/training_loss_in_batch"
+                _ret_ib = [
+                    v
+                    for k, v in _per_ds.items()
+                    if k.split("/")[0] in RETRIEVAL_DATASETS
+                    and k.endswith("training_loss_in_batch")
                 ]
-                train_log_dict["Avg/global/training_loss_hard"] = torch.tensor(
-                    [v for k, v in _per_ds.items() if k.endswith("training_loss_hard")]
-                ).mean()
+                if _ret_ib:
+                    train_log_dict["Avg/retrieval/training_loss_in_batch"] = (
+                        torch.tensor(_ret_ib).mean()
+                    )
+                _ret_hard = [
+                    v
+                    for k, v in _per_ds.items()
+                    if k.split("/")[0] in RETRIEVAL_DATASETS
+                    and k.endswith("training_loss_hard")
+                ]
+                if _ret_hard:
+                    train_log_dict["Avg/retrieval/training_loss_hard"] = (
+                        torch.tensor(_ret_hard).mean()
+                    )
+                _cls_vals = [
+                    v
+                    for k, v in _per_ds.items()
+                    if k.split("/")[0] in CLASSIFICATION_DATASETS
+                    and k.endswith("training_loss_hard")
+                ]
+                if _cls_vals:
+                    train_log_dict["Avg/classification/training_loss_hard"] = (
+                        torch.tensor(_cls_vals).mean()
+                    )
+                _clust_vals = [
+                    v
+                    for k, v in _per_ds.items()
+                    if k.split("/")[0] in CLUSTERING_DATASETS
+                    and k.endswith("training_loss_hard")
+                ]
+                if _clust_vals:
+                    train_log_dict["Avg/clustering/training_loss_hard"] = (
+                        torch.tensor(_clust_vals).mean()
+                    )
+
+                _global_ib = [
+                    v for k, v in _per_ds.items()
+                    if k.endswith("training_loss_in_batch")
+                ]
+                if _global_ib:
+                    train_log_dict["Avg/global/training_loss_in_batch"] = (
+                        torch.tensor(_global_ib).mean()
+                    )
+                _global_hard = [
+                    v for k, v in _per_ds.items()
+                    if k.endswith("training_loss_hard")
+                ]
+                if _global_hard:
+                    train_log_dict["Avg/global/training_loss_hard"] = (
+                        torch.tensor(_global_hard).mean()
+                    )
                 train_log_dict["duration"] = (time.time()- start)/3600
 
                 accelerator.print(f"[Train] Step = {completed_steps}")
@@ -629,16 +644,19 @@ def accelerate_train(
             eval_device = torch.device(f"cuda:{accelerator.local_process_index}")
             eval_wrapper = eval_wrapper_class(unwrapped_lm, eval_device)
 
-            # Switch to the full mteb_eng_v2 suite for the end-of-epoch run
-            full_eval_tasks = get_eval_tasks("mteb_eng_v2")
-            evaluator.update_datasets(full_eval_tasks)
+            _eval_task_types = (
+                [args.task_type] if getattr(args, "task_type", None) else None
+            )
+            final_eval_set = args.final_eval_set
+            final_eval_tasks = get_eval_tasks(final_eval_set, task_types=_eval_task_types)
+            evaluator.update_datasets(final_eval_tasks)
             _, summary = evaluator.evaluate(
                 eval_wrapper, batch_size=per_device_eval_batch_size
             )
             model.lm.train()
 
             if accelerator.is_main_process:
-                key = f"mteb_eng_v2_full_epoch_{epoch + 1}"
+                key = f"{final_eval_set}_epoch_{epoch + 1}"
                 accelerator.print(f"[MTEB epoch {epoch + 1}] {summary}")
                 stats[key] = summary
                 with open(
@@ -647,7 +665,7 @@ def accelerate_train(
                     json.dump(stats, f, indent=4)
 
             # Restore the original eval set for the next mid-training evals
-            restore_tasks = get_eval_tasks(args.eval_set)
+            restore_tasks = get_eval_tasks(args.eval_set, task_types=_eval_task_types)
             evaluator.update_datasets(restore_tasks)
 
         # End-of-epoch checkpoint for resumption

@@ -1,0 +1,120 @@
+#!/bin/bash
+#SBATCH --partition=H100
+#SBATCH --account=lade
+#SBATCH --nodelist=dgx004
+#SBATCH --nodes=1
+#SBATCH --time=60:00:00
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=52
+#SBATCH --mem=380G
+#SBATCH --job-name=test
+#SBATCH --gres=gpu:H100:4
+
+module load cuda/12.8
+export CUDA_HOME=$CUDA_PATH
+
+source /u/area/ddoimo/anaconda3/bin/activate ./env_f2llm
+
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+export PYTHONUNBUFFERED=1
+export HF_HOME=/orfeo/cephfs/scratch/area/ddoimo/models
+
+GPU_NUMBER=$(echo $CUDA_VISIBLE_DEVICES | tr ',' ' ' | wc -w)
+WORKERS_PER_RANK=$(( SLURM_CPUS_PER_TASK / GPU_NUMBER / 2 ))
+
+export OMP_NUM_THREADS=$WORKERS_PER_RANK
+export NUMEXPR_MAX_THREADS=$WORKERS_PER_RANK
+export OPENBLAS_NUM_THREADS=$WORKERS_PER_RANK
+export MKL_NUM_THREADS=$WORKERS_PER_RANK
+
+nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
+head_node=${nodes[0]}
+head_node_ip=$(getent hosts "$head_node" | awk '{ print $1 }')
+
+# ---- Shared settings ----
+MODEL=google/t5gemma-2-270m-270m
+DATA=./results/f2llm_tokenized
+OUTPUT=./f2llm_repro/results/train
+S1_POOLING_MODE=mean       # stage 1: always mean (frozen backbone)
+S2_POOLING_MODE=cls        # stage 2: "cls" or "mean"
+POOLING_HEADS=4
+BATCH_SIZE=80
+MAX_SEQ=1024
+HARD_NEG=7
+EVAL_SET=mteb_eng_v2_reduced
+STAGE1_FRACTION=1.0      # set to 1.0 for head-only training (no stage 2)
+
+# Stage-specific hyperparameters (explicit so that stage 2 can
+# reconstruct the stage-1 output directory deterministically).
+S1_LR=1e-4
+S1_WD=0.0
+S2_LR=1e-5
+S2_WD=0.01
+
+
+TORCHRUN_ARGS="--nnodes=$SLURM_NTASKS \
+    --node-rank=$SLURM_NODEID \
+    --nproc-per-node=$GPU_NUMBER \
+    --rdzv-id=$SLURM_PROCID \
+    --rdzv-backend=c10d \
+    --rdzv-endpoint=$head_node:0"
+
+
+# # ---- Stage 1: frozen backbone, train pooling head (always mean) ----
+# echo "========== STAGE 1 =========="
+# echo $S1_POOLING_MODE $S1_LR $S1_WD
+
+# torchrun $TORCHRUN_ARGS \
+#     train_f2llm_repro.py \
+#     --two_stage \
+#     --stage 1 \
+#     --stage1_fraction $STAGE1_FRACTION \
+#     --learning_rate $S1_LR \
+#     --weight_decay $S1_WD \
+#     --attention_pooling \
+#     --pooling_mode $S1_POOLING_MODE \
+#     --num_pooling_heads $POOLING_HEADS \
+#     --model_path $MODEL \
+#     --train_data_path $DATA \
+#     --num_workers $WORKERS_PER_RANK \
+#     --output_dir $OUTPUT \
+#     --train_batch_size $BATCH_SIZE \
+#     --max_seq_length $MAX_SEQ \
+#     --warmup_steps 100 \
+#     --train_epochs 1 \
+#     --log_interval 500 \
+#     --validation_interval 10000000 \
+#     --num_hard_neg $HARD_NEG \
+#     --eval_set $EVAL_SET \
+#     --no-gated_attention
+
+# ---- Stage 2: end-to-end finetuning ----
+# The checkpoint path is auto-derived from --stage1_lr and --stage1_wd.
+echo "========== STAGE 2 =========="
+echo $S2_POOLING_MODE $S2_LR $S2_WD
+torchrun $TORCHRUN_ARGS \
+    train_f2llm_repro.py \
+    --two_stage \
+    --stage 2 \
+    --stage1_fraction $STAGE1_FRACTION \
+    --stage1_lr $S1_LR \
+    --stage1_wd $S1_WD \
+    --stage1_pooling_mode $S1_POOLING_MODE \
+    --learning_rate $S2_LR \
+    --weight_decay $S2_WD \
+    --attention_pooling \
+    --pooling_mode $S2_POOLING_MODE \
+    --num_pooling_heads $POOLING_HEADS \
+    --model_path $MODEL \
+    --train_data_path $DATA \
+    --num_workers $WORKERS_PER_RANK \
+    --output_dir $OUTPUT \
+    --train_batch_size $BATCH_SIZE \
+    --max_seq_length $MAX_SEQ \
+    --warmup_steps 500 \
+    --train_epochs 1 \
+    --log_interval 500 \
+    --validation_interval 2000 \
+    --num_hard_neg $HARD_NEG \
+    --eval_set $EVAL_SET \
+    #--no-gated_attention 

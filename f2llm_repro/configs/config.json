@@ -1,10 +1,8 @@
 {
   "model_path": "Qwen/Qwen3-0.6B",
-  "experiment_id": "trial",
   "train_data_path": "./f2llm_repro/results/datasets_tokenized/f2llm/qwen3_600m-teacher_f2llm-prompt_qwen3-tok",
   "num_workers": 4,
   "output_dir": "./f2llm_repro/results/train",
-  "tb_dir": "./f2llm_repro/results/tensorboard",
   "cache_dir": "./f2llm_repro/cache",
   "train_batch_size": 16,
   "validation_interval": 5000,

@@ -2,7 +2,7 @@
 #SBATCH --partition=H100
 ##SBATCH --partition=DGX
 #SBATCH --account=lade
-##SBATCH --nodelist=dgx003
+#SBATCH --nodelist=dgx003
 #SBATCH --nodes=1
 #SBATCH --time=48:00:00
 #SBATCH --ntasks-per-node=1
@@ -33,37 +33,79 @@ nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 head_node=${nodes[0]}
 head_node_ip=$(getent hosts "$head_node" | awk '{ print $1 }')
 
-# accelerate launch \
-#     --num_machines $SLURM_NTASKS \
-#     --machine_rank $SLURM_NODEID \
-#     --num_processes $(( SLURM_NTASKS * GPU_NUMBER )) \
-#     --main_process_ip $head_node_ip \
-#     --main_process_port 29500 \
-#     --mixed_precision bf16 \
-#     --use_deepspeed \
-#     --zero_stage 2 \
-#     --gradient_accumulation_steps 1 \
-#     --gradient_clipping 1.0 \
-#     run.py --config configs/config.json
 
-#--model_path Qwen/Qwen3-Embedding-0.6B \
+# # ---- Shared settings ----
+# MODEL=google/t5gemma-2-270m-270m
+# DATA=./results/f2llm_tokenized
+# OUTPUT=./f2llm_repro/results/train
+# POOLING_MODE=mean          # "mean", "cls", or "both"
+# POOLING_HEADS=4
+# BATCH_SIZE=80
+# MAX_SEQ=1024
+# HARD_NEG=7
+# EVAL_SET=mteb_eng_v2_reduced
+
+# S2_LR=2e-5
+# S2_WD=0.01
+
+# TORCHRUN_ARGS="--nnodes=$SLURM_NTASKS \
+#     --node-rank=$SLURM_NODEID \
+#     --nproc-per-node=$GPU_NUMBER \
+#     --rdzv-id=$SLURM_PROCID \
+#     --rdzv-backend=c10d \
+#     --rdzv-endpoint=$head_node:0"
+
+# #TASK_TYPES=(Retrieval Reranking STS Summarization PairClassification Classification Clustering)
+
+
+# #TASK_TYPES=(Reranking STS Summarization)
+# TASK_TYPES=(PairClassification)
+
+
+# for TASK in "${TASK_TYPES[@]}"; do
+
+#     echo "###############################################"
+#     echo "# Task type: $TASK"
+#     echo "###############################################"
+
+#     torchrun $TORCHRUN_ARGS \
+#         train_f2llm_repro.py \
+#         --learning_rate $S2_LR \
+#         --weight_decay $S2_WD \
+#         --task_type $TASK \
+#         --model_path $MODEL \
+#         --train_data_path $DATA \
+#         --num_workers $WORKERS_PER_RANK \
+#         --output_dir $OUTPUT \
+#         --train_batch_size $BATCH_SIZE \
+#         --max_seq_length $MAX_SEQ \
+#         --warmup_steps 200 \
+#         --train_epochs 1 \
+#         --log_interval 500 \
+#         --validation_interval 5000 \
+#         --num_hard_neg $HARD_NEG \
+#         --eval_set $EVAL_SET \
+#         --attention_pooling \
+#         --pooling_mode $POOLING_MODE \
+#         --num_pooling_heads $POOLING_HEADS
+# done
+
+
 torchrun \
-    --nnodes=$SLURM_NTASKS \
+    --nnodes=$SLURM_JOB_NUM_NODES \
     --node-rank=$SLURM_NODEID \
     --nproc-per-node=$GPU_NUMBER \
-    --rdzv-id=$SLURM_PROCID \
+    --rdzv-id=$SLURM_JOB_ID \
     --rdzv-backend=c10d \
     --rdzv-endpoint=$head_node:0 \
     train_f2llm_repro.py \
     --attention_pooling \
-    --cls_query_pooling \
-    --num_pooling_heads 4 \
+    --pooling_mode cls \
+    --num_pooling_heads 2 \
     --model_path google/t5gemma-2-270m-270m  \
-    --experiment_id trial \
     --train_data_path ./results/f2llm_tokenized \
     --num_workers $WORKERS_PER_RANK \
     --output_dir ./f2llm_repro/results/train \
-    --tb_dir ./f2llm_repro/results/tensorboard \
     --train_batch_size 80 \
     --max_seq_length 1024 \
     --learning_rate 1e-5 \
@@ -73,16 +115,14 @@ torchrun \
     --train_epochs 1 \
     --log_interval 500 \
     --validation_interval 2000 \
-    --num_hard_neg 7 \
-    --eval_set mteb_eng_v2_reduced \
+    --num_hard_neg 7
+#     --eval_set mteb_eng_v2_reduced \
+
+    # not needed by default true
     # --gated_attention \
 
     #--cross_attention \
     #--lora_cls_attn \
-    #--lora_cls_attn \
-    #--freeze_backbone \
-    #--attention_pooling \
-    #--cross_attention \
 
     #--out_filename "f2llm_eval_prompts" \
     #--measure_baselines \

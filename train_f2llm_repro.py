@@ -2,7 +2,6 @@ from f2llm_repro.f2llm_train import (
     accelerate_train,
     load_training_state,
     CLASSIFICATION_DATASETS,
-    RETRIEVAL_DATASETS,
     EmbeddingModelEvalWrapper,
 )
 from f2llm_repro.model import F2LLM, F2LLMT5Gemma2, F2LLMT5Gemma2Decoder
@@ -27,6 +26,7 @@ from utils.create_datasets import (
     instruction_template_embeddinggemma,
     instruction_template_f2llm,
 )
+from tasks import TRANSLATE_F2LLM_NAME, NAME_TO_TASK_TYPE
 from torch.utils.data import RandomSampler
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -280,16 +280,15 @@ def collate_fn2(batch_raw, args, _stack, tokenizer, classification_datasets):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True)
-    parser.add_argument("--experiment_id", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
-    parser.add_argument("--tb_dir", type=str, required=True)
+
     parser.add_argument("--cache_dir", type=str, default=None)
     parser.add_argument("--train_data_path", type=str, required=True)
     parser.add_argument("--train_batch_size", type=int, default=8)
     parser.add_argument("--max_seq_length", type=int, default=2048)
-    parser.add_argument("--learning_rate", type=float, default=1e-4)
+    parser.add_argument("--learning_rate", type=float, default=None)
     parser.add_argument("--min_lr", type=float, default=1e-6)
-    parser.add_argument("--weight_decay", type=float, default=1e-2)
+    parser.add_argument("--weight_decay", type=float, default=None)
     parser.add_argument("--warmup_steps", type=int, default=100)
     parser.add_argument("--num_hard_neg", type=int, default=7)
     parser.add_argument("--train_steps", type=int, default=-1)
@@ -302,13 +301,36 @@ def parse_args():
     parser.add_argument("--test_interval", type=int, default=10**9)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--measure_baselines", action="store_true")
-    parser.add_argument("--only_retrieval", action="store_true")
+    parser.add_argument(
+        "--task_type",
+        type=str,
+        default=None,
+        choices=[
+            "Retrieval",
+            "Reranking",
+            "STS",
+            "Summarization",
+            "PairClassification",
+            "Classification",
+            "Clustering",
+        ],
+        help="Train only on datasets belonging to this MTEB task type. "
+        "When omitted, all available datasets are used.",
+    )
     parser.add_argument("--num_processes", type=int, default=0)
     parser.add_argument(
         "--eval_set",
         type=str,
         default="mteb_retrieval_subset",
         help="Name of the eval task set passed to get_eval_tasks() for mid-training MTEB evals.",
+    )
+    parser.add_argument(
+        "--final_eval_set",
+        type=str,
+        default=None,
+        help="Eval task set used for end-of-epoch evaluation. "
+        "Defaults to --eval_set for two-stage stage 1, "
+        "mteb_eng_v2_full otherwise.",
     )
     parser.add_argument(
         "--per_device_eval_batch_size",
@@ -342,10 +364,14 @@ def parse_args():
         "(EmbeddingT5Gemma2HiddenPool) instead of plain mean pooling.",
     )
     parser.add_argument(
-        "--cls_query_pooling",
-        action="store_true",
-        help="Use a learnable CLS query token with gated-attention pooling "
-        "(EmbeddingT5Gemma2HiddenPoolCLS). Implies --attention_pooling.",
+        "--pooling_mode",
+        type=str,
+        default="mean",
+        choices=["both", "cls", "mean"],
+        help="Which per-layer representations to pool over when "
+        "--attention_pooling is enabled: 'mean' (mean-pooled tokens, no CLS), "
+        "'cls' (learnable CLS token per layer), 'both' (CLS + mean-pooled). "
+        "Default: 'mean'.",
     )
     parser.add_argument(
         "--num_pooling_heads",
@@ -357,30 +383,17 @@ def parse_args():
     )
     parser.add_argument(
         "--gated_attention",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Use Qwen3-style headwise-gated attention pooling instead of "
         "standard multi-head self-attention pooling over layer representations.",
-    )
-    parser.add_argument(
-        "--freeze_backbone",
-        action="store_true",
-        help="Freeze the LLM encoder backbone and train only the pooling "
-        "head (GatedAttention + Projection). Requires --attention_pooling.",
-    )
-    parser.add_argument(
-        "--lora_cls",
-        action="store_true",
-        help="Use per-layer low-rank cross-attention adapters to compute a "
-        "CLS representation from frozen backbone hidden states. The encoder "
-        "is automatically frozen; only the adapters, CLS queries, "
-        "GatedAttention, and Projection are trained.",
     )
     parser.add_argument(
         "--lora_rank",
         type=int,
         default=64,
-        help="Rank of the low-rank cross-attention adapters used with "
-        "--lora_cls. Default: 64.",
+        help="Rank of the low-rank adapters used with "
+        "--lora_cls_attn. Default: 64.",
     )
     parser.add_argument(
         "--attn_implementation",
@@ -439,14 +452,133 @@ def parse_args():
         "(e.g. output_dir/checkpoint_epoch_2). Resumes model, optimizer, "
         "scheduler, and training loop from that point.",
     )
+    # ---- Two-stage training ----
+    parser.add_argument(
+        "--two_stage",
+        action="store_true",
+        help="Enable 2-stage training for attention pooling. Stage 1 freezes "
+        "the encoder and trains only the CLS token + pooling head on a "
+        "fraction of the data. Stage 2 loads the stage-1 model and does "
+        "end-to-end finetuning on the remaining data.",
+    )
+    parser.add_argument(
+        "--stage",
+        type=int,
+        default=1,
+        choices=[1, 2],
+        help="Which stage to run (1 or 2). Only used with --two_stage.",
+    )
+    parser.add_argument(
+        "--stage1_fraction",
+        type=float,
+        default=1.0 / 3.0,
+        help="Fraction of each task's data used for stage 1 (default: 1/3). "
+        "Stage 2 uses the remaining samples with no overlap.",
+    )
+    parser.add_argument(
+        "--split_seed",
+        type=int,
+        default=42,
+        help="Random seed for the stratified stage-1 / stage-2 data split. "
+        "Ensures reproducible splits across runs.",
+    )
+    parser.add_argument(
+        "--stage1_checkpoint",
+        type=str,
+        default=None,
+        help="Explicit path to the stage-1 model weights (model.pt). "
+        "When omitted (recommended), the path is auto-derived from "
+        "--stage1_lr and --stage1_wd by reconstructing the stage-1 "
+        "output directory name.",
+    )
+    parser.add_argument(
+        "--stage1_lr",
+        type=float,
+        default=5e-4,
+        help="Learning rate used in stage 1 (default: 5e-4). Used by "
+        "stage 2 to reconstruct the stage-1 output directory and "
+        "locate the checkpoint automatically.",
+    )
+    parser.add_argument(
+        "--stage1_wd",
+        type=float,
+        default=0.0,
+        help="Weight decay used in stage 1 (default: 0.0). Used by "
+        "stage 2 to reconstruct the stage-1 output directory and "
+        "locate the checkpoint automatically.",
+    )
+    parser.add_argument(
+        "--stage2_head_lr",
+        type=float,
+        default=None,
+        help="Separate learning rate for the pooling head (CLS, pooling, "
+        "projection) during stage 2. When set, the encoder uses "
+        "--learning_rate (default 2e-5) while the head uses this value "
+        "(e.g. 1e-4). Only used with --two_stage --stage 2.",
+    )
+    parser.add_argument(
+        "--cls_init",
+        type=str,
+        default="mean_embed",
+        choices=["mean_embed", "random"],
+        help="How to initialize the CLS query when it is absent from the "
+        "stage-1 checkpoint (e.g. stage 1 used --pooling_mode mean and "
+        "stage 2 uses cls/both). 'mean_embed' (default): mean of the "
+        "encoder's token embedding table. 'random': keep the default "
+        "random nn.Parameter initialization.",
+    )
+    parser.add_argument(
+        "--stage1_pooling_mode",
+        type=str,
+        default="mean",
+        choices=["both", "cls", "mean"],
+        help="Pooling mode used in stage 1 (default: 'mean'). Used by "
+        "stage 2 to reconstruct the stage-1 output directory and "
+        "locate the checkpoint automatically.",
+    )
     args = parser.parse_args()
-
-    if args.cls_query_pooling:
-        args.attention_pooling = True
 
     # Default cross-attention layer positions (MLLama-style spacing for 26 layers)
     if args.cross_attention and args.cross_attention_layers is None:
         args.cross_attention_layers = [3, 8, 13, 18, 23]
+
+    # ---- Two-stage validation & LR defaults ----
+    if args.two_stage:
+        args.attention_pooling = True
+        if not (0 < args.stage1_fraction <= 1):
+            parser.error("--stage1_fraction must be in (0, 1]")
+        # Apply stage-aware defaults when the user did not pass explicit values.
+        # Stage 1 trains only the randomly-initialized pooling head (few
+        # params, no pretrained weights to protect) → higher LR, no weight decay.
+        # Stage 2 unfreezes the pretrained encoder for end-to-end finetuning →
+        # lower LR, standard weight decay to avoid catastrophic forgetting.
+        if args.learning_rate is None:
+            args.learning_rate = 5e-4 if args.stage == 1 else 2e-5
+        if args.weight_decay is None:
+            args.weight_decay = 0.0 if args.stage == 1 else 1e-2
+
+    # Default final_eval_set: reduced for stage 1, full otherwise.
+    if args.final_eval_set is None:
+        if args.two_stage and args.stage == 1:
+            args.final_eval_set = args.eval_set
+        else:
+            args.final_eval_set = "mteb_eng_v2"
+
+    # Build the set of f2llm parquet names that belong to the requested task type.
+    # TRANSLATE_F2LLM_NAME maps f2llm_name → internal_name;
+    # NAME_TO_TASK_TYPE maps internal_name → MTEB task type.
+    if args.task_type:
+        args._task_type_f2llm_names = sorted(
+            f2llm_name
+            for f2llm_name, internal_name in TRANSLATE_F2LLM_NAME.items()
+            if NAME_TO_TASK_TYPE.get(internal_name) == args.task_type
+        )
+
+    # Fallback defaults when --two_stage is not used
+    if args.learning_rate is None:
+        args.learning_rate = 2e-5
+    if args.weight_decay is None:
+        args.weight_decay = 1e-2
 
     # Resolve default num_pooling_heads from the model config
     if args.num_pooling_heads is None and args.attention_pooling:
@@ -457,8 +589,6 @@ def parse_args():
         text_cfg = getattr(text_cfg, "text_config", text_cfg)
         args.num_pooling_heads = text_cfg.num_attention_heads
 
-    args.output_dir = f"{args.output_dir}/{args.experiment_id}"
-    args.tb_dir = f"{args.tb_dir}/{args.experiment_id}"
     return args
 
 
@@ -489,63 +619,24 @@ def main():
         raise ValueError(
             "--lora_cls_attn and --cross_attention are mutually exclusive."
         )
-    if args.lora_cls_attn and args.lora_cls:
-        raise ValueError(
-            "--lora_cls_attn and --lora_cls are mutually exclusive."
-        )
     if args.lora_cls_attn and args.attention_pooling:
         raise ValueError(
             "--lora_cls_attn already includes GatedAttention pooling; "
             "do not combine with --attention_pooling."
-        )
-    if args.lora_cls_attn and args.freeze_backbone:
-        raise ValueError(
-            "--lora_cls_attn already freezes the backbone; "
-            "do not combine with --freeze_backbone."
-        )
-    if args.cross_attention and args.lora_cls:
-        raise ValueError(
-            "--cross_attention and --lora_cls are mutually exclusive."
         )
     if args.cross_attention and args.attention_pooling:
         raise ValueError(
             "--cross_attention already includes GatedAttention pooling over "
             "cross-attention CLS states; do not combine with --attention_pooling."
         )
-    if args.cross_attention and args.freeze_backbone:
+    if args.two_stage and not is_t5gemma2:
         raise ValueError(
-            "--cross_attention and --freeze_backbone are mutually exclusive. "
-            "--cross_attention already freezes the backbone."
+            "--two_stage is only supported for T5Gemma2 encoder models."
         )
-    if args.lora_cls and args.freeze_backbone:
+    if args.two_stage and (args.lora_cls_attn or args.cross_attention):
         raise ValueError(
-            "--lora_cls and --freeze_backbone are mutually exclusive. "
-            "--lora_cls already freezes the backbone and trains its own "
-            "cross-attention adapters."
-        )
-    if args.lora_cls and args.attention_pooling:
-        raise ValueError(
-            "--lora_cls is incompatible with --attention_pooling. "
-            "--lora_cls builds its own pooling head; do not combine them."
-        )
-    if args.lora_cls and args.cls_query_pooling:
-        raise ValueError(
-            "--lora_cls is incompatible with --cls_query_pooling. "
-            "--lora_cls builds its own CLS mechanism; do not combine them."
-        )
-    if args.freeze_backbone and not args.attention_pooling:
-        raise ValueError(
-            "--freeze_backbone requires --attention_pooling. "
-            "Without a pooling head there are no trainable parameters."
-        )
-    if args.cls_query_pooling and not args.attention_pooling:
-        raise ValueError(
-            "--cls_query_pooling requires --attention_pooling."
-        )
-    if not is_t5gemma2 and (args.lora_cls or args.freeze_backbone):
-        raise ValueError(
-            "--lora_cls and --freeze_backbone are only supported for "
-            "T5Gemma2 models (encoder or decoder)."
+            "--two_stage is incompatible with --lora_cls_attn "
+            "and --cross_attention. It manages its own pooling architecture."
         )
 
     # Hard-coded cache directories per model family (overridable via --cache_dir).
@@ -558,10 +649,6 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
 
     set_seed(0)
-    os.makedirs(f"{args.output_dir}", exist_ok=True)
-    if accelerator.is_main_process:
-        with open(os.path.join(args.output_dir, "args.json"), "w") as f:
-            json.dump(vars(args), f, indent=2)
 
     #train_datasets, valid_datasets = [], []
     train_datasets = []
@@ -582,27 +669,11 @@ def main():
     #         f for f in os.listdir(args.train_data_path) if f.endswith(".parquet")
     #     ):
     #         dataset_name = f.split(".parquet")[0]
-    #         if dataset_name not in RETRIEVAL_DATASETS and args.only_retrieval:
-    #             continue
-    #         accelerator.print(f"loading {dataset_name}")
-    #         dataset = load_dataset(
-    #             "parquet",
-    #             data_files=os.path.join(args.train_data_path, f),
-    #             cache_dir=args.cache_dir,
-    #         )["train"]
-    #         dataset = dataset.add_column("dataset_name", [dataset_name] * len(dataset))
-    #         dataset = dataset.map(
-    #             lambda _, idx: {"data_index": idx},
-    #             with_indices=True,
-    #             desc=f"adding data_index to {dataset_name}",
-    #         )
-    #         train_datasets.append((dataset_name, dataset))
-
     for f in sorted(
         f for f in os.listdir(args.train_data_path) if f.endswith(".parquet")
     ):
         dataset_name = f.split(".parquet")[0]
-        if dataset_name not in RETRIEVAL_DATASETS and args.only_retrieval:
+        if args.task_type and dataset_name not in args._task_type_f2llm_names:
             continue
 
         accelerator.print(f"loading {dataset_name}")
@@ -623,6 +694,43 @@ def main():
             # dataset = dataset.train_test_split(train_size=0.99, shuffle=True, seed=0)
             # train_datasets.append((dataset_name, dataset["train"]))
             # valid_datasets.append((dataset_name, dataset["test"]))
+
+    # ---- Two-stage: stratified split per task ----
+    if args.two_stage:
+        if args.stage1_fraction >= 1.0:
+            # stage1_fraction=1.0: both stages use the full dataset.
+            # Stage 1 trains the pooling head only (frozen encoder);
+            # Stage 2 loads stage-1 weights and fine-tunes end-to-end.
+            accelerator.print(
+                f"[two_stage] Stage {args.stage}: using 100% of data "
+                f"({sum(len(d[1]) for d in train_datasets):,} samples across "
+                f"{len(train_datasets)} tasks)"
+            )
+        else:
+            stage1_datasets, stage2_datasets = [], []
+            for name, ds in train_datasets:
+                split = ds.train_test_split(
+                    train_size=args.stage1_fraction,
+                    shuffle=True,
+                    seed=args.split_seed,
+                )
+                stage1_datasets.append((name, split["train"]))
+                stage2_datasets.append((name, split["test"]))
+
+            if args.stage == 1:
+                train_datasets = stage1_datasets
+                accelerator.print(
+                    f"[two_stage] Stage 1: using {args.stage1_fraction:.1%} of data "
+                    f"({sum(len(d[1]) for d in train_datasets):,} samples across "
+                    f"{len(train_datasets)} tasks)"
+                )
+            else:
+                train_datasets = stage2_datasets
+                accelerator.print(
+                    f"[two_stage] Stage 2: using {1 - args.stage1_fraction:.1%} of data "
+                    f"({sum(len(d[1]) for d in train_datasets):,} samples across "
+                    f"{len(train_datasets)} tasks)"
+                )
 
     collate_fn_partial = partial(
         collate_fn2,
@@ -659,45 +767,113 @@ def main():
         heads = args.num_pooling_heads
         return f"{prefix}_h{heads}" if heads is not None else prefix
 
+    def _two_stage_model_name(stage, lr, wd, pooling_mode=None):
+        """Build the model_name component for a given two-stage run."""
+        if pooling_mode is None:
+            pooling_mode = args.pooling_mode
+        frac_str = f"{args.stage1_fraction:.2f}".rstrip("0").rstrip(".")
+        name = f"t5gemma2_two_stage_s{stage}_frac{frac_str}" + _pooling_suffix()
+        name += f"_{pooling_mode}"
+        tt_tag = f"_task_{args.task_type}" if args.task_type else ""
+        return (
+            f"{name}"
+            f"{tt_tag}"
+            f"_gpus{args.num_processes}"
+            f"_bs{args.train_batch_size * args.num_processes}"
+            f"_lr{lr}"
+            f"_wd{wd}"
+        )
+    
+
+    def _minimal_s1_name(stage, lr, wd, pooling_mode=None):
+        if pooling_mode is None:
+            pooling_mode = args.pooling_mode
+        frac_str = f"{args.stage1_fraction:.2f}".rstrip("0").rstrip(".")
+        name = f"s{stage}_frac{frac_str}" + _pooling_suffix()
+        name += f"_{pooling_mode}"
+        tt_tag = f"_task_{args.task_type}" if args.task_type else ""
+        return (
+            f"{name}"
+            f"{tt_tag}"
+            f"_lr{lr}"
+            f"_wd{wd}"
+        )
+
     if is_t5gemma2_decoder:
         model_name = "t5gemma2_decoder"
-        if args.lora_cls:
-            model_name += f"_lora_cls_r{args.lora_rank}"
-        elif args.attention_pooling:
+        if args.attention_pooling:
             model_name += _pooling_suffix()
-            if args.freeze_backbone:
-                model_name += "_frozen"
     elif is_t5gemma2:
         model_name = "t5gemma2"
-        if args.lora_cls_attn:
+        if args.two_stage:
+            frac_str = f"{args.stage1_fraction:.2f}".rstrip("0").rstrip(".")
+            model_name += f"_two_stage_s{args.stage}_frac{frac_str}" + _pooling_suffix()
+            model_name += f"_{args.pooling_mode}"
+            if args.stage == 2:
+                s1_name = _minimal_s1_name(1, args.stage1_lr, args.stage1_wd, pooling_mode=args.stage1_pooling_mode)
+                model_name+=f"_{s1_name}"
+        
+        elif args.lora_cls_attn:
             model_name += f"_lora_cls_attn_r{args.lora_rank}"
+        
         elif args.cross_attention:
             layers_str = "_".join(str(i) for i in args.cross_attention_layers)
             model_name += f"_cross_attn_L{layers_str}"
-        elif args.lora_cls:
-            model_name += f"_lora_cls_r{args.lora_rank}"
+        
         elif args.attention_pooling:
             model_name += _pooling_suffix()
-            if args.cls_query_pooling:
-                model_name += "_cls_query"
-            if args.freeze_backbone:
-                model_name += "_frozen"
+            model_name += f"_{args.pooling_mode}"
+    
     elif "qwen3" in args.model_path.lower():
         model_name = "qwen3"
     else:
         model_name = "model"
 
+    task_type_tag = f"_task_{args.task_type}" if args.task_type else ""
     suffix = (
-        f"deepspeed_{model_name}"
+        f"{model_name}"
+        f"{task_type_tag}"
         f"_gpus{args.num_processes}"
         f"_bs{args.train_batch_size * args.num_processes}"
         f"_lr{args.learning_rate}"
         f"_wd{args.weight_decay}"
     )
-    if args.out_filename:
-        args.out_filename = f"{args.out_filename}_{suffix}"
+    user_prefix = args.out_filename  # original user value (may be "")
+    if user_prefix:
+        args.out_filename = f"{user_prefix}_{suffix}"
     else:
         args.out_filename = suffix
+
+    # Build intermediate path: task_specific/ when --task_type is set,
+    # stage1/ or stage2/ when --two_stage is set.
+    subdir_parts = []
+    if args.task_type:
+        subdir_parts.append("task_specific")
+    if args.two_stage:
+        subdir_parts.append(f"stage{args.stage}")
+    intermediate = os.path.join(*subdir_parts) if subdir_parts else ""
+
+    # Auto-derive stage-1 checkpoint path for stage 2.
+    # Reconstructs the stage-1 directory name from stage1_lr/stage1_wd
+    # and the shared config (pooling, fraction, gpus, bs).
+    if args.two_stage and args.stage == 2 and args.stage1_checkpoint is None:
+        s1_suffix = _two_stage_model_name(1, args.stage1_lr, args.stage1_wd, pooling_mode=args.stage1_pooling_mode)
+        s1_dir_name = f"{user_prefix}_{s1_suffix}" if user_prefix else s1_suffix
+        # Stage-1 checkpoint lives under stage1/, not stage2/
+        s1_intermediate_parts = []
+        if args.task_type:
+            s1_intermediate_parts.append("task_specific")
+        s1_intermediate_parts.append("stage1")
+        s1_intermediate = os.path.join(*s1_intermediate_parts)
+        args.stage1_checkpoint = os.path.join(
+            args.output_dir, s1_intermediate, s1_dir_name, "model.pt"
+        )
+
+    args.output_dir = os.path.join(args.output_dir, intermediate, args.out_filename)
+    os.makedirs(args.output_dir, exist_ok=True)
+    if accelerator.is_main_process:
+        with open(os.path.join(args.output_dir, "args.json"), "w") as f:
+            json.dump(vars(args), f, indent=2)
 
     accelerator.print(
         f"******************************** Training step before prepare: {args.train_steps} ********************************"
@@ -706,34 +882,64 @@ def main():
     accelerator.print("loading model")
     if is_t5gemma2_decoder:
         model = F2LLMT5Gemma2Decoder(args.model_path, args.max_seq_length, args=args)
-        if args.lora_cls:
-            for p in model.lm.encoder.parameters():
-                p.requires_grad = False
-            accelerator.print(
-                f"[lora_cls] decoder frozen — "
-                f"trainable params: {sum(p.numel() for p in model.lm.parameters() if p.requires_grad):,}"
-            )
-        elif args.freeze_backbone:
-            model.lm.encoder.gradient_checkpointing_enable()
-            for p in model.lm.encoder.parameters():
-                p.requires_grad = False
-            accelerator.print(
-                f"[freeze_backbone] decoder frozen — "
-                f"trainable params: {sum(p.numel() for p in model.lm.parameters() if p.requires_grad):,}"
-            )
-        else:
-            model.lm.encoder.gradient_checkpointing_enable()
+        model.lm.encoder.gradient_checkpointing_enable()
     elif is_t5gemma2:
         model = F2LLMT5Gemma2(args.model_path, args.max_seq_length, args=args)
-        if args.lora_cls_attn:
-            # LoRA CLS in-attention: freeze entire encoder backbone.
-            # LoRA adapters, CLS query, pooling, projection are in the wrapper
-            # (outside encoder) and stay trainable.  The lora_layers hold
-            # references to frozen encoder layers but own their own LoRA params.
+        if args.two_stage and args.stage == 1:
+            # Stage 1: freeze encoder, train pooling head only
+            for p in model.lm.encoder.parameters():
+                p.requires_grad = False
+            # With mean pooling no trainable parameter flows through the
+            # encoder, so we can skip autograd graph construction entirely
+            # (no need for gradient checkpointing either).
+            # For cls/both, cls_query backprops through the encoder so we
+            # still need the graph — use gradient checkpointing to save memory.
+            if args.pooling_mode == "mean" and hasattr(model.lm, "encoder_no_grad"):
+                model.lm.encoder_no_grad = True
+                accelerator.print("[two_stage:s1] encoder running under torch.no_grad()")
+            else:
+                model.lm.encoder.gradient_checkpointing_enable()
+            accelerator.print(
+                f"[two_stage:s1] encoder frozen — "
+                f"trainable params: {sum(p.numel() for p in model.lm.parameters() if p.requires_grad):,}"
+            )
+        elif args.two_stage and args.stage == 2:
+            # Stage 2: load stage-1 weights, unfreeze encoder for e2e training
+            accelerator.print(f"[two_stage:s2] loading stage-1 weights from {args.stage1_checkpoint}")
+            state_dict = torch.load(args.stage1_checkpoint, map_location="cpu", weights_only=True)
+            # strict=False allows switching pooling mode between stages
+            # (e.g. stage 1 used mean → no cls_query in checkpoint,
+            #  stage 2 uses cls/both → cls_query present in model).
+            result = model.lm.load_state_dict(state_dict, strict=False)
+            if result.unexpected_keys:
+                accelerator.print(
+                    f"[two_stage:s2] WARNING unexpected keys in checkpoint: {result.unexpected_keys}"
+                )
+            # Initialize cls_query when absent from stage-1 checkpoint
+            if hasattr(model.lm, "cls_query") and "cls_query" in result.missing_keys:
+                if args.cls_init == "mean_embed":
+                    with torch.no_grad():
+                        mean_emb = model.lm.encoder.embed_tokens.weight.mean(dim=0)
+                        model.lm.cls_query.copy_(mean_emb.reshape(1, 1, -1))
+                    accelerator.print(
+                        "[two_stage:s2] cls_query initialized from mean of embedding table"
+                    )
+                else:
+                    accelerator.print(
+                        "[two_stage:s2] cls_query kept at random initialization"
+                    )
+            elif result.missing_keys:
+                accelerator.print(
+                    f"[two_stage:s2] WARNING missing keys: {result.missing_keys}"
+                )
             model.lm.encoder.gradient_checkpointing_enable()
-            # Enable gradient checkpointing on LoRA wrapper layers too —
-            # they live outside the encoder so encoder.gradient_checkpointing_enable()
-            # doesn't reach them.
+            accelerator.print(
+                f"[two_stage:s2] end-to-end training — "
+                f"trainable params: {sum(p.numel() for p in model.lm.parameters() if p.requires_grad):,}"
+            )
+        elif args.lora_cls_attn:
+            # LoRA CLS in-attention: freeze entire encoder backbone.
+            model.lm.encoder.gradient_checkpointing_enable()
             gc_func = model.lm.encoder.layers[0]._gradient_checkpointing_func
             for lora_layer in model.lm.lora_layers:
                 lora_layer._gradient_checkpointing_func = gc_func
@@ -746,36 +952,14 @@ def main():
             )
         elif args.cross_attention:
             # Cross-attention: freeze backbone, keep cross-attn layers trainable.
-            # Pooling, Projection (in wrapper, outside encoder) are already unfrozen.
             model.lm.encoder.gradient_checkpointing_enable()
             for p in model.lm.encoder.parameters():
                 p.requires_grad = False
-            # Unfreeze cross-attention layers and CLS query inside the encoder
             model.lm.encoder.cls_query.requires_grad = True
             for p in model.lm.encoder.cross_attn_layers.parameters():
                 p.requires_grad = True
             accelerator.print(
                 f"[cross_attention] backbone frozen, cross-attn + pooling trainable — "
-                f"trainable params: {sum(p.numel() for p in model.lm.parameters() if p.requires_grad):,}"
-            )
-        elif args.lora_cls:
-            # LoRA CLS: encoder is frozen inside the model (torch.no_grad),
-            # gradient checkpointing is not needed on the frozen encoder.
-            # Explicitly freeze encoder parameters so DeepSpeed doesn't
-            # allocate optimizer states for them.
-            for p in model.lm.encoder.parameters():
-                p.requires_grad = False
-            accelerator.print(
-                f"[lora_cls] encoder frozen — "
-                f"trainable params: {sum(p.numel() for p in model.lm.parameters() if p.requires_grad):,}"
-            )
-        elif args.freeze_backbone:
-            # Freeze encoder, train only pooling + projection head.
-            model.lm.encoder.gradient_checkpointing_enable()
-            for p in model.lm.encoder.parameters():
-                p.requires_grad = False
-            accelerator.print(
-                f"[freeze_backbone] encoder frozen — "
                 f"trainable params: {sum(p.numel() for p in model.lm.parameters() if p.requires_grad):,}"
             )
         else:
@@ -787,13 +971,36 @@ def main():
     set_seed(0)
 
     # Only pass trainable parameters to the optimizer.
-    trainable_params = [p for p in model.lm.parameters() if p.requires_grad]
-    optimizer = AdamW(
-        trainable_params,
-        weight_decay=args.weight_decay,
-        lr=args.learning_rate,
-        betas=(0.9, 0.98),
-    )
+    # Stage 2 with --stage2_head_lr uses differential LRs: a lower LR for the
+    # pretrained encoder and a higher LR for the pooling head (CLS, pooling,
+    # projection) which can tolerate faster updates.
+    if args.two_stage and args.stage == 2 and args.stage2_head_lr is not None:
+        encoder_ids = {id(p) for p in model.lm.encoder.parameters()}
+        encoder_params = [p for p in model.lm.encoder.parameters() if p.requires_grad]
+        head_params = [p for p in model.lm.parameters()
+                       if p.requires_grad and id(p) not in encoder_ids]
+        accelerator.print(
+            f"[two_stage:s2] differential LR — "
+            f"encoder ({sum(p.numel() for p in encoder_params):,} params): {args.learning_rate}, "
+            f"head ({sum(p.numel() for p in head_params):,} params): {args.stage2_head_lr}"
+        )
+        optimizer = AdamW(
+            [
+                {"params": encoder_params, "lr": args.learning_rate},
+                {"params": head_params, "lr": args.stage2_head_lr},
+            ],
+            weight_decay=args.weight_decay,
+            lr=args.learning_rate,
+            betas=(0.9, 0.98),
+        )
+    else:
+        trainable_params = [p for p in model.lm.parameters() if p.requires_grad]
+        optimizer = AdamW(
+            trainable_params,
+            weight_decay=args.weight_decay,
+            lr=args.learning_rate,
+            betas=(0.9, 0.98),
+        )
 
     lr_scheduler = get_scheduler(
         "cosine",
@@ -812,14 +1019,8 @@ def main():
     )
     model.set_device()
 
-    batch_recorder = BatchMetadataRecorder(
-        output_dir=os.path.join(args.output_dir, "batch_sample_map"),
-        rank=accelerator.process_index,
-        run_label=args.out_filename,
-        flush_every=args.batch_map_flush_every,
-    )
     train_dataloader = MultiLoader(
-        train_loaders, accelerator, batch_recorder=batch_recorder
+        train_loaders, accelerator, batch_recorder=None
     )
 
     # if training on multiple GPUs, length of dataloader would have changed
@@ -834,12 +1035,8 @@ def main():
     # evaluate_retrieval internally calls dist.get_rank() / dist.get_world_size()
     # which work because accelerate with DeepSpeed initialises torch.distributed.
     # ------------------------------------------------------------------
-    task_types = (
-        ["Reranking", "Retrieval", "STS", "Summarization"]
-        if args.only_retrieval
-        else None
-    )
-    eval_tasks = get_eval_tasks(args.eval_set, task_types)
+    _eval_task_types = [args.task_type] if args.task_type else None
+    eval_tasks = get_eval_tasks(args.eval_set, task_types=_eval_task_types)
     # Evaluator settings: T5Gemma2 (encoder or decoder) uses a tokenizer that
     # adds BOS/EOS automatically; Qwen-style models use manual EOS appending.
 
@@ -873,23 +1070,35 @@ def main():
 
     accelerator.print("start training")
 
-    try:
-        accelerate_train(
-            args,
-            accelerator,
-            model,
-            train_dataloader,
-            optimizer,
-            lr_scheduler,
-            sum(len(d[1]) for d in train_datasets),
-            evaluator=evaluator,
-            per_device_eval_batch_size=args.per_device_eval_batch_size,
-            eval_wrapper_class=EmbeddingModelEvalWrapper if (is_t5gemma2 or is_t5gemma2_decoder) else None,
-            start_epoch=start_epoch,
-            start_step=start_step,
-        )
-    finally:
-        batch_recorder.close()
+    accelerate_train(
+        args,
+        accelerator,
+        model,
+        train_dataloader,
+        optimizer,
+        lr_scheduler,
+        sum(len(d[1]) for d in train_datasets),
+        evaluator=evaluator,
+        per_device_eval_batch_size=args.per_device_eval_batch_size,
+        eval_wrapper_class=EmbeddingModelEvalWrapper if (is_t5gemma2 or is_t5gemma2_decoder) else None,
+        start_epoch=start_epoch,
+        start_step=start_step,
+    )
+
+    # ---- Save stage-1 model weights for stage 2 ----
+    if args.two_stage and args.stage == 1:
+        accelerator.wait_for_everyone()
+        if accelerator.is_main_process:
+            unwrapped = accelerator.unwrap_model(model.lm)
+            save_path = os.path.join(args.output_dir, "model.pt")
+            torch.save(unwrapped.state_dict(), save_path)
+            accelerator.print(f"[two_stage:s1] model weights saved to {save_path}")
+        accelerator.wait_for_everyone()
+
+    # ---- Cleanup distributed state to avoid ResourceTracker / NCCL warnings ----
+    accelerator.end_training()
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":
